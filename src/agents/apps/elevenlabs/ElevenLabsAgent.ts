@@ -10,13 +10,14 @@ import { AppManifest } from '../../../types/apps/AppTypes';
 import { TextToSpeechTool } from './tools/textToSpeech';
 import { ListVoicesTool } from './tools/listVoices';
 import { SoundEffectsTool } from './tools/soundEffects';
+import { MusicGenerationTool } from './tools/musicGeneration';
 import { CommonResult } from '../../../types';
 import { requestUrl } from 'obsidian';
 
 const ELEVENLABS_MANIFEST: AppManifest = {
   id: 'elevenlabs',
   name: 'ElevenLabs',
-  description: 'AI voice generation — text-to-speech, voice listing, and sound effects',
+  description: 'AI audio generation — text-to-speech, voice listing, sound effects, and music generation',
   version: '1.0.0',
   author: 'Nexus',
   docsUrl: 'https://elevenlabs.io/docs',
@@ -34,6 +35,7 @@ const ELEVENLABS_MANIFEST: AppManifest = {
     { slug: 'textToSpeech', description: 'Convert text to speech audio' },
     { slug: 'listVoices', description: 'List available voices' },
     { slug: 'soundEffects', description: 'Generate sound effects from text descriptions' },
+    { slug: 'generateMusic', description: 'Generate music from text prompts describing genre, mood, instruments, and lyrics' },
   ],
 };
 
@@ -44,6 +46,7 @@ export class ElevenLabsAgent extends BaseAppAgent {
     this.registerTool(new TextToSpeechTool(this));
     this.registerTool(new ListVoicesTool(this));
     this.registerTool(new SoundEffectsTool(this));
+    this.registerTool(new MusicGenerationTool(this));
   }
 
   /**
