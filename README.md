@@ -23,6 +23,7 @@ Nexus turns your Obsidian vault into an MCP-enabled workspace. It exposes safe, 
 - **Full Vault Operations** – Create, read, update, delete notes, folders, frontmatter, and batch edits.
 - **Multi-Provider Support** – Anthropic, OpenAI, Google, Groq, Mistral, OpenRouter, Perplexity, Requesty, plus local servers (Ollama, LM Studio).
 - **Multi-Vault Ready** – Independent MCP instances per vault.
+- **Apps** – Extend Nexus with downloadable tool domains like ElevenLabs for AI audio generation.
 
 **Platform Notes**
 | Feature | Desktop | Mobile |
@@ -75,6 +76,7 @@ Every `useTools` call includes context that helps maintain continuity:
 | **memoryManager** | Workspace/state management | createWorkspace, listWorkspaces, loadWorkspace, updateWorkspace, archiveWorkspace, createState, listStates, loadState |
 | **promptManager** | Custom prompts & LLM | listModels, executePrompts, listPrompts, getPrompt, createPrompt, updatePrompt, archivePrompt, generateImage, subagent |
 | **canvasManager** | Canvas operations | read, write, update, list |
+| **elevenlabs** *(app)* | AI audio generation | textToSpeech, listVoices, soundEffects, generateMusic |
 
 ---
 
@@ -183,6 +185,26 @@ Use `searchManager.searchMemory` to search across past conversation turns and to
 - Multi-signal reranking: semantic similarity + recency + session density + note references
 - Background backfill indexes existing conversations automatically
 - Works with the same local embedding model—no external API calls
+
+---
+
+## Apps
+
+Apps are downloadable tool domains that extend Nexus with third-party integrations. Each app brings its own set of tools, credentials, and API connections — install only what you need.
+
+Configure apps in **Settings → Nexus → Apps**. Enter your API key, hit **Validate**, and the modal will confirm which capabilities your key supports (and flag any missing permissions).
+
+### Available Apps
+
+| App | Tools | What It Does |
+|-----|-------|--------------|
+| **ElevenLabs** | textToSpeech, listVoices, soundEffects, generateMusic | AI audio generation — convert text to speech, create sound effects, and generate music. Audio files save directly to your vault. |
+
+### Requesting & Contributing Apps
+
+Have an idea for a new app? [Open an issue](https://github.com/ProfSynapse/claudesidian-mcp/issues) with the `app-request` label describing the integration you'd like to see.
+
+Want to build your own? See **[Building Apps](docs/BUILDING_APPS.md)** — an agentic prompt you can feed to your AI coding assistant to create a new app from scratch. It covers the full pattern: manifest, agent class, tools, vault file saving, and registration.
 
 ---
 
