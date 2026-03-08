@@ -4,16 +4,15 @@
  * All tool-facing operations go through this service.
  *
  * Used by: All TaskManager tools
- * Dependencies: ProjectRepository, TaskRepository, DAGService
+ * Dependencies: ProjectRepository, TaskRepository, IDAGService
  */
 
-import { v4 as uuidv4 } from 'uuid';
-import { DAGService } from './DAGService';
 import {
   Edge,
   TaskNode,
   DependencyTree,
   TaskWithBlockers,
+  IDAGService,
   CreateProjectData,
   UpdateProjectData,
   CreateTaskData,
@@ -33,7 +32,7 @@ export class TaskService {
   constructor(
     private projectRepo: IProjectRepository,
     private taskRepo: ITaskRepository,
-    private dagService: DAGService
+    private dagService: IDAGService
   ) {}
 
   // ────────────────────────────────────────────────────────────────
@@ -401,24 +400,29 @@ export class TaskService {
       }
     }
 
-    // Collect next actions (top 5) across all active projects
-    const nextActions: TaskMetadata[] = [];
-    for (const project of projects.items) {
-      if (project.status !== 'active') continue;
-      try {
-        const actions = await this.getNextActions(project.id);
-        nextActions.push(...actions);
-      } catch {
-        // Skip projects with issues
-      }
-    }
-    // Sort and limit
+    // Compute next actions in-memory from already-fetched workspace tasks.
+    // Fetch edges per active project in parallel (avoids N+1 sequential getNextActions calls
+    // that each re-fetched all tasks + edges independently).
+    const activeProjects = projects.items.filter(p => p.status === 'active');
+    const edgeArrays = await Promise.all(
+      activeProjects.map(p => this.taskRepo.getAllDependencyEdges(p.id))
+    );
+    const allEdges: Edge[] = edgeArrays.flat();
+
+    const activeProjectIds = new Set(activeProjects.map(p => p.id));
+    const activeTasks = allTasks.items.filter(t => activeProjectIds.has(t.projectId));
+    const nodes: TaskNode[] = activeTasks.map(t => ({ id: t.id, status: t.status }));
+    const readyNodes = this.dagService.getNextActions(nodes, allEdges);
+    const readyIds = new Set(readyNodes.map(n => n.id));
+
     const priorityOrder: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 };
-    nextActions.sort((a, b) => {
-      const pDiff = (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
-      return pDiff !== 0 ? pDiff : a.created - b.created;
-    });
-    const topNextActions = nextActions.slice(0, 5);
+    const topNextActions = activeTasks
+      .filter(t => readyIds.has(t.id))
+      .sort((a, b) => {
+        const pDiff = (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
+        return pDiff !== 0 ? pDiff : a.created - b.created;
+      })
+      .slice(0, 5);
 
     // Recently completed (last 5)
     const completed = allTasks.items

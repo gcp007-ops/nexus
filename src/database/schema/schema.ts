@@ -382,6 +382,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated);
 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(dueDate);
+CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(projectId, status);
 
 -- ==================== TASK DEPENDENCIES (DAG edges) ====================
 

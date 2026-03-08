@@ -334,6 +334,7 @@ export const MIGRATIONS: Migration[] = [
       'CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)',
       'CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated)',
       'CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(dueDate)',
+      'CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(projectId, status)',
       'CREATE INDEX IF NOT EXISTS idx_task_deps_task ON task_dependencies(taskId)',
       'CREATE INDEX IF NOT EXISTS idx_task_deps_depends ON task_dependencies(dependsOnTaskId)',
       'CREATE INDEX IF NOT EXISTS idx_task_links_note ON task_note_links(notePath)',

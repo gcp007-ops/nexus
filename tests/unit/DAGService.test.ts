@@ -287,6 +287,23 @@ describe('DAGService', () => {
       const sorted = dag.topologicalSort(tasks, []);
       expect(sorted).toHaveLength(100);
     });
+
+    it('should silently drop cyclic nodes (Kahn algorithm behavior)', () => {
+      // A->B->C->A forms a cycle; D is independent
+      const tasks = [makeNode('A'), makeNode('B'), makeNode('C'), makeNode('D')];
+      const edges = [
+        makeEdge('A', 'B'),
+        makeEdge('B', 'C'),
+        makeEdge('C', 'A')
+      ];
+      const sorted = dag.topologicalSort(tasks, edges);
+
+      // Kahn's algorithm only emits nodes whose in-degree reaches 0.
+      // A, B, C are in a cycle so none of them reach in-degree 0.
+      // Only D (independent, no edges) should appear in the result.
+      expect(sorted).toHaveLength(1);
+      expect(sorted[0].id).toBe('D');
+    });
   });
 
   // ============================================================================

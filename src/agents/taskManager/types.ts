@@ -6,48 +6,21 @@
  */
 
 import { CommonParameters, CommonResult } from '../../types';
+import type { TaskStatus } from '../../database/repositories/interfaces/ITaskRepository';
+import type { TaskMetadata } from '../../database/repositories/interfaces/ITaskRepository';
 
 // ────────────────────────────────────────────────────────────────
-// Enums / Literal Unions
+// Re-exported Entity Types (canonical source: repository interfaces)
 // ────────────────────────────────────────────────────────────────
 
+export type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
+export type { TaskMetadata } from '../../database/repositories/interfaces/ITaskRepository';
+
+// Re-export enum-like unions from repository interfaces as canonical source
+export type { TaskStatus, TaskPriority, LinkType } from '../../database/repositories/interfaces/ITaskRepository';
+
+// ProjectStatus is defined inline in IProjectRepository's ProjectMetadata, so we define it here
 export type ProjectStatus = 'active' | 'completed' | 'archived';
-export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
-export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
-export type LinkType = 'reference' | 'output' | 'input';
-
-// ────────────────────────────────────────────────────────────────
-// Core Entities
-// ────────────────────────────────────────────────────────────────
-
-export interface ProjectMetadata {
-  id: string;
-  workspaceId: string;
-  name: string;
-  description?: string;
-  status: ProjectStatus;
-  created: number;
-  updated: number;
-  metadata?: Record<string, unknown>;
-}
-
-export interface TaskMetadata {
-  id: string;
-  projectId: string;
-  workspaceId: string;
-  parentTaskId?: string;
-  title: string;
-  description?: string;
-  status: TaskStatus;
-  priority: TaskPriority;
-  created: number;
-  updated: number;
-  completedAt?: number;
-  dueDate?: number;
-  assignee?: string;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
-}
 
 // ────────────────────────────────────────────────────────────────
 // DAG Types
@@ -74,16 +47,9 @@ export interface TaskWithBlockers {
   blockedBy: TaskMetadata[];
 }
 
-// ────────────────────────────────────────────────────────────────
-// Note Links
-// ────────────────────────────────────────────────────────────────
-
-export interface NoteLink {
-  taskId: string;
-  notePath: string;
-  linkType: LinkType;
-  created: number;
-}
+// NoteLink is re-exported from ITaskRepository above via the LinkType re-export line.
+// Re-export it explicitly here for consumers importing from this file.
+export type { NoteLink } from '../../database/repositories/interfaces/ITaskRepository';
 
 // ────────────────────────────────────────────────────────────────
 // CRUD DTOs

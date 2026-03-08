@@ -313,7 +313,7 @@ export class TaskRepository
 
   async getByStatus(projectId: string, status: TaskStatus): Promise<TaskMetadata[]> {
     const rows = await this.sqliteCache.query<Record<string, unknown>>(
-      'SELECT * FROM tasks WHERE projectId = ? AND status = ? ORDER BY updated DESC',
+      'SELECT * FROM tasks WHERE projectId = ? AND status = ? ORDER BY updated DESC LIMIT 500',
       [projectId, status]
     );
     return rows.map(row => this.rowToEntity(row));
@@ -323,7 +323,8 @@ export class TaskRepository
     const rows = await this.sqliteCache.query<Record<string, unknown>>(
       `SELECT t.* FROM tasks t
        JOIN task_dependencies td ON td.dependsOnTaskId = t.id
-       WHERE td.taskId = ?`,
+       WHERE td.taskId = ?
+       LIMIT 500`,
       [taskId]
     );
     return rows.map(row => this.rowToEntity(row));
@@ -333,7 +334,8 @@ export class TaskRepository
     const rows = await this.sqliteCache.query<Record<string, unknown>>(
       `SELECT t.* FROM tasks t
        JOIN task_dependencies td ON td.taskId = t.id
-       WHERE td.dependsOnTaskId = ?`,
+       WHERE td.dependsOnTaskId = ?
+       LIMIT 500`,
       [taskId]
     );
     return rows.map(row => this.rowToEntity(row));
@@ -341,7 +343,7 @@ export class TaskRepository
 
   async getChildren(taskId: string): Promise<TaskMetadata[]> {
     const rows = await this.sqliteCache.query<Record<string, unknown>>(
-      'SELECT * FROM tasks WHERE parentTaskId = ? ORDER BY created ASC',
+      'SELECT * FROM tasks WHERE parentTaskId = ? ORDER BY created ASC LIMIT 500',
       [taskId]
     );
     return rows.map(row => this.rowToEntity(row));
@@ -363,7 +365,8 @@ export class TaskRepository
            WHEN 'medium' THEN 3
            WHEN 'low' THEN 4
          END,
-         t.created ASC`,
+         t.created ASC
+       LIMIT 500`,
       [projectId]
     );
     return rows.map(row => this.rowToEntity(row));
@@ -450,7 +453,8 @@ export class TaskRepository
     const rows = await this.sqliteCache.query<Record<string, unknown>>(
       `SELECT t.* FROM tasks t
        JOIN task_note_links tnl ON tnl.taskId = t.id
-       WHERE tnl.notePath = ?`,
+       WHERE tnl.notePath = ?
+       LIMIT 500`,
       [notePath]
     );
     return rows.map(row => this.rowToEntity(row));
@@ -526,7 +530,8 @@ export class TaskRepository
       `SELECT td.taskId, td.dependsOnTaskId
        FROM task_dependencies td
        JOIN tasks t ON t.id = td.taskId
-       WHERE t.projectId = ?`,
+       WHERE t.projectId = ?
+       LIMIT 500`,
       [projectId]
     );
     return rows.map(row => ({

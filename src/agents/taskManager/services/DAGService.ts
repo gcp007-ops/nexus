@@ -9,9 +9,6 @@
 import {
   Edge,
   TaskNode,
-  TaskMetadata,
-  DependencyTree,
-  TaskWithBlockers,
   IDAGService
 } from '../types';
 

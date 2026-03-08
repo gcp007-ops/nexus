@@ -447,4 +447,15 @@ describe('ProjectRepository', () => {
       expect(result!.metadata).toBeUndefined();
     });
   });
+
+  // ============================================================================
+  // JSONL Replay (F4)
+  // ============================================================================
+  // JSONL replay (rebuilding SQLite cache from event log) is handled by
+  // HybridStorageAdapter, which does not yet process task/project event types
+  // (task_created, project_created, etc.). Until replay logic is added for these
+  // new event types, JSONL replay testing is not applicable at the repository
+  // level. When HybridStorageAdapter is updated to replay task events, add
+  // integration tests verifying that a sequence of JSONL events produces the
+  // correct SQLite state.
 });

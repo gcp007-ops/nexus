@@ -458,6 +458,17 @@ describe('TaskService', () => {
       const updateCall = taskRepo.update.mock.calls[0][1];
       expect(updateCall.completedAt).toBeUndefined();
     });
+
+    it('should set completedAt when transitioning from cancelled to done', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask({ status: 'cancelled' }));
+
+      await service.updateTask('task-1', { status: 'done' });
+
+      expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        status: 'done',
+        completedAt: expect.any(Number)
+      }));
+    });
   });
 
   describe('moveTask', () => {
@@ -813,6 +824,7 @@ describe('TaskService', () => {
 
       projectRepo.getByWorkspace.mockResolvedValue(paginatedResult(projects));
       taskRepo.getByWorkspace.mockResolvedValue(paginatedResult([]));
+      taskRepo.getAllDependencyEdges.mockResolvedValue([]);
 
       const result = await service.getWorkspaceSummary('ws-1');
       expect(result.projects.active).toBe(1);
