@@ -7,15 +7,10 @@
  *
  * Uses generateContent() API with responseModalities: ['TEXT', 'IMAGE']
  *
- * MOBILE COMPATIBILITY (Dec 2025):
- * The @google/genai SDK uses gaxios which requires Node.js 'os' module.
- * SDK import is now lazy (dynamic) to avoid bundling Node.js dependencies.
+ * Uses the Gemini generateContent REST API directly.
  */
 
 import { TFile, Vault } from 'obsidian';
-
-// Type-only import for TypeScript (doesn't affect bundling)
-import type { GoogleGenAI as GoogleGenAIType } from '@google/genai';
 import { BaseImageAdapter } from '../BaseImageAdapter';
 import {
   ImageGenerationParams,
@@ -69,8 +64,6 @@ export class GeminiImageAdapter extends BaseImageAdapter {
   readonly supportedSizes: string[] = ['1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792'];
   readonly supportedFormats: string[] = ['png', 'jpeg', 'webp'];
 
-  private client: GoogleGenAIType | null = null;
-  private clientPromise: Promise<GoogleGenAIType> | null = null;
   private vault: Vault | null = null;
   private readonly defaultModel = 'gemini-2.5-flash-image';
 
@@ -96,25 +89,6 @@ export class GeminiImageAdapter extends BaseImageAdapter {
     }
 
     this.initializeCache();
-  }
-
-  /**
-   * Lazy-load the Google GenAI SDK to avoid bundling Node.js dependencies
-   */
-  private async getClient(): Promise<GoogleGenAIType> {
-    if (this.client) {
-      return this.client;
-    }
-
-    if (!this.clientPromise) {
-      this.clientPromise = (async () => {
-        const { GoogleGenAI } = await import('@google/genai');
-        this.client = new GoogleGenAI({ apiKey: this.apiKey });
-        return this.client;
-      })();
-    }
-
-    return this.clientPromise;
   }
 
   /**
@@ -161,15 +135,26 @@ export class GeminiImageAdapter extends BaseImageAdapter {
           config.imageConfig = imageConfig;
         }
 
-        // Call generateContent API
-        const client = await this.getClient();
-        const result = await client.models.generateContent({
-          model: model,
-          contents: contents,
-          config: config
+        const result = await this.request<GenerateContentResponseType>({
+          url: `${this.baseUrl}/models/${encodeURIComponent(model)}:generateContent`,
+          operation: 'image generation',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.apiKey
+          },
+          body: JSON.stringify({
+            contents,
+            generationConfig: {
+              responseModalities: config.responseModalities
+            },
+            imageConfig: config.imageConfig
+          }),
+          timeoutMs: 120_000
         });
 
-        return result;
+        this.assertOk(result, `Google image generation failed: HTTP ${result.status}`);
+        return result.json as GenerateContentResponseType;
       }, 2);
 
       return this.buildImageResponse(response, params);

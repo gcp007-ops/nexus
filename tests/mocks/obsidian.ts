@@ -95,6 +95,34 @@ export class App {
   }
 }
 
+export const Platform = {
+  isMobile: false,
+  isDesktop: true,
+  isIosApp: false,
+  isAndroidApp: false,
+  isMacOS: true,
+  isWin: false,
+  isLinux: false,
+};
+
+type RequestUrlImpl = (request: any) => Promise<any>;
+
+let requestUrlImpl: RequestUrlImpl = async () => ({
+  status: 200,
+  headers: {},
+  text: '',
+  json: {},
+  arrayBuffer: new ArrayBuffer(0)
+});
+
+export function __setRequestUrlMock(mock: RequestUrlImpl): void {
+  requestUrlImpl = mock;
+}
+
+export function requestUrl(request: any): Promise<any> {
+  return requestUrlImpl(request);
+}
+
 // Vault mock
 export class Vault {
   async read(): Promise<string> {

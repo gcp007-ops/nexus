@@ -13,6 +13,7 @@
  */
 
 import { IOAuthProvider, OAuthProviderConfig, OAuthResult } from '../IOAuthProvider';
+import { ProviderHttpClient } from '../../llm/adapters/shared/ProviderHttpClient';
 
 /** Public OAuth client ID shared across Codex CLI tools (Cline, OpenCode, Roo Code) */
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -177,7 +178,10 @@ export class OpenAICodexOAuthProvider implements IOAuthProvider {
     codeVerifier: string,
     callbackUrl: string
   ): Promise<OAuthResult> {
-    const response = await fetch(TOKEN_ENDPOINT, {
+    const response = await ProviderHttpClient.request<TokenResponse>({
+      url: TOKEN_ENDPOINT,
+      provider: 'openai-codex',
+      operation: 'Codex token exchange',
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -187,16 +191,19 @@ export class OpenAICodexOAuthProvider implements IOAuthProvider {
         redirect_uri: callbackUrl,
         code_verifier: codeVerifier,
       }).toString(),
+      timeoutMs: 30_000,
     });
 
     if (!response.ok) {
-      const body = await response.text();
       throw new Error(
-        `Codex token exchange failed: HTTP ${response.status} - ${body}`
+        `Codex token exchange failed: HTTP ${response.status} - ${response.text.slice(0, 200)}`
       );
     }
 
-    const tokens: TokenResponse = await response.json();
+    const tokens = response.json as TokenResponse | null;
+    if (!tokens) {
+      throw new Error('Codex token exchange returned no tokens');
+    }
     return tokenResponseToResult(tokens);
   }
 
@@ -209,7 +216,10 @@ export class OpenAICodexOAuthProvider implements IOAuthProvider {
    */
   async refreshToken(refreshToken: string): Promise<OAuthResult | null> {
     try {
-      const response = await fetch(TOKEN_ENDPOINT, {
+      const response = await ProviderHttpClient.request<TokenResponse>({
+        url: TOKEN_ENDPOINT,
+        provider: 'openai-codex',
+        operation: 'Codex token refresh',
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -217,6 +227,7 @@ export class OpenAICodexOAuthProvider implements IOAuthProvider {
           client_id: CLIENT_ID,
           refresh_token: refreshToken,
         }).toString(),
+        timeoutMs: 30_000,
       });
 
       if (!response.ok) {
@@ -224,7 +235,10 @@ export class OpenAICodexOAuthProvider implements IOAuthProvider {
         return null;
       }
 
-      const tokens: TokenResponse = await response.json();
+      const tokens = response.json as TokenResponse | null;
+      if (!tokens) {
+        return null;
+      }
       return tokenResponseToResult(tokens);
     } catch {
       // Network error or other failure -- user must re-authenticate

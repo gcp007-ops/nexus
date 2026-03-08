@@ -8,7 +8,6 @@
  * via ToolCallContentParser.
  */
 
-import { requestUrl } from 'obsidian';
 import { BaseAdapter } from '../BaseAdapter';
 import {
   GenerateOptions,
@@ -80,22 +79,18 @@ export class LMStudioAdapter extends BaseAdapter {
       }
     });
 
-    const response = await requestUrl({
+    const response = await this.request({
       url: `${this.serverUrl}/v1/chat/completions`,
+      operation: 'generation',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      timeoutMs: 60_000
     });
 
-    if (response.status !== 200) {
-      throw new LLMProviderError(
-        `LM Studio API error: ${response.status} - ${response.text || 'Unknown error'}`,
-        'generation',
-        'API_ERROR'
-      );
-    }
+    this.assertOk(response, `LM Studio API error: ${response.status} - ${response.text || 'Unknown error'}`);
 
-    const data = response.json;
+    const data = response.json as any;
 
     if (!data.choices || !data.choices[0]) {
       throw new LLMProviderError(
@@ -175,31 +170,30 @@ export class LMStudioAdapter extends BaseAdapter {
       }
     });
 
-    const response = await fetch(`${this.serverUrl}/v1/chat/completions`, {
+    // requestStream() throws on HTTP errors; no assertOk needed
+    const nodeStream = await this.requestStream({
+      url: `${this.serverUrl}/v1/chat/completions`,
+      operation: 'streaming generation',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      timeoutMs: 120_000
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new LLMProviderError(
-        `LM Studio API error: ${response.status} - ${errorText}`,
-        'streaming',
-        'API_ERROR'
-      );
-    }
 
     let accumulatedContent = '';
     let hasToolCallsFormat = false;
 
-    for await (const chunk of this.processSSEStream(response, {
-      debugLabel: 'LM Studio (legacy)',
+    for await (const chunk of this.processNodeStream(nodeStream, {
+      debugLabel: 'LM Studio',
       extractContent: (parsed) => parsed.choices?.[0]?.delta?.content || null,
       extractToolCalls: (parsed) => parsed.choices?.[0]?.delta?.tool_calls || null,
       extractFinishReason: (parsed) => parsed.choices?.[0]?.finish_reason || null,
       extractUsage: (parsed) => parsed.usage,
-      accumulateToolCalls: true
+      accumulateToolCalls: true,
+      toolCallThrottling: {
+        initialYield: true,
+        progressInterval: 50
+      }
     })) {
       if (chunk.content) {
         accumulatedContent += chunk.content;
@@ -309,9 +303,11 @@ export class LMStudioAdapter extends BaseAdapter {
   async listModels(): Promise<ModelInfo[]> {
     try {
       // Use Obsidian's requestUrl to bypass CORS
-      const response = await requestUrl({
+      const response = await this.request({
         url: `${this.serverUrl}/v1/models`,
-        method: 'GET'
+        operation: 'list models',
+        method: 'GET',
+        timeoutMs: 15_000
       });
 
       if (response.status !== 200) {
@@ -319,7 +315,7 @@ export class LMStudioAdapter extends BaseAdapter {
         return [];
       }
 
-      const data = response.json;
+      const data = response.json as any;
 
       if (!data.data || !Array.isArray(data.data)) {
         // Unexpected response format - silently return empty
@@ -358,6 +354,7 @@ export class LMStudioAdapter extends BaseAdapter {
   getCapabilities(): ProviderCapabilities {
     return {
       supportsStreaming: true,
+      streamingMode: 'streaming',
       supportsJSON: true, // Most models support JSON mode
       supportsImages: false, // Depends on specific model
       supportsFunctions: true, // Many models support function calling via OpenAI-compatible API
@@ -380,9 +377,11 @@ export class LMStudioAdapter extends BaseAdapter {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await requestUrl({
+      const response = await this.request({
         url: `${this.serverUrl}/v1/models`,
-        method: 'GET'
+        operation: 'availability check',
+        method: 'GET',
+        timeoutMs: 10_000
       });
       return response.status === 200;
     } catch (error) {

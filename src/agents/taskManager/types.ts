@@ -6,8 +6,9 @@
  */
 
 import { CommonParameters, CommonResult } from '../../types';
-import type { TaskStatus } from '../../database/repositories/interfaces/ITaskRepository';
+import type { TaskStatus, TaskPriority, LinkType } from '../../database/repositories/interfaces/ITaskRepository';
 import type { TaskMetadata } from '../../database/repositories/interfaces/ITaskRepository';
+import type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
 
 // ────────────────────────────────────────────────────────────────
 // Re-exported Entity Types (canonical source: repository interfaces)

@@ -721,13 +721,17 @@ export class ChatView extends ItemView {
     enhancement?: MessageEnhancement,
     metadata?: ReferenceMetadata
   ): Promise<void> {
-    const currentConversation = this.conversationManager.getCurrentConversation();
-
-    if (!currentConversation) {
-      return;
-    }
-
     try {
+      if (this.messageManager.getIsLoading()) {
+        await this.messageManager.interruptCurrentGeneration();
+      }
+
+      const currentConversation = this.conversationManager.getCurrentConversation();
+
+      if (!currentConversation) {
+        return;
+      }
+
       if (enhancement) {
         this.modelAgentManager.setMessageEnhancement(enhancement);
       }
@@ -857,7 +861,7 @@ export class ChatView extends ItemView {
   }
 
   private handleStopGeneration(): void {
-    this.messageManager.cancelCurrentGeneration();
+    void this.messageManager.cancelCurrentGeneration();
   }
 
   private handleGenerationAborted(messageId: string, _partialContent: string): void {

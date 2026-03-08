@@ -128,7 +128,9 @@ export class OpenRouterImageAdapter extends BaseImageAdapter {
           };
         }
 
-        const result = await fetch(`${this.baseUrl}/chat/completions`, {
+        const result = await this.request({
+          url: `${this.baseUrl}/chat/completions`,
+          operation: 'image generation',
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -136,15 +138,12 @@ export class OpenRouterImageAdapter extends BaseImageAdapter {
             'HTTP-Referer': this.httpReferer,
             'X-Title': this.xTitle
           },
-          body: JSON.stringify(requestBody)
+          body: JSON.stringify(requestBody),
+          timeoutMs: 120_000
         });
 
-        if (!result.ok) {
-          const errorBody = await result.text();
-          throw new Error(`HTTP ${result.status}: ${result.statusText} - ${errorBody}`);
-        }
-
-        return await result.json();
+        this.assertOk(result, `OpenRouter image generation failed: HTTP ${result.status}`);
+        return result.json;
       }, 2);
 
       return this.buildImageResponse(response, params);

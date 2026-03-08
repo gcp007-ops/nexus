@@ -154,7 +154,7 @@ export const getMobileUnavailableFeatures = (): string[] => {
         'MCP Server (Claude Desktop bridge)',
         'Local LLM providers (Ollama, LM Studio)',
         'WebLLM/Nexus local models',
-        'SDK-based providers (OpenAI, Anthropic, Google, Mistral, Groq)',
+        'ChatGPT Codex OAuth provider',
     ];
 };
 
@@ -163,22 +163,21 @@ export const getMobileUnavailableFeatures = (): string[] => {
  * These providers make direct HTTP requests without SDK dependencies.
  */
 export const MOBILE_COMPATIBLE_PROVIDERS = [
+    'openai',       // Uses requestUrl-backed REST transport
+    'anthropic',    // Uses requestUrl-backed REST transport
+    'google',       // Uses requestUrl-backed REST transport
+    'mistral',      // Uses requestUrl-backed REST transport
+    'groq',         // Uses requestUrl-backed REST transport
     'openrouter',   // Uses fetch - 400+ models via unified API
     'requesty',     // Uses fetch - Router for multiple providers
     'perplexity',   // Uses fetch - Web search focused
 ] as const;
 
 /**
- * LLM providers that require Node.js SDKs (desktop only)
- * These use official SDK packages that have Node.js dependencies.
+ * Providers that remain desktop only due to local runtime or desktop-specific OAuth.
  */
 export const DESKTOP_ONLY_PROVIDERS = [
-    'openai-codex',  // Uses OAuth/JWT - desktop only
-    'openai',       // Uses openai SDK
-    'anthropic',    // Uses @anthropic-ai/sdk
-    'google',       // Uses @google/genai
-    'mistral',      // Uses @mistralai/mistralai
-    'groq',         // Uses groq-sdk
+    'openai-codex',  // OAuth callback server remains desktop only
     'ollama',       // Local server - desktop only
     'lmstudio',     // Local server - desktop only
     'webllm',       // WebGPU - disabled due to bugs

@@ -9,11 +9,10 @@
  * - Token refresh
  */
 
+import { __setRequestUrlMock } from 'obsidian';
 import { OpenAICodexOAuthProvider } from '../../src/services/oauth/providers/OpenAICodexOAuthProvider';
 
-// Mock global fetch
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
+const mockRequestUrl = jest.fn();
 
 /** Helper: create a mock JWT with given claims payload */
 function createMockJwt(claims: Record<string, unknown>): string {
@@ -35,6 +34,7 @@ describe('OpenAICodexOAuthProvider', () => {
   beforeEach(() => {
     provider = new OpenAICodexOAuthProvider();
     jest.clearAllMocks();
+    __setRequestUrlMock(mockRequestUrl);
   });
 
   describe('config', () => {
@@ -152,27 +152,34 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should POST form-urlencoded to token endpoint', async () => {
       const idToken = createMockJwt({ chatgpt_account_id: 'acct-123' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-xyz',
           refresh_token: 'rt-abc',
           id_token: idToken,
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'at-xyz',
+          refresh_token: 'rt-abc',
+          id_token: idToken,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await provider.exchangeCode('auth-code', 'verifier-123', callbackUrl);
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://auth.openai.com/oauth/token',
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        })
-      );
+      expect(mockRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        url: 'https://auth.openai.com/oauth/token',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        throw: false,
+      }));
 
-      const body = new URLSearchParams(mockFetch.mock.calls[0][1].body);
+      const body = new URLSearchParams(mockRequestUrl.mock.calls[0][0].body);
       expect(body.get('grant_type')).toBe('authorization_code');
       expect(body.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
       expect(body.get('code')).toBe('auth-code');
@@ -182,14 +189,22 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should return OAuthResult with access_token as apiKey', async () => {
       const idToken = createMockJwt({ chatgpt_account_id: 'acct-456' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-my-token',
           refresh_token: 'rt-my-refresh',
           id_token: idToken,
           expires_in: 7200,
         }),
+        json: {
+          access_token: 'at-my-token',
+          refresh_token: 'rt-my-refresh',
+          id_token: idToken,
+          expires_in: 7200,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -201,14 +216,22 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should extract accountId from id_token chatgpt_account_id claim', async () => {
       const idToken = createMockJwt({ chatgpt_account_id: 'acct-from-id-token' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-1',
           refresh_token: 'rt-1',
           id_token: idToken,
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'at-1',
+          refresh_token: 'rt-1',
+          id_token: idToken,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -220,14 +243,22 @@ describe('OpenAICodexOAuthProvider', () => {
       const idToken = createMockJwt({
         'https://api.openai.com/auth': { chatgpt_account_id: 'nested-acct-id' },
       });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-2',
           refresh_token: 'rt-2',
           id_token: idToken,
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'at-2',
+          refresh_token: 'rt-2',
+          id_token: idToken,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -239,14 +270,22 @@ describe('OpenAICodexOAuthProvider', () => {
       const idToken = createMockJwt({
         organizations: [{ id: 'org-abc-123' }],
       });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-3',
           refresh_token: 'rt-3',
           id_token: idToken,
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'at-3',
+          refresh_token: 'rt-3',
+          id_token: idToken,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -257,14 +296,22 @@ describe('OpenAICodexOAuthProvider', () => {
     it('should fall back to access_token for accountId when id_token has no account info', async () => {
       const idTokenWithoutAccount = createMockJwt({ email: 'user@example.com' });
       const accessTokenWithAccount = createMockJwt({ chatgpt_account_id: 'acct-from-at' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: accessTokenWithAccount,
           refresh_token: 'rt-4',
           id_token: idTokenWithoutAccount,
           expires_in: 3600,
         }),
+        json: {
+          access_token: accessTokenWithAccount,
+          refresh_token: 'rt-4',
+          id_token: idTokenWithoutAccount,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -274,14 +321,22 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should NOT include idToken in metadata (PII prevention)', async () => {
       const idToken = createMockJwt({ chatgpt_account_id: 'acct-x' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-5',
           refresh_token: 'rt-5',
           id_token: idToken,
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'at-5',
+          refresh_token: 'rt-5',
+          id_token: idToken,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -294,14 +349,20 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should default expires_in to 3600 when not provided', async () => {
       const idToken = createMockJwt({});
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-6',
           refresh_token: 'rt-6',
           id_token: idToken,
-          // No expires_in
         }),
+        json: {
+          access_token: 'at-6',
+          refresh_token: 'rt-6',
+          id_token: idToken,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const beforeTime = Date.now();
@@ -314,10 +375,12 @@ describe('OpenAICodexOAuthProvider', () => {
     });
 
     it('should throw on HTTP error response', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
+      mockRequestUrl.mockResolvedValue({
         status: 401,
-        text: async () => 'Unauthorized',
+        headers: {},
+        text: 'Unauthorized',
+        json: null,
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await expect(
@@ -326,14 +389,22 @@ describe('OpenAICodexOAuthProvider', () => {
     });
 
     it('should handle invalid JWT in id_token gracefully', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'at-7',
           refresh_token: 'rt-7',
           id_token: 'not-a-jwt',
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'at-7',
+          refresh_token: 'rt-7',
+          id_token: 'not-a-jwt',
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       // Should not throw -- just won't extract accountId
@@ -345,14 +416,22 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should handle missing id_token by trying access_token', async () => {
       const accessTokenWithAccount = createMockJwt({ chatgpt_account_id: 'acct-at-only' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: accessTokenWithAccount,
           refresh_token: 'rt-8',
           id_token: '',
           expires_in: 3600,
         }),
+        json: {
+          access_token: accessTokenWithAccount,
+          refresh_token: 'rt-8',
+          id_token: '',
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', callbackUrl);
@@ -363,27 +442,34 @@ describe('OpenAICodexOAuthProvider', () => {
   describe('refreshToken', () => {
     it('should POST form-urlencoded with refresh_token grant type', async () => {
       const idToken = createMockJwt({ chatgpt_account_id: 'acct-r1' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'new-at',
           refresh_token: 'new-rt',
           id_token: idToken,
           expires_in: 3600,
         }),
+        json: {
+          access_token: 'new-at',
+          refresh_token: 'new-rt',
+          id_token: idToken,
+          expires_in: 3600,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await provider.refreshToken!('old-refresh-token');
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://auth.openai.com/oauth/token',
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        })
-      );
+      expect(mockRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        url: 'https://auth.openai.com/oauth/token',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        throw: false,
+      }));
 
-      const body = new URLSearchParams(mockFetch.mock.calls[0][1].body);
+      const body = new URLSearchParams(mockRequestUrl.mock.calls[0][0].body);
       expect(body.get('grant_type')).toBe('refresh_token');
       expect(body.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
       expect(body.get('refresh_token')).toBe('old-refresh-token');
@@ -391,14 +477,22 @@ describe('OpenAICodexOAuthProvider', () => {
 
     it('should return new OAuthResult with refreshed tokens', async () => {
       const idToken = createMockJwt({ chatgpt_account_id: 'acct-r2' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
           access_token: 'refreshed-at',
           refresh_token: 'rotated-rt',
           id_token: idToken,
           expires_in: 7200,
         }),
+        json: {
+          access_token: 'refreshed-at',
+          refresh_token: 'rotated-rt',
+          id_token: idToken,
+          expires_in: 7200,
+        },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.refreshToken!('old-rt');
@@ -410,10 +504,12 @@ describe('OpenAICodexOAuthProvider', () => {
     });
 
     it('should return null on HTTP error', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
+      mockRequestUrl.mockResolvedValue({
         status: 400,
-        text: async () => 'Invalid grant',
+        headers: {},
+        text: 'Invalid grant',
+        json: null,
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.refreshToken!('expired-rt');
@@ -421,7 +517,7 @@ describe('OpenAICodexOAuthProvider', () => {
     });
 
     it('should return null on network error', async () => {
-      mockFetch.mockRejectedValue(new Error('Network error'));
+      mockRequestUrl.mockRejectedValue(new Error('Network error'));
 
       const result = await provider.refreshToken!('some-rt');
       expect(result).toBeNull();

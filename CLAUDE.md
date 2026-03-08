@@ -461,6 +461,10 @@ agents/
 | **#24** | Socket lifecycle fix (DylanLacey) | Transport fix in main (v4.3.2); mux awaiting contributor socket path fix |
 
 ### Current Work
+**SDK→HTTP Migration** (uncommitted on `main`): Removing provider SDKs (OpenAI, Anthropic, Google, Groq, Mistral) in favor of direct HTTP via shared `ProviderHttpClient` + `requestUrl`. 38 files, -5100/+2200 lines. Code review complete — fixing findings before commit.
+
+Key new files: `src/services/llm/adapters/shared/ProviderHttpClient.ts`, `src/services/llm/streaming/BufferedSSEStreamProcessor.ts`
+
 **PR #23 — plugin store compliance** (`fix/plugin-store-audit-fixes`): ready to merge, needs manual test
 **PR (untracked) — subagent fixes** (`fix/subagent-bugs`): 29 fixes, 372 tests passing, awaiting manual test
 
@@ -535,7 +539,7 @@ A branch IS a conversation with parent metadata:
 - **Services**: Singletons with dependency injection via constructor
 
 ### Dependencies
-See `package.json`. Key: MCP SDK, LLM provider SDKs (Anthropic, OpenAI, Google, Groq), express, winston, uuid.
+See `package.json`. Key: MCP SDK, express, winston, uuid. LLM provider SDKs removed — direct HTTP via ProviderHttpClient.
 
 ## Code Quality
 
@@ -610,7 +614,7 @@ Key files: `src/ui/chat/components/suggesters/`, `MessageEnhancer.ts`, `SystemPr
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 64cce981-8f72-4a42-894d-4b97906295b4`
-- Team: `pact-64cce981`
-- Started: 2026-03-08 16:15:38 UTC
+- Resume: `claude --resume aff386b2-653c-4a1d-8517-4f23ede71cca`
+- Team: `pact-aff386b2`
+- Started: 2026-03-08 19:06:45 UTC
 <!-- SESSION_END -->

@@ -8,11 +8,10 @@
  * - Pre-auth parameter handling
  */
 
+import { __setRequestUrlMock } from 'obsidian';
 import { OpenRouterOAuthProvider } from '../../src/services/oauth/providers/OpenRouterOAuthProvider';
 
-// Mock global fetch
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
+const mockRequestUrl = jest.fn();
 
 describe('OpenRouterOAuthProvider', () => {
   let provider: OpenRouterOAuthProvider;
@@ -20,6 +19,7 @@ describe('OpenRouterOAuthProvider', () => {
   beforeEach(() => {
     provider = new OpenRouterOAuthProvider();
     jest.clearAllMocks();
+    __setRequestUrlMock(mockRequestUrl);
   });
 
   describe('config', () => {
@@ -147,31 +147,36 @@ describe('OpenRouterOAuthProvider', () => {
 
   describe('exchangeCode', () => {
     it('should POST to token URL with correct JSON body', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ key: 'sk-or-v1-test-key' }),
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({ key: 'sk-or-v1-test-key' }),
+        json: { key: 'sk-or-v1-test-key' },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await provider.exchangeCode('auth-code-123', 'verifier-abc', 'http://127.0.0.1:3000/callback');
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://openrouter.ai/api/v1/auth/keys',
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        })
-      );
+      expect(mockRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        url: 'https://openrouter.ai/api/v1/auth/keys',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        throw: false,
+      }));
 
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      const body = JSON.parse(mockRequestUrl.mock.calls[0][0].body);
       expect(body.code).toBe('auth-code-123');
       expect(body.code_verifier).toBe('verifier-abc');
       expect(body.code_challenge_method).toBe('S256');
     });
 
     it('should return OAuthResult with the API key', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ key: 'sk-or-v1-my-key' }),
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({ key: 'sk-or-v1-my-key' }),
+        json: { key: 'sk-or-v1-my-key' },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       const result = await provider.exchangeCode('code', 'verifier', 'http://localhost:3000/callback');
@@ -183,10 +188,12 @@ describe('OpenRouterOAuthProvider', () => {
     });
 
     it('should throw on HTTP error response', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
+      mockRequestUrl.mockResolvedValue({
         status: 400,
-        text: async () => 'Invalid code',
+        headers: {},
+        text: 'Invalid code',
+        json: null,
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await expect(
@@ -195,9 +202,12 @@ describe('OpenRouterOAuthProvider', () => {
     });
 
     it('should throw when response has no key', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({}),
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: '{}',
+        json: {},
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await expect(
@@ -206,9 +216,12 @@ describe('OpenRouterOAuthProvider', () => {
     });
 
     it('should throw when response key is empty string', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ key: '' }),
+      mockRequestUrl.mockResolvedValue({
+        status: 200,
+        headers: {},
+        text: JSON.stringify({ key: '' }),
+        json: { key: '' },
+        arrayBuffer: new ArrayBuffer(0),
       });
 
       await expect(

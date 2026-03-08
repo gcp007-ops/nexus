@@ -15,7 +15,7 @@
  * - Token refresh: proactive refresh when access_token nears expiry
  * - Cost: $0 (subscription-based, not per-token)
  *
- * Desktop only: uses Node.js https module to bypass browser CORS restrictions.
+ * Desktop only: uses OAuth callback server integration, but outbound requests use requestUrl.
  *
  * Used by: AdapterRegistry (initializes this adapter when openai-codex is
  * enabled with OAuth state), StreamingOrchestrator (for streaming inference).
@@ -124,9 +124,8 @@ export class OpenAICodexAdapter extends BaseAdapter {
    * Updates internal state and invokes the persistence callback.
    *
    * NOTE: This duplicates the refresh logic in OpenAICodexOAuthProvider.refreshToken().
-   * The duplication is intentional — the OAuthProvider uses fetch() (fine for the
-   * initial OAuth UI flow), while the adapter must use Node.js https to bypass
-   * CORS restrictions in Electron's renderer process during inference.
+   * The duplication is intentional so the adapter can refresh tokens during
+   * inference without depending on the OAuth UI flow implementation.
    */
   private async performTokenRefresh(): Promise<void> {
     const body = new URLSearchParams({
@@ -135,53 +134,29 @@ export class OpenAICodexAdapter extends BaseAdapter {
       refresh_token: this.tokens.refreshToken
     });
 
-    // Use Node.js https to bypass browser CORS restrictions
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const httpsModule = require('https') as typeof import('https');
-    const bodyStr = body.toString();
-    const parsedUrl = new URL(OAUTH_TOKEN_ENDPOINT);
+    const response = await this.request<Record<string, unknown>>({
+      url: OAUTH_TOKEN_ENDPOINT,
+      operation: 'token refresh',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString(),
+      timeoutMs: TOKEN_REFRESH_TIMEOUT_MS
+    });
 
-    const { statusCode, data } = await new Promise<{ statusCode: number; data: string }>(
-      (resolve, reject) => {
-        let responseData = '';
-        const req = httpsModule.request(
-          {
-            hostname: parsedUrl.hostname,
-            path: parsedUrl.pathname,
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'Content-Length': Buffer.byteLength(bodyStr)
-            }
-          },
-          (res) => {
-            res.on('data', (chunk: Buffer) => { responseData += chunk.toString(); });
-            res.on('end', () => resolve({ statusCode: res.statusCode ?? 0, data: responseData }));
-          }
-        );
-        req.setTimeout(TOKEN_REFRESH_TIMEOUT_MS, () => {
-          req.destroy(new Error('Token refresh request timed out'));
-        });
-        req.on('error', reject);
-        req.write(bodyStr);
-        req.end();
-      }
-    );
-
-    if (statusCode < 200 || statusCode >= 300) {
+    if (!response.ok) {
       throw new LLMProviderError(
-        `Token refresh failed (HTTP ${statusCode}): ${data}`,
+        `Token refresh failed (HTTP ${response.status}): ${response.text.slice(0, 200)}`,
         this.name,
         'AUTHENTICATION_ERROR'
       );
     }
 
-    let tokenData: Record<string, unknown>;
-    try {
-      tokenData = JSON.parse(data);
-    } catch {
+    const tokenData = response.json;
+    if (!tokenData) {
       throw new LLMProviderError(
-        `Token refresh returned malformed response: ${data.slice(0, 200)}`,
+        `Token refresh returned malformed response: ${response.text.slice(0, 200)}`,
         this.name,
         'AUTHENTICATION_ERROR'
       );
@@ -355,236 +330,21 @@ export class OpenAICodexAdapter extends BaseAdapter {
 
       }
 
-      // Use Node.js https to bypass browser CORS restrictions
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const httpsModule = require('https') as typeof import('https');
-      const bodyStr = JSON.stringify(requestBody);
-      const headers = this.buildCodexHeaders();
-      const parsedUrl = new URL(CODEX_API_ENDPOINT);
-
-      const { statusCode, nodeRes } = await new Promise<{
-        statusCode: number;
-        nodeRes: import('http').IncomingMessage;
-      }>((resolve, reject) => {
-        const req = httpsModule.request(
-          {
-            hostname: parsedUrl.hostname,
-            path: parsedUrl.pathname,
-            method: 'POST',
-            headers: { ...headers, 'Content-Length': Buffer.byteLength(bodyStr) }
-          },
-          (res) => resolve({ statusCode: res.statusCode ?? 0, nodeRes: res })
-        );
-        req.setTimeout(STREAMING_REQUEST_TIMEOUT_MS, () => {
-          req.destroy(new Error('Codex streaming request timed out'));
-        });
-        req.on('error', reject);
-        req.write(bodyStr);
-        req.end();
+      // requestStream() throws ProviderHttpError for non-2xx, caught by handleError below
+      const nodeStream = await this.requestStream({
+        url: CODEX_API_ENDPOINT,
+        operation: 'streaming generation',
+        method: 'POST',
+        headers: this.buildCodexHeaders(),
+        body: JSON.stringify(requestBody),
+        timeoutMs: STREAMING_REQUEST_TIMEOUT_MS
       });
 
-      // Error handling for non-2xx responses
-      if (statusCode >= 400) {
-        // Use event-listener pattern instead of async iteration — async iteration on
-        // Node.js IncomingMessage hangs in Electron's renderer process
-        const errorBody = await new Promise<string>((resolve, reject) => {
-          let data = '';
-          nodeRes.on('data', (c: Buffer) => { data += c.toString(); });
-          nodeRes.on('end', () => resolve(data));
-          nodeRes.on('error', reject);
-        });
-
-        // Detect expired/invalid token specifically
-        if (statusCode === 401 || statusCode === 403) {
-          throw new LLMProviderError(
-            `Codex API authentication failed (HTTP ${statusCode}). Token may be expired or revoked. Please reconnect via OAuth.`,
-            this.name,
-            'AUTHENTICATION_ERROR'
-          );
-        }
-
-        // Rate limit — throw specific code so StreamingOrchestrator can fall back
-        if (statusCode === 429) {
-          throw new LLMProviderError(
-            `Codex rate limited (HTTP 429). ${errorBody}`,
-            this.name,
-            'RATE_LIMIT_ERROR'
-          );
-        }
-
-        throw new LLMProviderError(
-          `Codex API error (HTTP ${statusCode}): ${errorBody}`,
-          this.name,
-          'HTTP_ERROR'
-        );
-      }
-
-      // Parse SSE stream from the Node.js IncomingMessage
-      // The Codex API returns SSE with data: {json} lines containing
-      // response events in the Responses API format.
-      yield* this.parseNodeSSEStream(nodeRes);
+      yield* this.processCodexNodeStream(nodeStream);
 
     } catch (error) {
       throw this.handleError(error, 'streaming generation');
     }
-  }
-
-  /**
-   * Parse a Codex SSE stream from a Node.js IncomingMessage.
-   *
-   * The Codex Responses API emits events like:
-   *   data: {"type":"response.output_text.delta","delta":{"text":"Hello"}}
-   *   data: {"type":"response.output_text.done","text":"Hello world"}
-   *   data: {"type":"response.completed",...}
-   *   data: [DONE]
-   *
-   * We extract text deltas and yield StreamChunks.
-   */
-  private async* parseNodeSSEStream(
-    nodeRes: import('http').IncomingMessage
-  ): AsyncGenerator<StreamChunk, void, unknown> {
-    let buffer = '';
-    const toolCallsMap = new Map<number, ToolCall>();
-    let currentResponseId: string | undefined;
-
-    // Use event-listener queue instead of async iteration — async iteration on
-    // Node.js IncomingMessage hangs in Electron's renderer process
-    const chunkQueue: string[] = [];
-    let streamEnded = false;
-    let streamError: Error | null = null;
-    let chunkWaiter: (() => void) | null = null;
-
-    const notifyWaiter = () => {
-      if (chunkWaiter) {
-        const resolve = chunkWaiter;
-        chunkWaiter = null;
-        resolve();
-      }
-    };
-
-    nodeRes.on('data', (chunk: Buffer) => {
-      chunkQueue.push(chunk.toString());
-      notifyWaiter();
-    });
-    nodeRes.on('end', () => {
-      streamEnded = true;
-      notifyWaiter();
-    });
-    nodeRes.on('error', (err: Error) => {
-      streamError = err;
-      notifyWaiter();
-    });
-
-    while (!streamEnded || chunkQueue.length > 0) {
-      if (streamError) throw streamError;
-      if (chunkQueue.length === 0) {
-        await new Promise<void>(resolve => { chunkWaiter = resolve; });
-        continue;
-      }
-      const rawChunk = chunkQueue.shift()!;
-      buffer += rawChunk;
-
-      // Process complete lines from the buffer
-      const lines = buffer.split('\n');
-      // Keep the last (potentially incomplete) line in the buffer
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-
-        if (!trimmed || trimmed.startsWith(':')) {
-          // Empty line or SSE comment — skip
-          continue;
-        }
-
-        if (!trimmed.startsWith('data: ')) {
-          continue;
-        }
-
-        const jsonStr = trimmed.slice(6).trim();
-
-        if (jsonStr === '[DONE]') {
-          const finalToolCalls = toolCallsMap.size > 0 ? Array.from(toolCallsMap.values()) : undefined;
-          const metadata = currentResponseId ? { responseId: currentResponseId } : undefined;
-          yield {
-            content: '',
-            complete: true,
-            toolCalls: finalToolCalls,
-            toolCallsReady: finalToolCalls ? true : undefined,
-            metadata
-          };
-          return;
-        }
-
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(jsonStr);
-        } catch {
-          // Malformed JSON — skip this line
-          continue;
-        }
-
-        const eventType = event.type as string | undefined;
-
-        // Capture response ID for stateful continuations (Responses API)
-        const responseObj = event.response as Record<string, unknown> | undefined;
-        if (responseObj?.id && typeof responseObj.id === 'string' && !currentResponseId) {
-          currentResponseId = responseObj.id;
-        }
-
-        // Accumulate completed function calls
-        if (eventType === 'response.output_item.done') {
-          const item = event.item as Record<string, unknown> | undefined;
-          if (item && item.type === 'function_call') {
-            const index = (event.output_index as number) || 0;
-            toolCallsMap.set(index, {
-              id: (item.call_id as string) || (item.id as string) || '',
-              type: 'function',
-              function: {
-                name: (item.name as string) || '',
-                arguments: (item.arguments as string) || '{}'
-              }
-            });
-          }
-        }
-
-        // Arguments are streamed incrementally; we capture the complete call in output_item.done
-        if (eventType === 'response.function_call_arguments.delta') {
-          continue;
-        }
-
-        // Extract text delta from various event shapes
-        const delta = this.extractDeltaText(event);
-        if (delta) {
-          yield { content: delta, complete: false };
-        }
-
-        // Detect completion event
-        if (eventType === 'response.completed' || eventType === 'response.done') {
-          const finalToolCalls = toolCallsMap.size > 0 ? Array.from(toolCallsMap.values()) : undefined;
-          const metadata = currentResponseId ? { responseId: currentResponseId } : undefined;
-          yield {
-            content: '',
-            complete: true,
-            toolCalls: finalToolCalls,
-            toolCallsReady: finalToolCalls ? true : undefined,
-            metadata
-          };
-          return;
-        }
-      }
-    }
-
-    // If stream ended without explicit [DONE], emit completion
-    const finalToolCalls = toolCallsMap.size > 0 ? Array.from(toolCallsMap.values()) : undefined;
-    const metadata = currentResponseId ? { responseId: currentResponseId } : undefined;
-    yield {
-      content: '',
-      complete: true,
-      toolCalls: finalToolCalls,
-      toolCallsReady: finalToolCalls ? true : undefined,
-      metadata
-    };
   }
 
   /**
@@ -621,6 +381,110 @@ export class OpenAICodexAdapter extends BaseAdapter {
   }
 
   /**
+   * Process Codex Responses API events from a Node.js readable stream.
+   * Reads SSE events incrementally as they arrive from the wire.
+   * Uses the same Responses API event format as OpenAI (not Chat Completions).
+   */
+  private async* processCodexNodeStream(nodeStream: NodeJS.ReadableStream): AsyncGenerator<StreamChunk, void, unknown> {
+    const { createParser } = await import('eventsource-parser');
+
+    const eventQueue: StreamChunk[] = [];
+    const toolCallsMap = new Map<number, any>();
+    let currentResponseId: string | null = null;
+    let isCompleted = false;
+
+    const parser = createParser((sseEvent) => {
+      if (sseEvent.type === 'reconnect-interval' || isCompleted) return;
+      if (sseEvent.data === '[DONE]') {
+        isCompleted = true;
+        return;
+      }
+
+      let event: Record<string, any>;
+      try {
+        event = JSON.parse(sseEvent.data);
+      } catch {
+        return;
+      }
+
+      if (event.response?.id && !currentResponseId) {
+        currentResponseId = event.response.id;
+      }
+
+      switch (event.type) {
+        case 'response.output_text.delta':
+          // Text delta — extractDeltaText handles all shapes
+          {
+            const text = this.extractDeltaText(event);
+            if (text) {
+              eventQueue.push({ content: text, complete: false });
+            }
+          }
+          break;
+
+        case 'response.output_item.done':
+          // Completed item — may be a function_call
+          if (event.item?.type === 'function_call') {
+            toolCallsMap.set(event.output_index || 0, {
+              id: event.item.call_id || event.item.id || '',
+              type: 'function',
+              function: {
+                name: event.item.name || '',
+                arguments: event.item.arguments || '{}'
+              }
+            });
+          }
+          break;
+
+        case 'response.done':
+        case 'response.completed': {
+          const metadata = currentResponseId ? { responseId: currentResponseId } : undefined;
+          const toolCallsArray = Array.from(toolCallsMap.values());
+          eventQueue.push({
+            content: '',
+            complete: true,
+            toolCalls: toolCallsArray.length > 0 ? toolCallsArray : undefined,
+            toolCallsReady: toolCallsArray.length > 0,
+            metadata
+          });
+          isCompleted = true;
+          break;
+        }
+
+        default:
+          // Other Responses API events (function_call_arguments.delta, etc.) — no action needed
+          break;
+      }
+    });
+
+    try {
+      for await (const chunk of nodeStream as AsyncIterable<Buffer>) {
+        if (isCompleted) break;
+        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+        parser.feed(text);
+
+        while (eventQueue.length > 0) {
+          const evt = eventQueue.shift()!;
+          yield evt;
+          if (evt.complete) { isCompleted = true; break; }
+        }
+      }
+
+      // Drain remaining events
+      while (eventQueue.length > 0) {
+        yield eventQueue.shift()!;
+      }
+
+      if (!isCompleted) {
+        yield { content: '', complete: true };
+      }
+    } catch (error) {
+      console.error('[OpenAICodexAdapter] Error processing Codex stream:', error);
+      throw error;
+    }
+  }
+
+  /**
    * List available Codex models from the static model registry.
    */
   async listModels(): Promise<ModelInfo[]> {
@@ -634,6 +498,7 @@ export class OpenAICodexAdapter extends BaseAdapter {
   getCapabilities(): ProviderCapabilities {
     return {
       supportsStreaming: true,
+      streamingMode: 'streaming',
       supportsJSON: true,
       supportsImages: true,
       supportsFunctions: true,

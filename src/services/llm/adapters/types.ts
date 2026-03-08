@@ -159,6 +159,7 @@ export interface ProviderConfig {
 
 export interface ProviderCapabilities {
   supportsStreaming: boolean;
+  streamingMode?: 'streaming' | 'live' | 'buffered' | 'none';
   supportsJSON: boolean;
   supportsImages: boolean;
   supportsFunctions: boolean;

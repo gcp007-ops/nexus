@@ -76,7 +76,9 @@ export class OpenRouterAdapter extends BaseAdapter {
         usage: { include: true } // Enable token usage and cost tracking
       };
 
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const response = await this.request<any>({
+        url: `${this.baseUrl}/chat/completions`,
+        operation: 'generation',
         method: 'POST',
         headers: {
           ...this.buildHeaders(),
@@ -84,14 +86,13 @@ export class OpenRouterAdapter extends BaseAdapter {
           'HTTP-Referer': this.httpReferer,
           'X-Title': this.xTitle
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        timeoutMs: 60_000
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      this.assertOk(response, `OpenRouter generation failed: HTTP ${response.status}`);
 
-      const data = await response.json();
+      const data = response.json;
 
       const text = data.choices[0]?.message?.content || '';
       const usage = this.extractUsage(data);
@@ -152,7 +153,9 @@ export class OpenRouterAdapter extends BaseAdapter {
         ...ReasoningPreserver.getReasoningRequestParams(baseModel, 'openrouter', hasTools || false)
       };
 
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const nodeStream = await this.requestStream({
+        url: `${this.baseUrl}/chat/completions`,
+        operation: 'streaming generation',
         method: 'POST',
         headers: {
           ...this.buildHeaders(),
@@ -160,13 +163,9 @@ export class OpenRouterAdapter extends BaseAdapter {
           'HTTP-Referer': this.httpReferer,
           'X-Title': this.xTitle
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        timeoutMs: 120_000
       });
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorBody}`);
-      }
 
       // Track generation ID for async usage retrieval
       let generationId: string | null = null;
@@ -178,8 +177,7 @@ export class OpenRouterAdapter extends BaseAdapter {
       let capturedReasoning: any[] | undefined = undefined;
       let capturedThoughtSignature: string | undefined = undefined;
 
-      // Use unified stream processing (automatically uses SSE parsing for Response objects)
-      yield* this.processStream(response, {
+      yield* this.processNodeStream(nodeStream, {
         debugLabel: 'OpenRouter',
 
         extractContent: (parsed: any) => {
@@ -364,6 +362,11 @@ export class OpenRouterAdapter extends BaseAdapter {
             }
           }
           return null;
+        },
+        accumulateToolCalls: true,
+        toolCallThrottling: {
+          initialYield: true,
+          progressInterval: 50
         }
       });
 
@@ -437,13 +440,16 @@ export class OpenRouterAdapter extends BaseAdapter {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
 
-        const response = await fetch(`${this.baseUrl}/generation?id=${generationId}`, {
+        const response = await this.request<any>({
+          url: `${this.baseUrl}/generation?id=${generationId}`,
+          operation: 'fetch generation stats',
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${this.apiKey}`,
             'HTTP-Referer': this.httpReferer,
             'X-Title': this.xTitle
-          }
+          },
+          timeoutMs: 30_000
         });
 
         lastStatus = response.status;
@@ -457,7 +463,7 @@ export class OpenRouterAdapter extends BaseAdapter {
           return null;
         }
 
-        const data = await response.json();
+        const data = response.json;
 
         // Extract token counts from response
         // OpenRouter returns: tokens_prompt, tokens_completion, native_tokens_prompt, native_tokens_completion
@@ -507,6 +513,7 @@ export class OpenRouterAdapter extends BaseAdapter {
   getCapabilities(): ProviderCapabilities {
     const baseCapabilities = {
       supportsStreaming: true,
+      streamingMode: 'streaming' as const,
       supportsJSON: true,
       supportsImages: true,
       supportsFunctions: true,
@@ -581,7 +588,9 @@ export class OpenRouterAdapter extends BaseAdapter {
         usage: { include: true } // Enable token usage and cost tracking
       };
       
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const response = await this.request<any>({
+        url: `${this.baseUrl}/chat/completions`,
+        operation: 'post-stream tool execution',
         method: 'POST',
         headers: {
           ...this.buildHeaders(),
@@ -589,14 +598,13 @@ export class OpenRouterAdapter extends BaseAdapter {
           'HTTP-Referer': this.httpReferer,
           'X-Title': this.xTitle
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        timeoutMs: 60_000
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      this.assertOk(response, `OpenRouter tool execution failed: HTTP ${response.status}`);
 
-      const data = await response.json();
+      const data = response.json;
       const choice = data.choices[0];
       const finalContent = choice?.message?.content || 'No response from AI after tool execution';
       const usage = this.extractUsage(data);

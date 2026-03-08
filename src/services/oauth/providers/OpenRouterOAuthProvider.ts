@@ -12,6 +12,7 @@
  */
 
 import { IOAuthProvider, OAuthProviderConfig, OAuthResult } from '../IOAuthProvider';
+import { ProviderHttpClient } from '../../llm/adapters/shared/ProviderHttpClient';
 
 /** OpenRouter authorization page */
 const AUTH_URL = 'https://openrouter.ai/auth';
@@ -75,7 +76,10 @@ export class OpenRouterOAuthProvider implements IOAuthProvider {
     codeVerifier: string,
     _callbackUrl: string
   ): Promise<OAuthResult> {
-    const response = await fetch(TOKEN_URL, {
+    const response = await ProviderHttpClient.request<{ key: string }>({
+      url: TOKEN_URL,
+      provider: 'openrouter',
+      operation: 'OpenRouter token exchange',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -83,18 +87,18 @@ export class OpenRouterOAuthProvider implements IOAuthProvider {
         code_verifier: codeVerifier,
         code_challenge_method: 'S256',
       }),
+      timeoutMs: 30_000,
     });
 
     if (!response.ok) {
-      const body = await response.text();
       throw new Error(
-        `OpenRouter token exchange failed: HTTP ${response.status} - ${body}`
+        `OpenRouter token exchange failed: HTTP ${response.status} - ${response.text.slice(0, 200)}`
       );
     }
 
-    const data: { key: string } = await response.json();
+    const data = response.json as { key: string } | null;
 
-    if (!data.key) {
+    if (!data?.key) {
       throw new Error('OpenRouter token exchange returned no key');
     }
 

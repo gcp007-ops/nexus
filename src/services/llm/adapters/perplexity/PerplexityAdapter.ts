@@ -99,27 +99,29 @@ export class PerplexityAdapter extends BaseAdapter {
         }
       };
 
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const nodeStream = await this.requestStream({
+        url: `${this.baseUrl}/chat/completions`,
+        operation: 'streaming generation',
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        timeoutMs: 120_000
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      // Use unified stream processing with automatic SSE parsing and tool call accumulation
-      yield* this.processStream(response, {
+      yield* this.processNodeStream(nodeStream, {
         debugLabel: 'Perplexity',
         extractContent: (parsed) => parsed.choices?.[0]?.delta?.content || null,
         extractToolCalls: (parsed) => parsed.choices?.[0]?.delta?.tool_calls || null,
         extractFinishReason: (parsed) => parsed.choices?.[0]?.finish_reason || null,
-        extractUsage: (parsed) => parsed.usage || null
+        extractUsage: (parsed) => parsed.usage || null,
+        accumulateToolCalls: true,
+        toolCallThrottling: {
+          initialYield: true,
+          progressInterval: 50
+        }
       });
     } catch (error) {
       console.error('[PerplexityAdapter] Streaming error:', error);
@@ -159,6 +161,7 @@ export class PerplexityAdapter extends BaseAdapter {
   getCapabilities(): ProviderCapabilities {
     return {
       supportsStreaming: true,
+      streamingMode: 'streaming',
       supportsJSON: true,
       supportsImages: false,
       supportsFunctions: false, // Perplexity does not support function calling
@@ -205,21 +208,21 @@ export class PerplexityAdapter extends BaseAdapter {
       requestBody.tools = this.convertTools(options.tools);
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await this.request<PerplexityChatResponse>({
+      url: `${this.baseUrl}/chat/completions`,
+      operation: 'generation',
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      timeoutMs: 60_000
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`HTTP ${response.status}: ${errorText}`);
-    }
+    this.assertOk(response, `Perplexity generation failed: HTTP ${response.status}`);
 
-    const data = await response.json() as PerplexityChatResponse;
+    const data = response.json as PerplexityChatResponse;
     const choice = data.choices[0];
     
     if (!choice) {

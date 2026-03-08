@@ -8,10 +8,9 @@
  * - Providing adapter availability checks
  * - Handling adapter cleanup
  *
- * MOBILE COMPATIBILITY (Dec 2025):
- * - SDK-based providers (OpenAI, Anthropic, Google, Mistral, Groq) are SKIPPED on mobile
- * - Only fetch-based providers (OpenRouter, Requesty, Perplexity) work on mobile
- * - These make direct HTTP requests without Node.js SDK dependencies
+ * MOBILE COMPATIBILITY:
+ * - Remote HTTP providers initialize on both desktop and mobile
+ * - Desktop-only providers are limited to local runtimes and desktop OAuth flows
  * - Use platform.ts `isProviderCompatible()` to check before initializing
  */
 
@@ -177,7 +176,7 @@ export class AdapterRegistry implements IAdapterRegistry {
     const onMobile = isMobile();
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MOBILE-COMPATIBLE PROVIDERS (use fetch, no SDK dependencies)
+    // REMOTE HTTP PROVIDERS (available on desktop and mobile)
     // These work on all platforms
     // ═══════════════════════════════════════════════════════════════════════════
     await this.initializeProviderAsync('openrouter', providers.openrouter, async (config) => {
@@ -198,45 +197,37 @@ export class AdapterRegistry implements IAdapterRegistry {
       return new PerplexityAdapter(config.apiKey);
     });
 
-    // OpenAI Codex (OAuth-based, uses fetch — mobile compatible)
-    // Requires OAuth tokens instead of a traditional API key
-    await this.initializeCodexAdapter(providers['openai-codex']);
+    await this.initializeProviderAsync('openai', providers.openai, async (config) => {
+      const { OpenAIAdapter } = await import('../adapters/openai/OpenAIAdapter');
+      return new OpenAIAdapter(config.apiKey);
+    });
+
+    await this.initializeProviderAsync('anthropic', providers.anthropic, async (config) => {
+      const { AnthropicAdapter } = await import('../adapters/anthropic/AnthropicAdapter');
+      return new AnthropicAdapter(config.apiKey);
+    });
+
+    await this.initializeProviderAsync('google', providers.google, async (config) => {
+      const { GoogleAdapter } = await import('../adapters/google/GoogleAdapter');
+      return new GoogleAdapter(config.apiKey);
+    });
+
+    await this.initializeProviderAsync('mistral', providers.mistral, async (config) => {
+      const { MistralAdapter } = await import('../adapters/mistral/MistralAdapter');
+      return new MistralAdapter(config.apiKey);
+    });
+
+    await this.initializeProviderAsync('groq', providers.groq, async (config) => {
+      const { GroqAdapter } = await import('../adapters/groq/GroqAdapter');
+      return new GroqAdapter(config.apiKey);
+    });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DESKTOP-ONLY PROVIDERS (use Node.js SDKs)
-    // Skip on mobile to avoid crashes from SDK Node.js dependencies
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (!onMobile) {
-      await this.initializeProviderAsync('openai', providers.openai, async (config) => {
-        const { OpenAIAdapter } = await import('../adapters/openai/OpenAIAdapter');
-        return new OpenAIAdapter(config.apiKey);
-      });
-
-      await this.initializeProviderAsync('anthropic', providers.anthropic, async (config) => {
-        const { AnthropicAdapter } = await import('../adapters/anthropic/AnthropicAdapter');
-        return new AnthropicAdapter(config.apiKey);
-      });
-
-      await this.initializeProviderAsync('google', providers.google, async (config) => {
-        const { GoogleAdapter } = await import('../adapters/google/GoogleAdapter');
-        return new GoogleAdapter(config.apiKey);
-      });
-
-      await this.initializeProviderAsync('mistral', providers.mistral, async (config) => {
-        const { MistralAdapter } = await import('../adapters/mistral/MistralAdapter');
-        return new MistralAdapter(config.apiKey);
-      });
-
-      await this.initializeProviderAsync('groq', providers.groq, async (config) => {
-        const { GroqAdapter } = await import('../adapters/groq/GroqAdapter');
-        return new GroqAdapter(config.apiKey);
-      });
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // LOCAL PROVIDERS (require localhost servers - desktop only)
+    // DESKTOP-ONLY PROVIDERS
     // ═══════════════════════════════════════════════════════════════════════════
     if (!onMobile) {
+      await this.initializeCodexAdapter(providers['openai-codex']);
+
       // Ollama - apiKey is actually the server URL
       if (providers.ollama?.enabled && providers.ollama.apiKey) {
         try {
