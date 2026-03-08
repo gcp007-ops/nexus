@@ -1,5 +1,5 @@
 # Claude Code Context Document
-Last Updated: 2026-03-04
+Last Updated: 2026-03-08
 
 ## Project Overview
 - **Name**: Claudesidian MCP
@@ -259,6 +259,16 @@ onCreate(file: TFile) {
 
 ### March 2026
 
+**Mar 8**: TaskManager Agent ✅ (PR #37)
+- New agent: workspace-scoped project/task management with DAG dependencies
+- Data model: Workspace → Project → Task, with `dependsOn[]` DAG edges + `parentTaskId` subtask tree
+- 10 tools: createProject, listProjects, updateProject, archiveProject, createTask, listTasks, updateTask, moveTask, queryTasks, linkNote
+- Services: TaskService (facade) + DAGService (pure computation: cycle detection, topological sort, next actions, blocked tasks)
+- DB: 4 new tables (projects, tasks, task_dependencies, task_note_links), schema v8→v9, JSONL+SQLite hybrid
+- Integration: auto-loads task summary via loadWorkspace, CacheableEntityType extended with 'project'/'task'
+- 857 tests (236 new across 5 test files)
+- Plan: `docs/plans/task-manager-agent-plan.md`, Architecture: `docs/architecture/task-manager-agent-architecture.md`
+
 **Mar 4**: New Models + Bug Fixes ✅ (v4.4.5 → v4.4.6)
 - Added Claude Sonnet 4.6, Gemini 3.1 Pro/Flash Lite, GPT-5.3 Chat/Codex; removed legacy Claude 4 Opus/Sonnet
 - Fixed ConversationTitleModal focus trap: replaced fragile setTimeout/rAF hack, added focus restoration in onClose()
@@ -413,6 +423,11 @@ onCreate(file: TFile) {
 6. **CanvasManager** (`src/agents/canvasManager/`) - Obsidian canvas operations
    - Tools: read, write, update, list
 
+7. **TaskManager** (`src/agents/taskManager/`) - Workspace-scoped project/task management with DAG dependencies
+   - Tools: createProject, listProjects, updateProject, archiveProject, createTask, listTasks, updateTask, moveTask, queryTasks, linkNote
+   - Services: TaskService (business facade), DAGService (pure computation)
+   - Auto-loads task summary when workspace loads
+
 ### Agent Structure Pattern
 ```
 agents/
@@ -508,7 +523,7 @@ A branch IS a conversation with parent metadata:
 - `npm run deploy` - Build and deploy via PowerShell script
 
 ### Testing Approach
-- **Unit Tests**: Jest for core logic and services (619 tests total — 351 baseline + 268 OAuth/Codex/nodeFetch)
+- **Unit Tests**: Jest for core logic and services (857 tests total — 619 baseline + 238 TaskManager)
 - **Integration Tests**: Manual testing in Obsidian environment
 - **MCP Testing**: Via Claude Desktop connection
 
@@ -550,7 +565,7 @@ Instead of 50+ tools, MCP exposes just 2: `getTools` (discovery) and `useTools` 
 
 **Key Files**: `src/agents/toolManager/` (agent + tools), `src/services/trace/ToolCallTraceService.ts`
 
-**Tool Count**: 33 tools across 6 agents (not counting ToolManager meta-tools)
+**Tool Count**: 43 tools across 7 agents (not counting ToolManager meta-tools)
 
 ## Memory & Workspace System
 
@@ -558,6 +573,7 @@ Instead of 50+ tools, MCP exposes just 2: `getTools` (discovery) and `useTools` 
 `.nexus/` - All storage in single hidden folder:
 - `conversations/*.jsonl` - OpenAI fine-tuning format (syncs across devices)
 - `workspaces/*.jsonl` - Event-sourced workspace data
+- `tasks/tasks_[workspaceId].jsonl` - Task/project events per workspace
 - `cache.db` - SQLite local cache (auto-rebuilt, not synced)
 
 ### Architecture
@@ -585,7 +601,7 @@ Key files: `src/ui/chat/components/suggesters/`, `MessageEnhancer.ts`, `SystemPr
 
 - **Subagents**: Branch → stream via LLMService → save result. `chunk.toolCalls` are display-only.
 - **WebLLM/Nexus**: Nexus Quark (4B, 4K context), `<tool_call>` format. May crash on Apple Silicon.
-- **Storage**: Branches as JSONL events, SQLite v4 schema, tool names use `agent_tool` format.
+- **Storage**: Branches as JSONL events, SQLite v9 schema (4 task tables added in v9), tool names use `agent_tool` format.
 - **Apps & Vault Access**: App agents that produce files (binary or text) must have vault access wired through `BaseAppAgent`. Use `vault.createBinary()` for binary outputs (audio, images) and `vault.create()` for text files. Always ensure parent directories exist before writing. Follow the pattern established by ElevenLabs audio tools and `ImageFileManager`. Future apps will likely need the same vault integration for saving their outputs.
 
 ## Working Memory
@@ -594,7 +610,7 @@ Key files: `src/ui/chat/components/suggesters/`, `MessageEnhancer.ts`, `SystemPr
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume f2266b8f-b5ca-4b90-a87e-db0a0304ffd7`
-- Team: `pact-f2266b8f`
-- Started: 2026-03-08 11:52:33 UTC
+- Resume: `claude --resume 64cce981-8f72-4a42-894d-4b97906295b4`
+- Team: `pact-64cce981`
+- Started: 2026-03-08 16:15:38 UTC
 <!-- SESSION_END -->
