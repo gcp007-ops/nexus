@@ -164,20 +164,24 @@ export namespace OpenAI {
 
 // Google Nano Banana specific types
 export namespace Google {
-  // Content part for reference images
-  export interface InlineDataPart {
-    inlineData: {
-      mimeType: string;
+  // Raw REST request part for reference images
+  export interface RequestInlineDataPart {
+    inline_data: {
+      mime_type: string;
       data: string; // base64
     };
   }
 
-  // Content part for text
-  export interface TextPart {
+  // Raw REST request part for text
+  export interface RequestTextPart {
     text: string;
   }
 
-  export type ContentPart = InlineDataPart | TextPart;
+  export type RequestPart = RequestInlineDataPart | RequestTextPart;
+
+  export interface RequestContent {
+    parts: RequestPart[];
+  }
 
   // Nano Banana image generation config
   export interface ImageConfig {
@@ -188,8 +192,8 @@ export namespace Google {
   // Request for generateContent with image generation
   export interface ImageGenerationRequest {
     model: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview' | 'gemini-3.1-flash-image-preview';
-    contents: ContentPart[];
-    config?: {
+    contents: RequestContent[];
+    generationConfig?: {
       responseModalities?: ('TEXT' | 'IMAGE')[];
       imageConfig?: ImageConfig;
     };

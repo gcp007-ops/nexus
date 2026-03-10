@@ -34,13 +34,13 @@ interface InlineData {
   data: string;
 }
 
-interface ContentPart {
+interface ResponseContentPart {
   inlineData?: InlineData;
   text?: string;
 }
 
 interface Content {
-  parts?: ContentPart[];
+  parts?: ResponseContentPart[];
 }
 
 interface Candidate {
@@ -49,6 +49,20 @@ interface Candidate {
 
 interface GenerateContentResponseType {
   candidates?: Candidate[];
+}
+
+interface RequestInlineData {
+  mime_type: string;
+  data: string;
+}
+
+interface RequestPart {
+  inline_data?: RequestInlineData;
+  text?: string;
+}
+
+interface RequestContent {
+  parts: RequestPart[];
 }
 
 export class GeminiImageAdapter extends BaseImageAdapter {
@@ -109,17 +123,19 @@ export class GeminiImageAdapter extends BaseImageAdapter {
       const model = params.model || this.defaultModel;
 
       const response = await this.withRetry(async () => {
-        // Build contents array with prompt and reference images
-        const contents: any[] = [{ text: params.prompt }];
+        // Raw REST requests use contents[].parts[] rather than a flat contents[] array.
+        const parts: RequestPart[] = [{ text: params.prompt }];
 
         // Add reference images if provided
         if (params.referenceImages && params.referenceImages.length > 0) {
           const referenceImageParts = await this.loadReferenceImages(params.referenceImages);
-          contents.push(...referenceImageParts);
+          parts.push(...referenceImageParts);
         }
 
-        // Build config
-        const config: any = {
+        const generationConfig: {
+          responseModalities: string[];
+          imageConfig?: Record<string, string>;
+        } = {
           responseModalities: ['TEXT', 'IMAGE'],
         };
 
@@ -132,7 +148,7 @@ export class GeminiImageAdapter extends BaseImageAdapter {
           imageConfig.imageSize = params.imageSize;
         }
         if (Object.keys(imageConfig).length > 0) {
-          config.imageConfig = imageConfig;
+          generationConfig.imageConfig = imageConfig;
         }
 
         const result = await this.request<GenerateContentResponseType>({
@@ -144,11 +160,8 @@ export class GeminiImageAdapter extends BaseImageAdapter {
             'x-goog-api-key': this.apiKey
           },
           body: JSON.stringify({
-            contents,
-            generationConfig: {
-              responseModalities: config.responseModalities
-            },
-            imageConfig: config.imageConfig
+            contents: [{ parts }] satisfies RequestContent[],
+            generationConfig
           }),
           timeoutMs: 120_000
         });
@@ -166,12 +179,12 @@ export class GeminiImageAdapter extends BaseImageAdapter {
   /**
    * Load reference images from vault and convert to base64
    */
-  private async loadReferenceImages(paths: string[]): Promise<any[]> {
+  private async loadReferenceImages(paths: string[]): Promise<RequestPart[]> {
     if (!this.vault) {
       throw new Error('Vault not configured - cannot load reference images');
     }
 
-    const parts: any[] = [];
+    const parts: RequestPart[] = [];
 
     for (const path of paths) {
       try {
@@ -194,8 +207,8 @@ export class GeminiImageAdapter extends BaseImageAdapter {
         const mimeType = this.getMimeType(path);
 
         parts.push({
-          inlineData: {
-            mimeType: mimeType,
+          inline_data: {
+            mime_type: mimeType,
             data: base64
           }
         });
@@ -459,7 +472,7 @@ export class GeminiImageAdapter extends BaseImageAdapter {
     }
 
     // Find the image part in the response
-    const imagePart = candidate.content.parts.find((part: ContentPart) => part.inlineData);
+    const imagePart = candidate.content.parts.find((part: ResponseContentPart) => part.inlineData);
     if (!imagePart || !imagePart.inlineData) {
       throw new Error('No image data found in Google response');
     }
