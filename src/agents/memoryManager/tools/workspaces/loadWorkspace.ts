@@ -18,7 +18,7 @@ import {
   LoadWorkspaceParameters,
   LoadWorkspaceResult
 } from '../../../../database/types/workspace/ParameterTypes';
-import { ProjectWorkspace } from '../../../../database/types/workspace/WorkspaceTypes';
+import { ProjectWorkspace, WorkspaceWorkflow } from '../../../../database/types/workspace/WorkspaceTypes';
 import { parseWorkspaceContext } from '../../../../utils/contextUtils';
 import { createErrorMessage } from '../../../../utils/errorUtils';
 import { PaginationParams } from '../../../../types/pagination/PaginationTypes';
@@ -122,6 +122,9 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
       );
 
       const workflows = this.contextBuilder.buildWorkflows(workspace);
+      const workflowDefinitions = (workspace.context?.workflows || []).map((workflow: WorkspaceWorkflow) => ({
+        ...workflow
+      }));
       const keyFiles = this.contextBuilder.extractKeyFiles(workspace);
       const preferences = this.contextBuilder.buildPreferences(workspace);
 
@@ -182,6 +185,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         data: {
           context: context,
           workflows: workflows,
+          workflowDefinitions,
           workspaceStructure: workspaceStructure,
           recentFiles: recentFiles,
           keyFiles: keyFiles,
@@ -250,6 +254,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
           recentActivity: [errorMessage]
         },
         workflows: [],
+        workflowDefinitions: [],
         workspaceStructure: [],
         recentFiles: [],
         keyFiles: {},
@@ -320,6 +325,35 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
               type: 'array',
               items: { type: 'string' },
               description: 'Workflow strings'
+            },
+            workflowDefinitions: {
+              type: 'array',
+              description: 'Structured workflow definitions including prompt bindings and schedules.',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  name: { type: 'string' },
+                  when: { type: 'string' },
+                  steps: { type: 'string' },
+                  promptId: { type: 'string' },
+                  promptName: { type: 'string' },
+                  schedule: {
+                    type: 'object',
+                    properties: {
+                      enabled: { type: 'boolean' },
+                      frequency: { type: 'string', enum: ['hourly', 'daily', 'weekly', 'monthly'] },
+                      intervalHours: { type: 'number' },
+                      hour: { type: 'number' },
+                      minute: { type: 'number' },
+                      dayOfWeek: { type: 'number' },
+                      dayOfMonth: { type: 'number' },
+                      catchUp: { type: 'string', enum: ['skip', 'latest', 'all'] }
+                    }
+                  }
+                },
+                required: ['id', 'name', 'when', 'steps']
+              }
             },
             workspaceStructure: {
               type: 'array',

@@ -73,7 +73,7 @@ export interface MigratableDatabase {
 // Alias for backward compatibility
 type Database = MigratableDatabase;
 
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 export interface Migration {
   version: number;
@@ -339,6 +339,47 @@ export const MIGRATIONS: Migration[] = [
       'CREATE INDEX IF NOT EXISTS idx_task_deps_depends ON task_dependencies(dependsOnTaskId)',
       'CREATE INDEX IF NOT EXISTS idx_task_links_note ON task_note_links(notePath)',
     ]
+  },
+
+  // Version 9 -> 10: Add workflow run metadata columns to conversations
+  {
+    version: 10,
+    description: 'Add workflow run metadata columns to conversations for scheduled workflow dedupe',
+    sql: [
+      'ALTER TABLE conversations ADD COLUMN workflowId TEXT',
+      'ALTER TABLE conversations ADD COLUMN runTrigger TEXT',
+      'ALTER TABLE conversations ADD COLUMN scheduledFor INTEGER',
+      'ALTER TABLE conversations ADD COLUMN runKey TEXT',
+      'CREATE INDEX IF NOT EXISTS idx_conversations_workflowId ON conversations(workflowId)',
+      'CREATE INDEX IF NOT EXISTS idx_conversations_scheduledFor ON conversations(scheduledFor)',
+      'CREATE INDEX IF NOT EXISTS idx_conversations_runKey ON conversations(runKey)'
+    ],
+    migrationFn: (db: MigratableDatabase) => {
+      const rows = db.exec('SELECT id, metadataJson FROM conversations WHERE metadataJson IS NOT NULL');
+      if (rows.length === 0) return;
+
+      for (const row of rows[0].values) {
+        const id = row[0] as string;
+        const metadataJson = row[1] as string;
+
+        try {
+          const metadata = JSON.parse(metadataJson);
+          const workflowId = metadata?.workflowId;
+          const runTrigger = metadata?.runTrigger;
+          const scheduledFor = metadata?.scheduledFor;
+          const runKey = metadata?.runKey;
+
+          if (workflowId || runTrigger || scheduledFor || runKey) {
+            db.run(
+              'UPDATE conversations SET workflowId = ?, runTrigger = ?, scheduledFor = ?, runKey = ? WHERE id = ?',
+              [workflowId ?? null, runTrigger ?? null, scheduledFor ?? null, runKey ?? null, id]
+            );
+          }
+        } catch {
+          // Ignore unparseable metadata rows.
+        }
+      }
+    }
   },
 ];
 

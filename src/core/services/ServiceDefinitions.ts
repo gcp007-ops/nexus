@@ -432,6 +432,50 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
 
             return chatService;
         }
+    },
+
+    {
+        name: 'workflowRunService',
+        dependencies: ['chatService', 'workspaceService', 'customPromptStorageService'],
+        create: async (context) => {
+            const { WorkflowRunService } = await import('../../services/workflows/WorkflowRunService');
+            const { ChatService } = await import('../../services/chat/ChatService');
+            const { WorkspaceService } = await import('../../services/WorkspaceService');
+            const { CustomPromptStorageService } = await import('../../agents/promptManager/services/CustomPromptStorageService');
+            const chatService = await context.serviceManager.getService<InstanceType<typeof ChatService>>('chatService');
+            const workspaceService = await context.serviceManager.getService<InstanceType<typeof WorkspaceService>>('workspaceService');
+            const customPromptStorage = await context.serviceManager.getService<InstanceType<typeof CustomPromptStorageService>>('customPromptStorageService');
+
+            return new WorkflowRunService({
+                app: context.app,
+                plugin: context.plugin,
+                chatService,
+                workspaceService,
+                customPromptStorage
+            });
+        }
+    },
+
+    {
+        name: 'workflowScheduleService',
+        dependencies: ['workspaceService', 'conversationService', 'workflowRunService'],
+        create: async (context) => {
+            const { WorkflowScheduleService } = await import('../../services/workflows/WorkflowScheduleService');
+            const { WorkspaceService } = await import('../../services/WorkspaceService');
+            const { ConversationService } = await import('../../services/ConversationService');
+            const { WorkflowRunService } = await import('../../services/workflows/WorkflowRunService');
+            const workspaceService = await context.serviceManager.getService<InstanceType<typeof WorkspaceService>>('workspaceService');
+            const conversationService = await context.serviceManager.getService<InstanceType<typeof ConversationService>>('conversationService');
+            const workflowRunService = await context.serviceManager.getService<InstanceType<typeof WorkflowRunService>>('workflowRunService');
+
+            return new WorkflowScheduleService({
+                plugin: context.plugin,
+                settings: context.settings,
+                workspaceService,
+                conversationService,
+                workflowRunService
+            });
+        }
     }
 ];
 

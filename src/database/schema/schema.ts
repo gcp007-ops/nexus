@@ -105,11 +105,18 @@ CREATE TABLE IF NOT EXISTS conversations (
   messageCount INTEGER DEFAULT 0,
   metadataJson TEXT,
   workspaceId TEXT,
-  sessionId TEXT
+  sessionId TEXT,
+  workflowId TEXT,
+  runTrigger TEXT,
+  scheduledFor INTEGER,
+  runKey TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_workspaceId ON conversations(workspaceId);
 CREATE INDEX IF NOT EXISTS idx_conversations_sessionId ON conversations(sessionId);
+CREATE INDEX IF NOT EXISTS idx_conversations_workflowId ON conversations(workflowId);
+CREATE INDEX IF NOT EXISTS idx_conversations_scheduledFor ON conversations(scheduledFor);
+CREATE INDEX IF NOT EXISTS idx_conversations_runKey ON conversations(runKey);
 
 CREATE INDEX IF NOT EXISTS idx_conversations_vault ON conversations(vaultName);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated);

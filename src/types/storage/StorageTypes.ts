@@ -32,6 +32,7 @@ export interface IndividualConversation {
       workspaceId?: string;
       contextNotes?: string[];
       sessionId?: string;
+      promptId?: string;
       temperature?: number; // 0.0-1.0, per-conversation override
     };
     // Conversation-level cost aggregation (legacy)
@@ -59,6 +60,12 @@ export interface IndividualConversation {
     };
     // Responses API state (OpenAI/LM Studio): persisted for conversation continuity across restarts
     responsesApiId?: string;
+    promptId?: string;
+    workflowId?: string;
+    workflowName?: string;
+    runTrigger?: 'manual' | 'scheduled' | 'catch_up';
+    scheduledFor?: number;
+    runKey?: string;
   };
   // Optional pagination metadata when messages are loaded with pagination
   messagePagination?: PaginatedResult<ConversationMessage>;

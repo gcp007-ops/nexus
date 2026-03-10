@@ -4928,6 +4928,56 @@ a:hover {
     max-width: 600px;
 }
 
+.nexus-workflow-form .setting-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 18px 0;
+}
+
+.nexus-workflow-form .setting-item-info {
+    width: 100%;
+}
+
+.nexus-workflow-form .setting-item-control {
+    width: 100%;
+    justify-content: flex-start;
+}
+
+.nexus-workflow-form .setting-item-control input[type="text"],
+.nexus-workflow-form .setting-item-control textarea,
+.nexus-workflow-form .setting-item-control .dropdown {
+    width: 100%;
+    max-width: none;
+}
+
+.nexus-workflow-form .setting-item-control textarea {
+    min-height: 180px;
+}
+
+.nexus-workflow-form .setting-item-description {
+    margin-top: 4px;
+}
+
+.nexus-workflow-section-title {
+    margin: 16px 0 8px;
+    font-size: var(--font-ui-medium);
+    color: var(--text-normal);
+}
+
+.nexus-workflow-schedule {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.nexus-workflow-schedule-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 /* Item row with native input component */
 .nexus-item-row input[type="text"] {
     flex: 1;
@@ -5017,6 +5067,7 @@ a:hover {
     display: flex;
     gap: 8px;
     flex-shrink: 0;
+    align-items: center;
 }
 
 /* Small buttons for item actions */
@@ -5034,6 +5085,14 @@ a:hover {
 .nexus-btn-small:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
+}
+
+.nexus-item-actions .clickable-icon {
+    min-width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .nexus-btn-danger {
@@ -6892,4 +6951,3 @@ body.is-mobile .chat-loading-overlay {
     color: var(--text-normal);
     font-size: var(--font-ui-medium);
 }
-

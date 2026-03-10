@@ -73,4 +73,7 @@ export interface MCPSettings {
   availableUpdateVersion?: string;
   lastUpdateCheckDate?: string;
   processedFiles?: ProcessedFilesData;
+  workflowScheduler?: {
+    lastCheckAt?: number;
+  };
 }

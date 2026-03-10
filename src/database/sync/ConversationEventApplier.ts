@@ -54,10 +54,19 @@ export class ConversationEventApplier {
       return;
     }
 
+    const settings = event.data.settings;
+    const chatSettings = settings?.chatSettings;
+    const workspaceId = settings?.workspaceId ?? chatSettings?.workspaceId ?? null;
+    const sessionId = settings?.sessionId ?? chatSettings?.sessionId ?? null;
+    const workflowId = settings?.workflowId ?? null;
+    const runTrigger = settings?.runTrigger ?? null;
+    const scheduledFor = settings?.scheduledFor ?? null;
+    const runKey = settings?.runKey ?? null;
+
     await this.sqliteCache.run(
       `INSERT OR REPLACE INTO conversations
-       (id, title, created, updated, vaultName, messageCount, metadataJson)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, created, updated, vaultName, messageCount, metadataJson, workspaceId, sessionId, workflowId, runTrigger, scheduledFor, runKey)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         event.data.id,
         event.data.title ?? 'Untitled',
@@ -65,7 +74,13 @@ export class ConversationEventApplier {
         event.data.created ?? Date.now(),
         event.data.vault ?? '',
         0,
-        event.data.settings ? JSON.stringify(event.data.settings) : null
+        settings ? JSON.stringify(settings) : null,
+        workspaceId,
+        sessionId,
+        workflowId,
+        runTrigger,
+        scheduledFor,
+        runKey
       ]
     );
   }
@@ -76,7 +91,24 @@ export class ConversationEventApplier {
 
     if (event.data.title !== undefined) { updates.push('title = ?'); values.push(event.data.title); }
     if (event.data.updated !== undefined) { updates.push('updated = ?'); values.push(event.data.updated); }
-    if (event.data.settings !== undefined) { updates.push('metadataJson = ?'); values.push(JSON.stringify(event.data.settings)); }
+    if (event.data.settings !== undefined) {
+      const settings = event.data.settings;
+      const chatSettings = settings?.chatSettings;
+      updates.push('metadataJson = ?');
+      values.push(JSON.stringify(settings));
+      updates.push('workspaceId = ?');
+      values.push(settings?.workspaceId ?? chatSettings?.workspaceId ?? null);
+      updates.push('sessionId = ?');
+      values.push(settings?.sessionId ?? chatSettings?.sessionId ?? null);
+      updates.push('workflowId = ?');
+      values.push(settings?.workflowId ?? null);
+      updates.push('runTrigger = ?');
+      values.push(settings?.runTrigger ?? null);
+      updates.push('scheduledFor = ?');
+      values.push(settings?.scheduledFor ?? null);
+      updates.push('runKey = ?');
+      values.push(settings?.runKey ?? null);
+    }
 
     if (updates.length > 0) {
       values.push(event.conversationId);

@@ -50,6 +50,11 @@ export class BackgroundProcessor {
                 
                 this.hasRunBackgroundStartup = true;
 
+                const workflowScheduleService = await this.config.getService<{ start: () => Promise<void> }>('workflowScheduleService');
+                if (workflowScheduleService) {
+                    await workflowScheduleService.start();
+                }
+
                 // Background startup processing completed
             } catch (error) {
                 console.error('Error in background startup processing:', error);

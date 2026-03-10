@@ -12,6 +12,8 @@ import { IStorageAdapter } from '../database/interfaces/IStorageAdapter';
 import * as HybridTypes from '../types/storage/HybridStorageTypes';
 import { TraceMetadata, LegacyWorkspaceTraceMetadata } from '../database/types/memory/MemoryTypes';
 import { WorkspaceState } from '../database/types/session/SessionTypes';
+import type { WorkflowSchedule, WorkspaceWorkflow } from '../database/types/workspace/WorkspaceTypes';
+import { v4 as uuidv4 } from '../utils/uuid';
 
 // Export constant for backward compatibility
 export const GLOBAL_WORKSPACE_ID = 'default';
@@ -207,7 +209,7 @@ export class WorkspaceService {
         lastAccessed: metadata.lastAccessed,
         isActive: metadata.isActive,
         dedicatedAgentId: metadata.dedicatedAgentId, // Pass through dedicatedAgentId
-        context: metadata.context,
+        context: metadata.context ? this.normalizeWorkspaceContext(metadata.context).context : metadata.context,
         sessions: {} // Sessions must be loaded separately with getSessions
       } as any; // Type cast needed since IndividualWorkspace doesn't have dedicatedAgentId in its type definition
     }
@@ -220,7 +222,7 @@ export class WorkspaceService {
     }
 
     // Migrate legacy array-based workflow steps to string format
-    const migrated = this.migrateWorkflowSteps(workspace);
+    const migrated = this.normalizeWorkspaceData(workspace);
     if (migrated) {
       // Save migrated workspace back to storage
       await this.fileSystem.writeWorkspace(id, workspace);
@@ -251,7 +253,7 @@ export class WorkspaceService {
         lastAccessed: w.lastAccessed,
         isActive: w.isActive,
         dedicatedAgentId: w.dedicatedAgentId, // Include dedicatedAgentId field
-        context: w.context,
+        context: w.context ? this.normalizeWorkspaceContext(w.context).context : w.context,
         sessions: {} // Sessions must be loaded separately
       } as any)); // Type cast needed since IndividualWorkspace doesn't have dedicatedAgentId in type definition
     }
@@ -264,7 +266,7 @@ export class WorkspaceService {
       const workspace = await this.fileSystem.readWorkspace(id);
       if (workspace) {
         // Migrate legacy array-based workflow steps to string format
-        const migrated = this.migrateWorkflowSteps(workspace);
+        const migrated = this.normalizeWorkspaceData(workspace);
         if (migrated) {
           // Save migrated workspace back to storage
           await this.fileSystem.writeWorkspace(id, workspace);
@@ -285,10 +287,7 @@ export class WorkspaceService {
     if (adapterForCreate) {
       // Convert context to HybridTypes format if provided
       const hybridContext = data.context ? {
-        purpose: data.context.purpose,
-        workflows: data.context.workflows,
-        keyFiles: data.context.keyFiles,
-        preferences: data.context.preferences,
+        ...this.normalizeWorkspaceContext(data.context).context,
         dedicatedAgent: data.context.dedicatedAgent
       } : undefined;
 
@@ -330,7 +329,7 @@ export class WorkspaceService {
       created: data.created || Date.now(),
       lastAccessed: data.lastAccessed || Date.now(),
       isActive: data.isActive ?? true,
-      context: data.context,
+      context: data.context ? this.normalizeWorkspaceContext(data.context).context : data.context,
       sessions: data.sessions || {}
     };
 
@@ -367,11 +366,12 @@ export class WorkspaceService {
 
       // Handle context update
       if (updates.context !== undefined) {
+        const normalizedContext = this.normalizeWorkspaceContext(updates.context).context;
         hybridUpdates.context = {
-          purpose: updates.context.purpose,
-          workflows: updates.context.workflows,
-          keyFiles: updates.context.keyFiles,
-          preferences: updates.context.preferences,
+          purpose: normalizedContext.purpose,
+          workflows: normalizedContext.workflows,
+          keyFiles: normalizedContext.keyFiles,
+          preferences: normalizedContext.preferences,
           dedicatedAgent: updates.context.dedicatedAgent
         };
       }
@@ -398,6 +398,8 @@ export class WorkspaceService {
       id, // Preserve ID
       lastAccessed: Date.now()
     };
+
+    this.normalizeWorkspaceData(updatedWorkspace);
 
     // Write updated workspace
     await this.fileSystem.writeWorkspace(id, updatedWorkspace);
@@ -1119,23 +1121,83 @@ export class WorkspaceService {
    * @param workspace Workspace to migrate
    * @returns true if migration was performed, false otherwise
    */
-  private migrateWorkflowSteps(workspace: IndividualWorkspace): boolean {
+  private normalizeWorkspaceData(workspace: IndividualWorkspace): boolean {
     if (!workspace.context?.workflows || workspace.context.workflows.length === 0) {
       return false;
     }
 
-    let migrated = false;
+    const normalized = this.normalizeWorkspaceContext(workspace.context);
+    workspace.context = {
+      ...workspace.context,
+      ...normalized.context
+    };
+    return normalized.changed;
+  }
 
-    for (const workflow of workspace.context.workflows) {
-      // Check if steps is an array (legacy format)
-      if (Array.isArray(workflow.steps)) {
-        // Convert array to string with newlines
-        // Type assertion needed: workflow.steps is typed as string but legacy data may have string[]
-        (workflow as { steps: string | string[] }).steps = (workflow.steps as string[]).join('\n');
-        migrated = true;
-      }
+  private normalizeWorkspaceContext(context: HybridTypes.WorkspaceContext): { context: HybridTypes.WorkspaceContext; changed: boolean } {
+    if (!context.workflows || context.workflows.length === 0) {
+      return { context, changed: false };
     }
 
-    return migrated;
+    let changed = false;
+    const workflows = context.workflows.map((workflow) => {
+      let nextWorkflow = workflow as WorkspaceWorkflow & { steps: string | string[] };
+
+      if (Array.isArray(nextWorkflow.steps)) {
+        nextWorkflow = { ...nextWorkflow, steps: nextWorkflow.steps.join('\n') };
+        changed = true;
+      }
+
+      if (!nextWorkflow.id) {
+        nextWorkflow = { ...nextWorkflow, id: uuidv4() };
+        changed = true;
+      }
+
+      const normalizedSchedule = this.normalizeWorkflowSchedule(nextWorkflow.schedule);
+      if (normalizedSchedule !== nextWorkflow.schedule) {
+        nextWorkflow = { ...nextWorkflow, schedule: normalizedSchedule };
+        changed = true;
+      }
+
+      return nextWorkflow as WorkspaceWorkflow;
+    });
+
+    return {
+      context: {
+        ...context,
+        workflows
+      },
+      changed
+    };
+  }
+
+  private normalizeWorkflowSchedule(schedule?: WorkflowSchedule): WorkflowSchedule | undefined {
+    if (!schedule) {
+      return undefined;
+    }
+
+    const normalized: WorkflowSchedule = {
+      enabled: schedule.enabled !== false,
+      frequency: schedule.frequency,
+      catchUp: schedule.catchUp || 'skip'
+    };
+
+    if (schedule.intervalHours !== undefined) {
+      normalized.intervalHours = Math.max(1, Math.min(24, Number(schedule.intervalHours) || 1));
+    }
+    if (schedule.hour !== undefined) {
+      normalized.hour = Math.max(0, Math.min(23, Number(schedule.hour) || 0));
+    }
+    if (schedule.minute !== undefined) {
+      normalized.minute = Math.max(0, Math.min(59, Number(schedule.minute) || 0));
+    }
+    if (schedule.dayOfWeek !== undefined) {
+      normalized.dayOfWeek = Math.max(0, Math.min(6, Number(schedule.dayOfWeek) || 0));
+    }
+    if (schedule.dayOfMonth !== undefined) {
+      normalized.dayOfMonth = Math.max(1, Math.min(31, Number(schedule.dayOfMonth) || 1));
+    }
+
+    return normalized;
   }
 }

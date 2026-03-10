@@ -104,6 +104,7 @@ export class ChatView extends ItemView {
   private parentConversationId: string | null = null;
   // Scroll position to restore when returning from branch
   private parentScrollPosition: number = 0;
+  private pendingConversationId: string | null = null;
 
   // Layout elements
   private layoutElements!: ChatLayoutElements;
@@ -620,6 +621,66 @@ export class ChatView extends ItemView {
         this.wireWelcomeButton();
       }
     }
+
+    if (this.pendingConversationId) {
+      const pendingId = this.pendingConversationId;
+      this.pendingConversationId = null;
+      await this.openConversationById(pendingId);
+    }
+  }
+
+  async openConversationById(conversationId: string): Promise<void> {
+    if (!this.conversationManager) {
+      this.pendingConversationId = conversationId;
+      return;
+    }
+
+    const conversation = await this.chatService.getConversation(conversationId);
+    if (!conversation) {
+      return;
+    }
+
+    await this.conversationManager.loadConversations();
+    const listedConversation = this.conversationManager
+      .getConversations()
+      .find(item => item.id === conversationId);
+
+    await this.conversationManager.selectConversation(listedConversation || conversation);
+  }
+
+  async sendMessageToConversation(
+    conversationId: string,
+    message: string,
+    options?: {
+      provider?: string;
+      model?: string;
+      systemPrompt?: string;
+      workspaceId?: string;
+      sessionId?: string;
+      enableThinking?: boolean;
+      thinkingEffort?: 'low' | 'medium' | 'high';
+    }
+  ): Promise<void> {
+    if (!this.conversationManager || !this.messageManager) {
+      this.pendingConversationId = conversationId;
+      throw new Error('Chat view is not ready');
+    }
+
+    await this.openConversationById(conversationId);
+
+    const currentConversation = this.conversationManager.getCurrentConversation();
+    if (!currentConversation || currentConversation.id !== conversationId) {
+      throw new Error('Failed to focus workflow conversation');
+    }
+
+    if (this.messageManager.getIsLoading()) {
+      await this.messageManager.interruptCurrentGeneration();
+    }
+
+    void this.messageManager.sendMessage(currentConversation, message, options).catch(error => {
+      console.error('[ChatView] Failed to send workflow message:', error);
+      new Notice('Failed to start workflow run');
+    });
   }
 
   /**

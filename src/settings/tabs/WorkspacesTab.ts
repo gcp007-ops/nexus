@@ -8,8 +8,8 @@
  * - Auto-save on all changes
  */
 
-import { App, Setting, Notice, ButtonComponent, Component } from 'obsidian';
-import { SettingsRouter, RouterState } from '../SettingsRouter';
+import { App, Notice, ButtonComponent, Component } from 'obsidian';
+import { SettingsRouter } from '../SettingsRouter';
 import { BackButton } from '../components/BackButton';
 import { WorkspaceFormRenderer } from '../../components/workspace/WorkspaceFormRenderer';
 import { WorkflowEditorRenderer, Workflow } from '../../components/workspace/WorkflowEditorRenderer';
@@ -21,6 +21,7 @@ import { CustomPrompt } from '../../types/mcp/CustomPromptTypes';
 import { CardManager, CardItem } from '../../components/CardManager';
 import { v4 as uuidv4 } from '../../utils/uuid';
 import type { ServiceManager } from '../../core/ServiceManager';
+import type { WorkflowRunService } from '../../services/workflows/WorkflowRunService';
 
 export interface WorkspacesTabServices {
     app: App;
@@ -260,7 +261,7 @@ export class WorkspacesTab {
 
         // Back button
         new BackButton(this.container, 'Back to Workspaces', () => {
-            this.saveCurrentWorkspace();
+            void this.saveCurrentWorkspace();
             this.router.back();
         });
 
@@ -277,10 +278,12 @@ export class WorkspacesTab {
         const formContainer = this.container.createDiv('workspace-form-container');
 
         this.formRenderer = new WorkspaceFormRenderer(
-            this.services.app,
             this.currentWorkspace,
             agents,
             (index) => this.openWorkflowEditor(index),
+            (index) => {
+                void this.runWorkflow(index);
+            },
             (index) => this.openFilePicker(index),
             () => this.refreshDetail()
         );
@@ -300,9 +303,11 @@ export class WorkspacesTab {
                     clearTimeout(this.saveTimeout);
                     this.saveTimeout = undefined;
                 }
-                await this.saveCurrentWorkspace();
-                new Notice('Workspace saved');
-                this.router.back();
+                const savedWorkspace = await this.saveCurrentWorkspace();
+                if (savedWorkspace) {
+                    new Notice('Workspace saved');
+                    this.router.back();
+                }
             });
 
         // Delete button (only for existing workspaces)
@@ -329,16 +334,20 @@ export class WorkspacesTab {
         const workflows = this.currentWorkspace.context.workflows || [];
         const isNew = this.currentWorkflowIndex >= workflows.length || this.currentWorkflowIndex < 0;
         const workflow: Workflow = isNew
-            ? { name: '', when: '', steps: '' }
+            ? { id: '', name: '', when: '', steps: '' }
             : workflows[this.currentWorkflowIndex];
 
         this.workflowRenderer = new WorkflowEditorRenderer(
+            this.getAvailableAgents(),
             (savedWorkflow) => {
-                this.saveWorkflow(savedWorkflow);
+                void this.saveWorkflow(savedWorkflow);
             },
             () => {
                 this.currentView = 'detail';
                 this.renderDetail();
+            },
+            async (workflowToRun) => {
+                await this.runWorkflowFromEditor(workflowToRun);
             }
         );
 
@@ -380,8 +389,8 @@ export class WorkspacesTab {
     /**
      * Save the current workspace
      */
-    private async saveCurrentWorkspace(): Promise<void> {
-        if (!this.currentWorkspace || !this.services.workspaceService) return;
+    private async saveCurrentWorkspace(): Promise<ProjectWorkspace | null> {
+        if (!this.currentWorkspace || !this.services.workspaceService) return null;
 
         try {
             const existingIndex = this.workspaces.findIndex(w => w.id === this.currentWorkspace?.id);
@@ -393,6 +402,7 @@ export class WorkspacesTab {
                     this.currentWorkspace
                 );
                 this.workspaces[existingIndex] = this.currentWorkspace as ProjectWorkspace;
+                return this.currentWorkspace as ProjectWorkspace;
             } else {
                 // Create new
                 const created = await this.services.workspaceService.createWorkspace(
@@ -400,10 +410,12 @@ export class WorkspacesTab {
                 );
                 this.workspaces.push(created);
                 this.currentWorkspace = created;
+                return created;
             }
         } catch (error) {
             console.error('[WorkspacesTab] Failed to save workspace:', error);
             new Notice('Failed to save workspace');
+            return null;
         }
     }
 
@@ -440,26 +452,34 @@ export class WorkspacesTab {
     /**
      * Save workflow and return to detail view
      */
-    private saveWorkflow(workflow: Workflow): void {
-        if (!this.currentWorkspace?.context) return;
-
-        if (!this.currentWorkspace.context.workflows) {
-            this.currentWorkspace.context.workflows = [];
+    private async saveWorkflow(workflow: Workflow, options?: {
+        returnToDetail?: boolean;
+        runAfterSave?: boolean;
+    }): Promise<void> {
+        const persistedWorkflow = await this.persistWorkflow(workflow);
+        if (!persistedWorkflow) {
+            return;
         }
 
-        if (this.currentWorkflowIndex >= 0 && this.currentWorkflowIndex < this.currentWorkspace.context.workflows.length) {
-            // Update existing workflow
-            this.currentWorkspace.context.workflows[this.currentWorkflowIndex] = workflow;
-        } else {
-            // Add new workflow
-            this.currentWorkspace.context.workflows.push(workflow);
+        if (options?.runAfterSave) {
+            try {
+                await this.executeWorkflow(persistedWorkflow.id);
+                new Notice('Workflow run started');
+            } catch (error) {
+                console.error('[WorkspacesTab] Failed to run workflow:', error);
+                new Notice('Failed to run workflow');
+            }
+        }
+
+        if (options?.returnToDetail === false) {
+            this.currentView = 'workflow';
+            this.renderWorkflowEditor();
+            return;
         }
 
         this.currentView = 'detail';
         this.renderDetail();
-
-        // Auto-save
-        this.debouncedSave();
+        new Notice('Workflow saved');
     }
 
     /**
@@ -509,6 +529,120 @@ export class WorkspacesTab {
     private refreshDetail(): void {
         if (this.currentView === 'detail') {
             this.renderDetail();
+        }
+    }
+
+    private async runWorkflow(index: number): Promise<void> {
+        const workflow = this.currentWorkspace?.context?.workflows?.[index];
+        if (!workflow?.id) {
+            new Notice('Save this workflow before running it');
+            return;
+        }
+
+        const savedWorkspace = await this.saveCurrentWorkspace();
+        if (!savedWorkspace) {
+            return;
+        }
+
+        this.currentWorkspace = { ...savedWorkspace };
+
+        try {
+            await this.executeWorkflow(workflow.id);
+            new Notice('Workflow run started');
+        } catch (error) {
+            console.error('[WorkspacesTab] Failed to run workflow:', error);
+            new Notice('Failed to run workflow');
+        }
+    }
+
+    private async runWorkflowFromEditor(workflow: Workflow): Promise<void> {
+        await this.saveWorkflow(workflow, {
+            runAfterSave: true,
+            returnToDetail: false
+        });
+    }
+
+    private async persistWorkflow(workflow: Workflow): Promise<Workflow | null> {
+        if (!this.currentWorkspace) {
+            return null;
+        }
+
+        if (!this.currentWorkspace.context) {
+            this.currentWorkspace.context = {
+                purpose: '',
+                workflows: [],
+                keyFiles: [],
+                preferences: ''
+            };
+        }
+
+        if (!this.currentWorkspace.context.workflows) {
+            this.currentWorkspace.context.workflows = [];
+        }
+
+        const normalizedWorkflow: Workflow = {
+            ...workflow,
+            id: workflow.id || uuidv4(),
+            promptName: workflow.promptId
+                ? this.getAvailableAgents().find(prompt => prompt.id === workflow.promptId)?.name || workflow.promptName
+                : undefined
+        };
+
+        const existingIndex = this.currentWorkspace.context.workflows.findIndex(item => item.id === normalizedWorkflow.id);
+
+        if (existingIndex >= 0) {
+            this.currentWorkspace.context.workflows[existingIndex] = normalizedWorkflow;
+            this.currentWorkflowIndex = existingIndex;
+        } else if (this.currentWorkflowIndex >= 0 && this.currentWorkflowIndex < this.currentWorkspace.context.workflows.length) {
+            this.currentWorkspace.context.workflows[this.currentWorkflowIndex] = normalizedWorkflow;
+        } else {
+            this.currentWorkspace.context.workflows.push(normalizedWorkflow);
+            this.currentWorkflowIndex = this.currentWorkspace.context.workflows.length - 1;
+        }
+
+        const savedWorkspace = await this.saveCurrentWorkspace();
+        if (!savedWorkspace) {
+            return null;
+        }
+
+        this.currentWorkspace = { ...savedWorkspace };
+        const savedWorkflow = savedWorkspace.context?.workflows?.find(item => item.id === normalizedWorkflow.id);
+        if (!savedWorkflow) {
+            return normalizedWorkflow;
+        }
+
+        this.currentWorkflowIndex = savedWorkspace.context?.workflows?.findIndex(item => item.id === normalizedWorkflow.id) ?? this.currentWorkflowIndex;
+        return savedWorkflow;
+    }
+
+    private async executeWorkflow(workflowId: string): Promise<void> {
+        if (!this.currentWorkspace?.id) {
+            throw new Error('Workspace must be saved before running a workflow');
+        }
+
+        const workflowRunService = await this.getWorkflowRunService();
+        if (!workflowRunService) {
+            throw new Error('Workflow run service is not available');
+        }
+
+        await workflowRunService.start({
+            workspaceId: this.currentWorkspace.id,
+            workflowId,
+            runTrigger: 'manual',
+            scheduledFor: Date.now(),
+            openInChat: true
+        });
+    }
+
+    private async getWorkflowRunService(): Promise<WorkflowRunService | null> {
+        if (!this.services.serviceManager) {
+            return null;
+        }
+
+        try {
+            return await this.services.serviceManager.getService<WorkflowRunService>('workflowRunService');
+        } catch {
+            return null;
         }
     }
 

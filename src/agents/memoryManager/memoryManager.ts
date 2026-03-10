@@ -15,6 +15,7 @@ import { ListWorkspacesTool } from './tools/workspaces/listWorkspaces';
 import { LoadWorkspaceTool } from './tools/workspaces/loadWorkspace';
 import { UpdateWorkspaceTool } from './tools/workspaces/updateWorkspace';
 import { ArchiveWorkspaceTool } from './tools/workspaces/archiveWorkspace';
+import { RunWorkflowTool } from './tools/workspaces/runWorkflow';
 
 /**
  * Agent for managing workspace memory and states
@@ -22,7 +23,7 @@ import { ArchiveWorkspaceTool } from './tools/workspaces/archiveWorkspace';
  * CONSOLIDATED ARCHITECTURE:
  * - Sessions are now implicit (sessionId comes from context, no CRUD needed)
  * - 3 state tools: create/list/load (states are immutable - no update/archive)
- * - 5 workspace tools: create/list/load/update/archive
+ * - 6 workspace tools: create/list/load/update/archive/run
  * - 3 services: ValidationService/ContextBuilder/MemoryTraceService
  */
 export class MemoryManagerAgent extends BaseAgent {
@@ -102,7 +103,7 @@ export class MemoryManagerAgent extends BaseAgent {
       factory: () => new LoadStateTool(this),
     });
 
-    // Register workspace tools (5 tools: create, list, load, update, archive) - lazy loaded
+    // Register workspace tools (6 tools: create, list, load, update, archive, run) - lazy loaded
     this.registerLazyTool({
       slug: 'createWorkspace', name: 'Create Workspace',
       description: 'Create a new workspace with structured context data',
@@ -132,6 +133,12 @@ export class MemoryManagerAgent extends BaseAgent {
       description: 'Archive a workspace (soft delete). Workspace will be hidden from lists but can be restored.',
       version: '1.0.0',
       factory: () => new ArchiveWorkspaceTool(this),
+    });
+    this.registerLazyTool({
+      slug: 'runWorkflow', name: 'Run Workflow',
+      description: 'Run a workflow immediately and create a fresh conversation for it.',
+      version: '1.0.0',
+      factory: () => new RunWorkflowTool(this),
     });
   }
 

@@ -298,6 +298,22 @@ export class ConversationService {
     return conversations;
   }
 
+  async hasRunKey(runKey: string): Promise<boolean> {
+    const adapter = this.getReadyAdapter();
+    if (adapter) {
+      const result = await adapter.getConversations({
+        page: 0,
+        pageSize: 1,
+        filter: { runKey },
+        includeBranches: true
+      });
+      return result.items.length > 0;
+    }
+
+    const conversations = await this.getAllConversations();
+    return conversations.some(conversation => conversation.metadata?.runKey === runKey);
+  }
+
   /**
    * Create new conversation (writes to adapter or legacy storage)
    */
@@ -314,6 +330,10 @@ export class ConversationService {
         vaultName: data.vault_name || this.plugin.app.vault.getName(),
         workspaceId: data.metadata?.chatSettings?.workspaceId,
         sessionId: data.metadata?.chatSettings?.sessionId,
+        workflowId: data.metadata?.workflowId as string | undefined,
+        runTrigger: data.metadata?.runTrigger as 'manual' | 'scheduled' | 'catch_up' | undefined,
+        scheduledFor: data.metadata?.scheduledFor as number | undefined,
+        runKey: data.metadata?.runKey as string | undefined,
         metadata: data.metadata  // Pass full metadata for branch support (parentConversationId, branchType, etc.)
       });
 
@@ -412,6 +432,10 @@ export class ConversationService {
           updated: updates.updated ?? Date.now(),
           workspaceId: updates.metadata?.chatSettings?.workspaceId,
           sessionId: updates.metadata?.chatSettings?.sessionId,
+          workflowId: updates.metadata?.workflowId as string | undefined,
+          runTrigger: updates.metadata?.runTrigger as 'manual' | 'scheduled' | 'catch_up' | undefined,
+          scheduledFor: updates.metadata?.scheduledFor as number | undefined,
+          runKey: updates.metadata?.runKey as string | undefined,
           metadata: mergedMetadata
         });
       } else {
@@ -421,6 +445,10 @@ export class ConversationService {
           updated: updates.updated ?? Date.now(),
           workspaceId: updates.metadata?.chatSettings?.workspaceId,
           sessionId: updates.metadata?.chatSettings?.sessionId,
+          workflowId: updates.metadata?.workflowId as string | undefined,
+          runTrigger: updates.metadata?.runTrigger as 'manual' | 'scheduled' | 'catch_up' | undefined,
+          scheduledFor: updates.metadata?.scheduledFor as number | undefined,
+          runKey: updates.metadata?.runKey as string | undefined,
           metadata: mergedMetadata
         });
       }
@@ -947,8 +975,13 @@ export class ConversationService {
         chatSettings: {
           ...meta.chatSettings,
           workspaceId: metadata.workspaceId,
-          sessionId: metadata.sessionId
+          sessionId: metadata.sessionId,
+          promptId: (meta.chatSettings as { promptId?: string } | undefined)?.promptId ?? (meta.promptId as string | undefined)
         },
+        workflowId: metadata.workflowId ?? (meta.workflowId as string | undefined),
+        runTrigger: metadata.runTrigger ?? (meta.runTrigger as 'manual' | 'scheduled' | 'catch_up' | undefined),
+        scheduledFor: metadata.scheduledFor ?? (meta.scheduledFor as number | undefined),
+        runKey: metadata.runKey ?? (meta.runKey as string | undefined),
         cost: resolvedCost
       },
       cost: resolvedCost
