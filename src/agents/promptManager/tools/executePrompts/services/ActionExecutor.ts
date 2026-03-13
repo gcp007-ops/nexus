@@ -22,7 +22,7 @@ function isCommonResult(value: unknown): value is CommonResult {
  * Follows SRP by focusing only on action execution logic
  */
 export class ActionExecutor {
-  constructor(private agentManager?: AgentManager, private app?: App) {}
+  constructor(private agentManager?: AgentManager, private appGetter?: () => App | null | undefined) {}
 
   /**
    * Execute a ContentManager action with the LLM response
@@ -152,7 +152,8 @@ export class ActionExecutor {
       return { success: false, error: 'findText is required for findReplace action' };
     }
 
-    if (!this.app) {
+    const app = this.appGetter?.();
+    if (!app) {
       return { success: false, error: 'App instance not available for findReplace' };
     }
 
@@ -165,7 +166,7 @@ export class ActionExecutor {
     // Step 1: Read raw file content via ContentOperations (no line numbers)
     let fileContent: string;
     try {
-      fileContent = await ContentOperations.readContent(this.app, targetPath);
+      fileContent = await ContentOperations.readContent(app, targetPath);
     } catch (error) {
       return { success: false, error: `Failed to read file for findReplace: ${error instanceof Error ? error.message : String(error)}` };
     }
