@@ -73,7 +73,7 @@ describe('SettingsRouter', () => {
     });
 
     it('should accept all valid tab values', () => {
-      const tabs: SettingsTab[] = ['defaults', 'workspaces', 'prompts', 'providers', 'apps', 'data', 'getstarted'];
+      const tabs: SettingsTab[] = ['defaults', 'workspaces', 'prompts', 'providers', 'apps', 'data'];
       for (const tab of tabs) {
         router.setTab(tab);
         expect(router.getState().tab).toBe(tab);

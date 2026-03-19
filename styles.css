@@ -1922,6 +1922,12 @@
     margin-bottom: 15px;
 }
 
+.nexus-settings-tabs {
+    gap: 8px;
+    flex-wrap: wrap;
+    border-bottom: none;
+}
+
 .memory-tab {
     padding: 8px 15px;
     cursor: pointer;
@@ -1931,12 +1937,39 @@
     border-radius: 4px 4px 0 0;
 }
 
+.nexus-settings-tab {
+    flex: 1 1 120px;
+    min-width: 120px;
+    margin-right: 0;
+    text-align: center;
+    justify-content: center;
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-primary);
+}
+
 .memory-tab.active {
     border-bottom: 2px solid var(--text-accent);
     color: var(--text-accent);
     background-color: var(--background-secondary);
     border: 1px solid var(--background-modifier-border);
     border-bottom: none;
+}
+
+.nexus-settings-tab.active {
+    border: 1px solid var(--interactive-accent);
+    background: var(--background-secondary);
+    border-bottom: 1px solid var(--interactive-accent);
+}
+
+.nexus-settings-accordion {
+    margin-bottom: 16px;
+}
+
+.nexus-settings-accordion-content {
+    padding: 0;
 }
 
 .memory-tab-content {

@@ -11,10 +11,10 @@
 
 import { App, Setting, Notice, Platform, Component } from 'obsidian';
 import { BackButton } from '../components/BackButton';
-import { BRAND_NAME, getPrimaryServerKey } from '../../constants/branding';
+import { getPrimaryServerKey } from '../../constants/branding';
+import { ConfigStatus, getClaudeDesktopConfigPath, getConfigStatus } from '../getStartedStatus';
 
 type GetStartedView = 'paths' | 'internal-chat' | 'mcp-setup';
-type ConfigStatus = 'no-claude-folder' | 'no-config-file' | 'nexus-configured' | 'config-exists' | 'invalid-config';
 
 export interface GetStartedTabServices {
     app: App;
@@ -231,10 +231,16 @@ export class GetStartedTab {
             });
         }
 
-        const configPath = this.getClaudeDesktopConfigPath();
-        const pathMod = require('path') as typeof import('path');
-        const configDir = pathMod.dirname(configPath);
-        const configStatus = this.checkConfigStatus(configPath, configDir);
+        const configPath = getClaudeDesktopConfigPath();
+        if (!configPath) {
+            this.container.createEl('p', {
+                text: 'MCP setup is only available on desktop.',
+                cls: 'setting-item-description'
+            });
+            return;
+        }
+
+        const configStatus = this.checkConfigStatus();
 
         // Compact status + action in one row
         if (configStatus === 'no-claude-folder') {
@@ -418,41 +424,8 @@ export class GetStartedTab {
     /**
      * Check the status of the Claude config
      */
-    private checkConfigStatus(configPath: string, configDir: string): ConfigStatus {
-        const nodeFs = require('fs') as typeof import('fs');
-        // Check if Claude folder exists
-        if (!nodeFs.existsSync(configDir)) {
-            return 'no-claude-folder';
-        }
-
-        // Check if config file exists
-        if (!nodeFs.existsSync(configPath)) {
-            return 'no-config-file';
-        }
-
-        // Try to read and parse the config
-        try {
-            const content = nodeFs.readFileSync(configPath, 'utf-8');
-
-            // Handle empty file
-            if (!content.trim()) {
-                return 'invalid-config';
-            }
-
-            const config = JSON.parse(content);
-            const vaultName = this.services.app.vault.getName();
-            const serverKey = getPrimaryServerKey(vaultName);
-
-            if (config.mcpServers && config.mcpServers[serverKey]) {
-                return 'nexus-configured';
-            }
-
-            return 'config-exists';
-        } catch (error) {
-            // JSON parse error - config file exists but is invalid
-            console.error('[GetStartedTab] Error parsing config:', error);
-            return 'invalid-config';
-        }
+    private checkConfigStatus(): ConfigStatus {
+        return getConfigStatus(this.services.app);
     }
 
     /**
@@ -551,21 +524,6 @@ export class GetStartedTab {
             return 'Reveal in Finder';
         } else {
             return 'Reveal in Files';
-        }
-    }
-
-    /**
-     * Get Claude Desktop config file path based on platform
-     */
-    private getClaudeDesktopConfigPath(): string {
-        const pathMod = require('path') as typeof import('path');
-        if (Platform.isWin) {
-            return pathMod.join(process.env.APPDATA || '', 'Claude', 'claude_desktop_config.json');
-        } else if (Platform.isMacOS) {
-            return pathMod.join(process.env.HOME || '', 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
-        } else {
-            // Linux
-            return pathMod.join(process.env.HOME || '', '.config', 'Claude', 'claude_desktop_config.json');
         }
     }
 

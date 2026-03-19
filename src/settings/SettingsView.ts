@@ -4,6 +4,8 @@ import { UnifiedTabs, UnifiedTabConfig } from '../components/UnifiedTabs';
 import { SettingsRouter, RouterState, SettingsTab } from './SettingsRouter';
 import { UpdateManager } from '../utils/UpdateManager';
 import { supportsMCPBridge } from '../utils/platform';
+import { Accordion } from '../components/Accordion';
+import { getConfigStatus, hasConfiguredProviders } from './getStartedStatus';
 
 // Type to access private method (should be refactored to make fetchLatestRelease public in UpdateManager)
 type UpdateManagerWithFetchRelease = {
@@ -65,6 +67,7 @@ export class SettingsView extends PluginSettingTab {
     private providersTab: ProvidersTab | undefined;
     private appsTab: AppsTab | undefined;
     private getStartedTab: GetStartedTabType | undefined;
+    private getStartedAccordion: Accordion | undefined;
     // private dataTab: DataTab | undefined; // TODO: Re-enable when Data tab is ready
 
     // Prefetched data cache
@@ -140,6 +143,7 @@ export class SettingsView extends PluginSettingTab {
         this.providersTab?.destroy();
         this.appsTab?.destroy();
         this.getStartedTab?.destroy();
+        this.getStartedAccordion?.unload();
         // Clear prefetch cache
         this.prefetchedWorkspaces = null;
     }
@@ -190,13 +194,19 @@ export class SettingsView extends PluginSettingTab {
         containerEl.empty();
         containerEl.addClass('nexus-settings');
 
+        this.getStartedTab?.destroy();
+        this.getStartedAccordion?.unload();
+
         // Start prefetching workspaces in background (non-blocking)
         this.prefetchWorkspaces();
 
         // 1. Render header (About + Update button)
         this.renderHeader(containerEl);
 
-        // 2. Create tabs
+        // 2. Render get started accordion above the tabs
+        this.renderGetStartedAccordion(containerEl);
+
+        // 3. Create tabs
         const tabConfigs: UnifiedTabConfig[] = [
             { key: 'defaults', label: 'Defaults' },
             { key: 'workspaces', label: 'Workspaces' },
@@ -205,11 +215,6 @@ export class SettingsView extends PluginSettingTab {
             { key: 'apps', label: 'Apps' },
             // { key: 'data', label: 'Data' }, // TODO: Re-enable when Data tab is ready
         ];
-
-        // Get Started tab is desktop-only (MCP setup requires Node.js)
-        if (supportsMCPBridge()) {
-            tabConfigs.push({ key: 'getstarted', label: 'Get Started' });
-        }
 
         this.tabs = new UnifiedTabs({
             containerEl,
@@ -221,7 +226,7 @@ export class SettingsView extends PluginSettingTab {
             component: this.plugin
         });
 
-        // 3. Subscribe to router changes
+        // 4. Subscribe to router changes
         if (this.unsubscribeRouter) {
             this.unsubscribeRouter();
         }
@@ -229,7 +234,7 @@ export class SettingsView extends PluginSettingTab {
             this.renderTabContent(state);
         });
 
-        // 4. Render initial content
+        // 5. Render initial content
         this.renderTabContent(this.router.getState());
     }
 
@@ -344,9 +349,6 @@ export class SettingsView extends PluginSettingTab {
             // case 'data': // TODO: Re-enable when Data tab is ready
             //     this.renderDataTab(pane);
             //     break;
-            case 'getstarted':
-                this.renderGetStartedTab(pane, services);
-                break;
         }
     }
 
@@ -522,17 +524,32 @@ export class SettingsView extends PluginSettingTab {
     //     this.dataTab.render();
     // }
 
-    /**
-     * Render Get Started tab content
-     * Uses dynamic import to avoid loading Node.js modules on mobile
-     */
-    private async renderGetStartedTab(container: HTMLElement, services: any): Promise<void> {
-        // Desktop-only - don't render on mobile
+    private renderGetStartedAccordion(containerEl: HTMLElement): void {
         if (!supportsMCPBridge()) {
-            container.createEl('p', { text: 'MCP setup is only available on desktop.' });
             return;
         }
 
+        const hasProviders = hasConfiguredProviders(this.settingsManager.settings.llmProviders);
+        const mcpConfigured = getConfigStatus(this.app) === 'nexus-configured';
+
+        this.getStartedAccordion = new Accordion(
+            containerEl,
+            'Get Started',
+            !hasProviders || !mcpConfigured
+        );
+        this.getStartedAccordion.rootEl.addClass('nexus-settings-accordion');
+
+        const accordionContent = this.getStartedAccordion.getContentEl();
+        accordionContent.addClass('nexus-settings-accordion-content');
+
+        void this.renderGetStartedContent(accordionContent);
+    }
+
+    /**
+     * Render Get Started accordion content
+     * Uses dynamic import to avoid loading Node.js modules on mobile
+     */
+    private async renderGetStartedContent(container: HTMLElement): Promise<void> {
         // Destroy previous tab instance if exists
         this.getStartedTab?.destroy();
 
@@ -563,7 +580,7 @@ export class SettingsView extends PluginSettingTab {
                         this.tabs.activateTab('providers');
                     }
                 },
-                component: this.plugin
+                component: this.getStartedAccordion
             }
         );
     }
