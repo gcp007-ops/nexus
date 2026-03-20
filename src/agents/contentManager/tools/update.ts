@@ -1,4 +1,5 @@
 import { App, TFile } from 'obsidian';
+import { createHash } from 'crypto';
 import { BaseTool } from '../../baseTool';
 import { UpdateParams, UpdateResult } from '../types';
 import { ContentOperations } from '../utils/ContentOperations';
@@ -27,6 +28,14 @@ import { generateUnifiedDiff } from '../utils/unifiedDiff';
  * - Part of CRUA architecture (Update operation)
  * - Follows write tool response stripping principle (returns { success: true } only)
  */
+/**
+ * Compute a truncated SHA-256 hash (8 hex chars) of a string.
+ * Used for lightweight stale-write detection.
+ */
+function contentHash(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 8);
+}
+
 export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
   private app: App;
 
@@ -69,7 +78,7 @@ export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
    */
   async execute(params: UpdateParams): Promise<UpdateResult> {
     try {
-      const { path, content, startLine, endLine, expectedContent } = params;
+      const { path, content, startLine, endLine, expectedContent, expectedHash } = params;
 
       // Normalize path (remove leading slash)
       const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
@@ -118,15 +127,26 @@ export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
         );
       }
 
-      // Validate expectedContent against current file state (stale write prevention)
-      if (expectedContent !== undefined && startLine >= 1) {
+      // Validate against current file state (stale write prevention)
+      // expectedHash is preferred (lightweight, ~10 tokens); expectedContent is fallback (exact, expensive)
+      if ((expectedHash !== undefined || expectedContent !== undefined) && startLine >= 1) {
         const checkEndLine = endLine !== undefined ? endLine : startLine;
         const targetLines = oldLines.slice(startLine - 1, checkEndLine).join('\n');
-        const expected = expectedContent.replace(/\r\n/g, '\n');
-        if (targetLines !== expected) {
-          return this.prepareResult(false, undefined,
-            `Content mismatch at lines ${startLine}-${checkEndLine}. File has changed since last read. Current content at target lines:\n---\n${targetLines}\n---\nRe-read the file and retry with updated line numbers.`
-          );
+
+        if (expectedHash !== undefined) {
+          const actualHash = contentHash(targetLines);
+          if (actualHash !== expectedHash) {
+            return this.prepareResult(false, undefined,
+              `Content hash mismatch at lines ${startLine}-${checkEndLine} (expected ${expectedHash}, got ${actualHash}). File has changed since last read. Re-read the file and retry with updated line numbers.`
+            );
+          }
+        } else if (expectedContent !== undefined) {
+          const expected = expectedContent.replace(/\r\n/g, '\n');
+          if (targetLines !== expected) {
+            return this.prepareResult(false, undefined,
+              `Content mismatch at lines ${startLine}-${checkEndLine}. File has changed since last read. Current content at target lines:\n---\n${targetLines}\n---\nRe-read the file and retry with updated line numbers.`
+            );
+          }
         }
       }
 
@@ -228,7 +248,11 @@ export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
         },
         expectedContent: {
           type: 'string',
-          description: 'Expected content at target lines (startLine to endLine). If provided, the update will fail with the current content if it doesn\'t match, preventing stale writes. Recommended for replace operations.'
+          description: 'Expected content at target lines. If provided, update fails on mismatch. Use expectedHash instead for lower token cost.'
+        },
+        expectedHash: {
+          type: 'string',
+          description: 'SHA-256 hash (8 hex chars) of expected content at target lines. Use the contentHash returned by read. Lightweight alternative to expectedContent (~10 tokens vs hundreds).'
         }
       },
       required: ['path', 'content', 'startLine']

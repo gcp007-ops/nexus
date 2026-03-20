@@ -505,6 +505,95 @@ describe('UpdateTool', () => {
   });
 
   // ========================================================================
+  // expectedHash (lightweight stale write prevention)
+  // ========================================================================
+
+  describe('expectedHash validation', () => {
+    // Helper to compute the same hash the tool uses
+    function computeHash(text: string): string {
+      const { createHash } = require('crypto');
+      return createHash('sha256').update(text).digest('hex').slice(0, 8);
+    }
+
+    it('succeeds when expectedHash matches target lines', async () => {
+      mockFileContent = 'line 1\nline 2\nline 3';
+      const hash = computeHash('line 2');
+      const result = await tool.execute({
+        ...baseParams,
+        path: 'test/note.md',
+        content: 'REPLACED',
+        startLine: 2,
+        endLine: 2,
+        expectedHash: hash,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.diff).toContain('+REPLACED');
+    });
+
+    it('fails when expectedHash does not match', async () => {
+      mockFileContent = 'line 1\nline 2\nline 3';
+      const result = await tool.execute({
+        ...baseParams,
+        path: 'test/note.md',
+        content: 'REPLACED',
+        startLine: 2,
+        endLine: 2,
+        expectedHash: 'deadbeef',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Content hash mismatch');
+      expect(result.error).toContain('deadbeef');
+    });
+
+    it('validates multi-line range hash', async () => {
+      mockFileContent = 'a\nb\nc\nd\ne';
+      const hash = computeHash('b\nc');
+      const result = await tool.execute({
+        ...baseParams,
+        path: 'test/note.md',
+        content: 'X\nY',
+        startLine: 2,
+        endLine: 3,
+        expectedHash: hash,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('expectedHash takes precedence over expectedContent', async () => {
+      mockFileContent = 'line 1\nline 2\nline 3';
+      const correctHash = computeHash('line 2');
+      const result = await tool.execute({
+        ...baseParams,
+        path: 'test/note.md',
+        content: 'REPLACED',
+        startLine: 2,
+        endLine: 2,
+        expectedHash: correctHash,
+        expectedContent: 'wrong content', // would fail if checked
+      });
+
+      // Hash matches, so update succeeds (expectedContent not checked)
+      expect(result.success).toBe(true);
+    });
+
+    it('skips validation for append mode', async () => {
+      mockFileContent = 'line 1';
+      const result = await tool.execute({
+        ...baseParams,
+        path: 'test/note.md',
+        content: 'appended',
+        startLine: -1,
+        expectedHash: 'deadbeef',
+      });
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  // ========================================================================
   // Schema
   // ========================================================================
 
