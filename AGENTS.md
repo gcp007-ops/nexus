@@ -399,7 +399,7 @@ onCreate(file: TFile) {
    - Tools: listModels, executePrompts, createPrompt, updatePrompt, deletePrompt, listPrompts, getPrompt, generateImage
 
 2. **ContentManager** (`src/agents/contentManager/`) - Note reading/editing operations
-   - Tools: read, write, update, setProperty
+   - Tools: read, write, replace, insert, setProperty
 
 3. **StorageManager** (`src/agents/storageManager/`) - File/folder management
    - Tools: list, createFolder, move, copy, archive, open
@@ -555,7 +555,7 @@ Instead of 50+ tools, MCP exposes just 2: `getTools` (discovery) and `useTools` 
 
 **Key Files**: `src/agents/toolManager/` (agent + tools), `src/services/trace/ToolCallTraceService.ts`
 
-**Tool Count**: 54 tools across 8 agents (not counting ToolManager meta-tools)
+**Tool Count**: 55 tools across 8 agents (not counting ToolManager meta-tools)
 
 ## Memory & Workspace System
 
