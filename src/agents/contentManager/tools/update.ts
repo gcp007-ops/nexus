@@ -1,6 +1,6 @@
 import { App, TFile } from 'obsidian';
-import { createHash } from 'crypto';
 import { BaseTool } from '../../baseTool';
+import { hashContent } from '../../../services/embeddings/EmbeddingUtils';
 import { UpdateParams, UpdateResult } from '../types';
 import { ContentOperations } from '../utils/ContentOperations';
 import { createErrorMessage } from '../../../utils/errorUtils';
@@ -29,11 +29,11 @@ import { generateUnifiedDiff } from '../utils/unifiedDiff';
  * - Follows write tool response stripping principle (returns { success: true } only)
  */
 /**
- * Compute a truncated SHA-256 hash (8 hex chars) of a string.
- * Used for lightweight stale-write detection.
+ * Compute a padded hash (8 hex chars) of a string.
+ * Uses djb2 from EmbeddingUtils for mobile-compatible stale-write detection.
  */
-function contentHash(text: string): string {
-  return createHash('sha256').update(text).digest('hex').slice(0, 8);
+function computeContentHash(text: string): string {
+  return hashContent(text).padStart(8, '0');
 }
 
 export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
@@ -128,23 +128,24 @@ export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
       }
 
       // Validate against current file state (stale write prevention)
+      // Only applies to REPLACE/DELETE (endLine defined) — insert mode doesn't overwrite content,
+      // so stale-write detection has no meaning and the hash scope wouldn't match read's output.
       // expectedHash is preferred (lightweight, ~10 tokens); expectedContent is fallback (exact, expensive)
-      if ((expectedHash !== undefined || expectedContent !== undefined) && startLine >= 1) {
-        const checkEndLine = endLine !== undefined ? endLine : startLine;
-        const targetLines = oldLines.slice(startLine - 1, checkEndLine).join('\n');
+      if ((expectedHash !== undefined || expectedContent !== undefined) && startLine >= 1 && endLine !== undefined) {
+        const targetLines = oldLines.slice(startLine - 1, endLine).join('\n');
 
         if (expectedHash !== undefined) {
-          const actualHash = contentHash(targetLines);
+          const actualHash = computeContentHash(targetLines);
           if (actualHash !== expectedHash) {
             return this.prepareResult(false, undefined,
-              `Content hash mismatch at lines ${startLine}-${checkEndLine} (expected ${expectedHash}, got ${actualHash}). File has changed since last read. Re-read the file and retry with updated line numbers.`
+              `Content hash mismatch at lines ${startLine}-${endLine} (expected ${expectedHash}, got ${actualHash}). File has changed since last read. Re-read the file and retry with updated line numbers.`
             );
           }
         } else if (expectedContent !== undefined) {
           const expected = expectedContent.replace(/\r\n/g, '\n');
           if (targetLines !== expected) {
             return this.prepareResult(false, undefined,
-              `Content mismatch at lines ${startLine}-${checkEndLine}. File has changed since last read. Current content at target lines:\n---\n${targetLines}\n---\nRe-read the file and retry with updated line numbers.`
+              `Content mismatch at lines ${startLine}-${endLine}. File has changed since last read. Current content at target lines:\n---\n${targetLines}\n---\nRe-read the file and retry with updated line numbers.`
             );
           }
         }
@@ -252,7 +253,7 @@ export class UpdateTool extends BaseTool<UpdateParams, UpdateResult> {
         },
         expectedHash: {
           type: 'string',
-          description: 'SHA-256 hash (8 hex chars) of expected content at target lines. Use the contentHash returned by read. Lightweight alternative to expectedContent (~10 tokens vs hundreds).'
+          description: 'Hash (8 hex chars) of expected content at target lines (requires endLine). Use the contentHash returned by read. Lightweight alternative to expectedContent (~10 tokens vs hundreds).'
         }
       },
       required: ['path', 'content', 'startLine']

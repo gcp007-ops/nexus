@@ -489,17 +489,17 @@ describe('UpdateTool', () => {
       expect(result.success).toBe(false);
     });
 
-    it('validates expectedContent for insert mode (single line check)', async () => {
+    it('skips validation for insert mode (no endLine)', async () => {
       mockFileContent = 'a\nb\nc';
       const result = await tool.execute({
         ...baseParams,
         path: 'test/note.md',
         content: 'NEW',
         startLine: 2,
-        expectedContent: 'b',
+        expectedContent: 'wrong content',
       });
 
-      // Insert mode with expectedContent: checks that line at startLine matches
+      // Insert mode skips validation — endLine is undefined, so no content is being overwritten
       expect(result.success).toBe(true);
     });
   });
@@ -509,10 +509,13 @@ describe('UpdateTool', () => {
   // ========================================================================
 
   describe('expectedHash validation', () => {
-    // Helper to compute the same hash the tool uses
+    // Helper to compute the same hash the tool uses (djb2 from EmbeddingUtils, padded to 8 chars)
     function computeHash(text: string): string {
-      const { createHash } = require('crypto');
-      return createHash('sha256').update(text).digest('hex').slice(0, 8);
+      let hash = 5381;
+      for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+      }
+      return (hash >>> 0).toString(16).padStart(8, '0');
     }
 
     it('succeeds when expectedHash matches target lines', async () => {

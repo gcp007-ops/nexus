@@ -71,7 +71,7 @@ export interface ReadResult extends CommonResult {
     endLine?: number;
 
     /**
-     * SHA-256 hash (truncated to 8 hex chars) of the content read.
+     * Hash (8 hex chars) of the content read.
      * Pass this as expectedHash in a subsequent update call to
      * prevent stale writes with minimal token cost.
      */
@@ -138,7 +138,8 @@ export interface UpdateParams extends CommonParameters {
   expectedContent?: string;
 
   /**
-   * Hash of expected content at target lines (8-char hex, SHA-256 truncated).
+   * Hash of expected content at target lines (8-char hex).
+   * Only applies to REPLACE/DELETE operations (requires endLine).
    * Lightweight alternative to expectedContent — same stale write prevention
    * at ~10 tokens instead of hundreds. Use the contentHash returned by read.
    */
