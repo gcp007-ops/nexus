@@ -384,6 +384,21 @@ export interface MessageUpdatedEvent extends BaseStorageEvent {
   }>;
 }
 
+/**
+ * Event: Message deleted
+ *
+ * Records removal of an existing top-level conversation message.
+ * Needed when retry replaces an assistant turn and trims stale continuation
+ * messages from the main conversation path.
+ */
+export interface MessageDeletedEvent extends BaseStorageEvent {
+  type: 'message_deleted';
+  /** Parent conversation ID */
+  conversationId: string;
+  /** Target message ID */
+  messageId: string;
+}
+
 // ============================================================================
 // Branch Events (Append-Only for Conflict-Free Sync)
 // ============================================================================
@@ -662,6 +677,7 @@ export type ConversationEvent =
   | ConversationUpdatedEvent
   | MessageEvent
   | MessageUpdatedEvent
+  | MessageDeletedEvent
   | BranchCreatedEvent
   | BranchMessageEvent
   | BranchMessageUpdatedEvent
@@ -712,6 +728,7 @@ export function isConversationEvent(event: StorageEvent): event is ConversationE
     'conversation_updated',
     'message',
     'message_updated',
+    'message_deleted',
     'branch_created',
     'branch_message',
     'branch_message_updated',
@@ -780,6 +797,7 @@ export function isDeletionEvent(event: StorageEvent): boolean {
   return [
     'workspace_deleted',
     'state_deleted',
+    'message_deleted',
     'project_deleted',
     'task_deleted',
     'task_dependency_removed',

@@ -356,8 +356,18 @@ export class ConversationService {
           cost: updates.cost || updates.metadata?.cost || existingMetadata?.cost
         };
 
-        if (updates.messages && updates.messages.length > 0) {
-          for (const msg of updates.messages) {
+        if (updates.messages !== undefined) {
+          const existingMessages = await this.getAllAdapterMessages(adapter, id);
+          const nextMessages = updates.messages;
+          const nextMessageIds = new Set(nextMessages.map(msg => msg.id));
+
+          for (const existingMessage of existingMessages) {
+            if (!nextMessageIds.has(existingMessage.id)) {
+              await adapter.deleteMessage(id, existingMessage.id);
+            }
+          }
+
+          for (const msg of nextMessages) {
             const convertedToolCalls = msg.toolCalls?.map(tc => ({
               id: tc.id,
               type: 'function' as const,
@@ -413,6 +423,29 @@ export class ConversationService {
         await this.indexManager.updateConversationInIndex(updatedConversation);
       }
     );
+  }
+
+  /**
+   * Load all adapter-backed messages for a conversation so updateConversation()
+   * can reconcile deletions as well as updates.
+   */
+  private async getAllAdapterMessages(adapter: IStorageAdapter, conversationId: string): Promise<Array<{ id: string }>> {
+    const messages: Array<{ id: string }> = [];
+    let page = 0;
+    let hasNextPage = true;
+
+    while (hasNextPage) {
+      const result = await adapter.getMessages(conversationId, {
+        page,
+        pageSize: 200
+      });
+
+      messages.push(...result.items.map(message => ({ id: message.id })));
+      hasNextPage = !!result.hasNextPage;
+      page += 1;
+    }
+
+    return messages;
   }
 
   /**

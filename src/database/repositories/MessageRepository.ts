@@ -20,7 +20,7 @@
 import { BaseRepository, RepositoryDependencies } from './base/BaseRepository';
 import { IMessageRepository, CreateMessageData, UpdateMessageData } from './interfaces/IMessageRepository';
 import { MessageData, AlternativeMessage } from '../../types/storage/HybridStorageTypes';
-import { MessageEvent, MessageUpdatedEvent, AlternativeMessageEvent } from '../interfaces/StorageEvents';
+import { MessageEvent, MessageUpdatedEvent, MessageDeletedEvent, AlternativeMessageEvent } from '../interfaces/StorageEvents';
 import { PaginatedResult, PaginationParams } from '../../types/pagination/PaginationTypes';
 
 /**
@@ -442,8 +442,24 @@ export class MessageRepository
    */
   async deleteMessage(conversationId: string, messageId: string): Promise<void> {
     try {
-      // No specific delete event - just remove from SQLite
+      await this.writeEvent<MessageDeletedEvent>(
+        this.jsonlPath(conversationId),
+        {
+          type: 'message_deleted',
+          conversationId,
+          messageId
+        }
+      );
+
       await this.sqliteCache.run(`DELETE FROM ${this.tableName} WHERE id = ?`, [messageId]);
+
+      await this.sqliteCache.run(
+        `UPDATE conversations
+         SET messageCount = CASE WHEN messageCount > 0 THEN messageCount - 1 ELSE 0 END,
+             updated = ?
+         WHERE id = ?`,
+        [Date.now(), conversationId]
+      );
 
       // Invalidate cache
       this.invalidateCache();

@@ -282,6 +282,53 @@ describe('ConversationService dual-backend characterization', () => {
       expect(result).toBeNull();
       expect(fs.readConversation).not.toHaveBeenCalled();
     });
+
+    it('updateConversation deletes adapter-backed messages that were removed from the conversation', async () => {
+      const fs = createMockFileSystem();
+      const idx = createMockIndexManager();
+      const adapter = createMockAdapter(true);
+
+      adapter.getConversation.mockResolvedValue({
+        id: 'conv1',
+        title: 'Conversation 1',
+        created: 1000,
+        updated: 2000,
+        messageCount: 3,
+        metadata: {}
+      });
+      adapter.getMessages.mockResolvedValue({
+        items: [
+          { id: 'msg_keep', role: 'assistant', content: 'keep', timestamp: 1000, state: 'complete' },
+          { id: 'msg_delete', role: 'assistant', content: 'delete', timestamp: 1001, state: 'complete' }
+        ],
+        page: 0,
+        pageSize: 200,
+        totalItems: 2,
+        totalPages: 1,
+        hasNextPage: false,
+        hasPreviousPage: false
+      });
+
+      const service = new ConversationService(plugin, fs, idx, adapter);
+      await service.updateConversation('conv1', {
+        messages: [
+          {
+            id: 'msg_keep',
+            role: 'assistant',
+            content: 'updated keep',
+            timestamp: 1000,
+            conversationId: 'conv1',
+            state: 'complete'
+          }
+        ]
+      });
+
+      expect(adapter.deleteMessage).toHaveBeenCalledWith('conv1', 'msg_delete');
+      expect(adapter.updateMessage).toHaveBeenCalledWith('conv1', 'msg_keep', expect.objectContaining({
+        content: 'updated keep',
+        state: 'complete'
+      }));
+    });
   });
 
   describe('when adapter is NOT ready (legacy path)', () => {

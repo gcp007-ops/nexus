@@ -11,6 +11,7 @@ import {
   ConversationUpdatedEvent,
   MessageEvent,
   MessageUpdatedEvent,
+  MessageDeletedEvent,
 } from '../interfaces/StorageEvents';
 import { ISQLiteCacheManager } from './SyncCoordinator';
 
@@ -37,6 +38,9 @@ export class ConversationEventApplier {
         break;
       case 'message_updated':
         await this.applyMessageUpdated(event);
+        break;
+      case 'message_deleted':
+        await this.applyMessageDeleted(event);
         break;
       // Legacy branch events - no longer used in unified model (branches ARE conversations)
       // Skip silently to handle any old JSONL files with these events
@@ -183,5 +187,20 @@ export class ConversationEventApplier {
         values
       );
     }
+  }
+
+  private async applyMessageDeleted(event: MessageDeletedEvent): Promise<void> {
+    await this.sqliteCache.run(
+      `DELETE FROM messages WHERE id = ? AND conversationId = ?`,
+      [event.messageId, event.conversationId]
+    );
+
+    await this.sqliteCache.run(
+      `UPDATE conversations
+       SET messageCount = CASE WHEN messageCount > 0 THEN messageCount - 1 ELSE 0 END,
+           updated = ?
+       WHERE id = ?`,
+      [event.timestamp ?? Date.now(), event.conversationId]
+    );
   }
 }

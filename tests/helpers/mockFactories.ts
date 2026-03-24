@@ -88,6 +88,8 @@ export function createMockAdapter(ready: boolean): any {
     getMessages: jest.fn().mockResolvedValue({ ...EMPTY_MSG_PAGE }),
     createConversation: jest.fn().mockResolvedValue('conv-new'),
     updateConversation: jest.fn(),
+    updateMessage: jest.fn(),
+    deleteMessage: jest.fn(),
     deleteConversation: jest.fn(),
   };
 }
