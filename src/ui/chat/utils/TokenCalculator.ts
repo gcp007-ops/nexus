@@ -44,7 +44,6 @@ export class TokenCalculator {
     currentSystemPrompt?: string | null
   ): number {
     let totalTokens = 0;
-    let hasActualUsageData = false;
 
     // Add system prompt tokens if provided (always estimated)
     if (currentSystemPrompt) {
@@ -54,14 +53,10 @@ export class TokenCalculator {
 
     // Add message tokens - USE ACTUAL USAGE DATA when available
     conversation.messages.forEach((message: any, index) => {
-      // Check if message has actual usage data from API response
-      if (message.usage) {
-        hasActualUsageData = true;
-        // Use actual token counts from OpenAI/Anthropic/etc API
-        const promptTokens = message.usage.prompt_tokens || message.usage.input_tokens || 0;
-        const completionTokens = message.usage.completion_tokens || message.usage.output_tokens || 0;
-        const totalMessageTokens = message.usage.total_tokens || (promptTokens + completionTokens);
-
+      const normalizedUsage = this.normalizeUsage(message.usage);
+      if (normalizedUsage) {
+        const totalMessageTokens = normalizedUsage.totalTokens ??
+          (normalizedUsage.promptTokens + normalizedUsage.completionTokens);
         totalTokens += totalMessageTokens;
       } else {
         // Fallback to estimation if no usage data
@@ -87,6 +82,63 @@ export class TokenCalculator {
       }
     });
     return totalTokens;
+  }
+
+  private static normalizeUsage(
+    usage: any
+  ): { promptTokens: number; completionTokens: number; totalTokens?: number } | null {
+    if (!usage || typeof usage !== 'object') {
+      return null;
+    }
+
+    const promptTokens = this.getNumericUsageValue(
+      usage,
+      'promptTokens',
+      'prompt_tokens',
+      'inputTokens',
+      'input_tokens'
+    );
+    const completionTokens = this.getNumericUsageValue(
+      usage,
+      'completionTokens',
+      'completion_tokens',
+      'outputTokens',
+      'output_tokens'
+    );
+    const totalTokens = this.getNumericUsageValue(
+      usage,
+      'totalTokens',
+      'total_tokens'
+    );
+
+    const hasRecognizedUsage =
+      promptTokens !== undefined ||
+      completionTokens !== undefined ||
+      totalTokens !== undefined;
+
+    if (!hasRecognizedUsage) {
+      return null;
+    }
+
+    return {
+      promptTokens: promptTokens ?? 0,
+      completionTokens: completionTokens ?? 0,
+      totalTokens
+    };
+  }
+
+  private static getNumericUsageValue(
+    usage: Record<string, unknown>,
+    ...keys: string[]
+  ): number | undefined {
+    for (const key of keys) {
+      const value = usage[key];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+    }
+
+    return undefined;
   }
 
   /**
