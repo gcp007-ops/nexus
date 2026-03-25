@@ -1,9 +1,9 @@
 # Claude Code Context Document
-Last Updated: 2026-03-24
+Last Updated: 2026-03-25
 
 ## Project Overview
 - **Name**: Claudesidian MCP
-- **Version**: 5.4.1
+- **Version**: 5.5.0
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -259,6 +259,16 @@ onCreate(file: TFile) {
 
 ### March 2026
 
+**Mar 25**: v5.5.0 — Task Board, Compaction Frontier, Tool Refactors, Provider Updates ✅ (PRs #65–72)
+- **CLI providers stdin** (PR #65): Claude Code + Gemini CLI now pass prompts via stdin; Windows argv safety guard (24K limit)
+- **SystemPromptBuilder refactor** (PR #66): Cleaner composition pipeline, `CompactionFrontierRecord` injection, new guide
+- **Task Board UI** (PR #67): Native Obsidian kanban view (todo/in-progress/done), `openTasks` agent tool, `TaskBoardEvents` pub/sub for live refresh
+- **ContextBudgetService** (PR #72): Unified context window budget tracking + compaction thresholds across all providers
+- **CompactionFrontierService** (PR #68): Bounded stack of compacted context records; meta-compaction; transcript recovery; pre-send spinner in ChatInput
+- **Tool display refactor** (PR #69): `toolDisplayNormalizer` + `toolDisplayFormatter` extracted from `ProgressiveToolAccordion`; structured `ToolDisplayGroup`/`ToolDisplayStep` types
+- **Tool execution refactor** (PR #70): `ToolBatchExecutionService` extracted from `useTools` (430→122 lines); enriched `DirectToolExecutor` event shape
+- **Provider updates** (PR #71): GPT-5.4 Mini + Nano, GitHub Copilot live model discovery, `StreamingOrchestrator` responseId persistence, `ModelDropdownRenderer` fallback fix
+
 **Mar 23**: Claude Code Integration + Replace/Insert Tools ✅ (v5.4.0, PRs #57, #58)
 - Claude Code as native chat provider: uses local Claude CLI subscription login (no API key needed)
 - New `anthropic-claude-code` adapter with headless Claude Code runner and binary discovery
@@ -488,32 +498,13 @@ agents/
 ## Current Context
 
 ### Active Branch
-`feat/provider-integrations` (current worktree: `.worktrees/feat/provider-integrations`) — active worktrees:
-- `.worktrees/feat/elevenlabs-dynamic-models` (branch: `feat/elevenlabs-dynamic-models`)
-- `.worktrees/feat/large-file-refactoring` (branch: `feat/large-file-refactoring`)
-- `.worktrees/feat/provider-integrations` (branch: `feat/provider-integrations`) ← active
+`main` — all v5.5.0 work merged. Active working branch: `feat/context-budget-service` (in progress, not yet merged to main as of this session).
 
 ### Open PRs
-| # | Title | Status |
-|---|-------|--------|
-| **#24** | Socket lifecycle fix (DylanLacey) | Transport fix in main (v4.3.2); mux awaiting contributor socket path fix |
+None — all v5.5.0 PRs (#65–72) merged to main.
 
 ### Current Work
-**New LLM Provider Integrations** (Mar 24) — All committed to main, testing in progress:
-- **Claude Code** ✅ merged (PR #58, #62, #63)
-- **Gemini CLI** ✅ committed — auth uses `~/.gemini/oauth_creds.json` credential check, nodePath prepended to PATH
-- **Codex** ✅ committed
-- **GitHub Copilot** ✅ working — OAuth device flow confirmed working; card visible; user_code shown inline; token saves immediately on connect
-  - `listModels()` returns API models directly (no static fallback); default model `gpt-5.4`
-  - `oauthOnly: true` flag hides API key input for OAuth-exclusive providers (heading changed to "Authentication")
-
-**Large File Refactoring + DRY Consolidation** — Branch `feat/large-file-refactoring`, PR pending. Plan: `docs/plans/large-file-refactoring-plan.md`. Waves 0-3 complete:
-- DualBackendExecutor helper (eliminates dual-backend if/else across 3 services)
-- ModelDropdownRenderer shared component (ChatSettingsRenderer 798→552 lines)
-- OAuthBannerComponent + OAuthFlowManager (GenericProviderModal 650→466 lines)
-- ProjectsManagerView extraction (WorkspacesTab 855→589 lines)
-- Service decomposition: type converters + normalizers extracted (WorkspaceService 1206→965, ConversationService 1108→813)
-- 30 characterization tests + 980/1016 passing
+**Context Budget Service** — `feat/context-budget-service` branch is the user's active in-progress branch. Work ongoing.
 
 **File Picker Bug** — `FilePickerRenderer.getRootFolder()` fails when workspace rootFolder has leading `/` (e.g., `/blog-test` → Obsidian expects `blog-test`). Separate fix needed.
 
@@ -552,7 +543,7 @@ A branch IS a conversation with parent metadata:
 ### Backlog
 1. **Obsidian Secrets API Adoption** (target: March 2026): Migrate API key storage to `SecretStorage` API (v1.11.4+). Research: `docs/preparation/obsidian-secrets-api-research.md`
 2. **Port 3000 conflict**: ~~Fixed~~ OpenRouter OAuth port changed to 3456 (commit 15576fb2). MCPServer.ts HttpTransportManager still on 3000; long-term: make configurable.
-3. **SOLID Audit**: `SystemPromptBuilder.ts` and `ModelAgentManager.ts` are large files
+3. **SOLID Audit**: `ModelAgentManager.ts` is still a very large file (1900+ lines after compaction frontier merge)
 4. **SQLiteCacheManager.ts** (849 lines): Above 600-line threshold
 5. **v5.0.0 Deprecation Cleanup**: Remove backward compatibility for old dedicated agent structures (TODO(v5.0.0) in WorkspacePromptResolver)
 6. **Obsidian CLI Integration** (blocked: Catalyst-only): Research: `docs/preparation/obsidian-cli-research.md`
@@ -587,7 +578,7 @@ A branch IS a conversation with parent metadata:
 - **Release**: Use `/nexus-release` skill for version bumping and GitHub release creation
 
 ### Testing Approach
-- **Unit Tests**: Jest for core logic and services (980 tests — 796 baseline + 132 settings UI + 4 WorkspacesTab + 30 characterization + 18 refactoring)
+- **Unit Tests**: Jest for core logic and services (1200+ tests — added compaction frontier, tool display, context budget, CLI adapter, and system prompt suites in v5.5.0)
 - **Integration Tests**: Manual testing in Obsidian environment
 - **MCP Testing**: Via Claude Desktop connection
 
@@ -686,7 +677,7 @@ Key files: `src/ui/chat/components/suggesters/`, `MessageEnhancer.ts`, `SystemPr
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 871c2f0a-4323-4b1c-94da-7ae242b1024c`
-- Team: `pact-871c2f0a`
-- Started: 2026-03-24 14:17:34 UTC
+- Resume: `claude --resume 647d22be-bd4c-4bb6-983d-49754a1c1d32`
+- Team: `pact-647d22be`
+- Started: 2026-03-25 12:48:19 UTC
 <!-- SESSION_END -->
