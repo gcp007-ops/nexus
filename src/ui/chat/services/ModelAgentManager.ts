@@ -21,6 +21,8 @@ import {
   CompactionFrontierRecord,
   CompactionFrontierService
 } from '../../../services/chat/CompactionFrontierService';
+import { ContextBudgetService } from '../../../services/chat/ContextBudgetService';
+import { ConversationData } from '../../../types/chat/ChatTypes';
 import type NexusPlugin from '../../../main';
 import type { App } from 'obsidian';
 
@@ -741,7 +743,7 @@ export class ModelAgentManager {
     this.temperature = Math.max(0, Math.min(1, temperature));
   }
 
-  // ========== Context Token Tracking (for local providers) ==========
+  // ========== Context Token Tracking (status display for WebLLM) ==========
 
   /**
    * Record token usage from a generation response
@@ -763,8 +765,21 @@ export class ModelAgentManager {
   /**
    * Check if message should trigger compaction before sending
    */
-  shouldCompactBeforeSending(message: string): boolean {
-    return this.contextTokenTracker?.shouldCompactBeforeSending(message) || false;
+  shouldCompactBeforeSending(
+    conversation: ConversationData,
+    message: string,
+    systemPrompt?: string | null,
+    providerOverride?: string
+  ): boolean {
+    const provider = providerOverride || this.selectedModel?.providerId || null;
+    const budget = ContextBudgetService.estimateBudget(
+      provider,
+      conversation,
+      systemPrompt,
+      message
+    );
+
+    return budget.shouldCompact;
   }
 
   /**

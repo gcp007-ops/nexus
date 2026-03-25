@@ -15,7 +15,6 @@ import { WorkspaceContext } from '../../../database/types/workspace/WorkspaceTyp
 import { MessageEnhancement } from '../components/suggesters/base/SuggesterInterfaces';
 import { CompactedContext } from '../../../services/chat/ContextCompactionService';
 import { CompactionFrontierRecord } from '../../../services/chat/CompactionFrontierService';
-import { formatWorkspaceDataForPrompt, extractWorkspaceData } from '../../../utils/WorkspaceDataFormatter';
 
 /**
  * Vault structure for system prompt context
@@ -127,31 +126,19 @@ export class SystemPromptBuilder {
 
     // 1. Session context with tools overview (skip for pre-trained models like Nexus)
     if (!options.skipToolsSection) {
-      const sessionSection = this.buildSessionContext(options.sessionId, options.workspaceId, options.toolAgents);
+      const sessionSection = this.buildSessionContext(options.sessionId, options.workspaceId);
       if (sessionSection) {
         sections.push(sessionSection);
       }
     }
 
-    // 2. Vault structure (dynamic - always fresh)
-    const vaultStructureSection = this.buildVaultStructureSection(options.vaultStructure);
-    if (vaultStructureSection) {
-      sections.push(vaultStructureSection);
+    // 2. Working strategy
+    const workingStrategySection = this.buildWorkingStrategySection();
+    if (workingStrategySection) {
+      sections.push(workingStrategySection);
     }
 
-    // 3. Available workspaces (dynamic - always fresh)
-    const availableWorkspacesSection = this.buildAvailableWorkspacesSection(options.availableWorkspaces);
-    if (availableWorkspacesSection) {
-      sections.push(availableWorkspacesSection);
-    }
-
-    // 4. Available prompts (dynamic - always fresh)
-    const availablePromptsSection = this.buildAvailablePromptsSection(options.availablePrompts);
-    if (availablePromptsSection) {
-      sections.push(availablePromptsSection);
-    }
-
-    // 5. Context files section
+    // 3. Context files section
     const filesSection = await this.buildFilesSection(
       options.contextNotes || [],
       options.messageEnhancement
@@ -160,31 +147,31 @@ export class SystemPromptBuilder {
       sections.push(filesSection);
     }
 
-    // 6. Tool hints from /suggester
+    // 4. Tool hints from /suggester
     const toolHintsSection = this.buildToolHintsSection(options.messageEnhancement);
     if (toolHintsSection) {
       sections.push(toolHintsSection);
     }
 
-    // 7. Custom prompts from @suggester
+    // 5. Custom prompts from @suggester
     const customPromptsSection = this.buildCustomPromptsSection(options.messageEnhancement);
     if (customPromptsSection) {
       sections.push(customPromptsSection);
     }
 
-    // 8. Workspace references from #suggester
+    // 6. Workspace references from #suggester
     const workspaceReferencesSection = await this.buildWorkspaceReferencesSection(options.messageEnhancement);
     if (workspaceReferencesSection) {
       sections.push(workspaceReferencesSection);
     }
 
-    // 9. Custom prompt (if prompt selected)
+    // 7. Custom prompt (if prompt selected)
     const customPromptSection = this.buildSelectedPromptSection(options.customPrompt);
     if (customPromptSection) {
       sections.push(customPromptSection);
     }
 
-    // 10. Selected workspace context (comprehensive data from settings selection)
+    // 8. Selected workspace context (full data from settings selection)
     const workspaceSection = this.buildSelectedWorkspaceSection(
       options.loadedWorkspaceData,
       options.workspaceContext
@@ -200,52 +187,54 @@ export class SystemPromptBuilder {
    * Build session context section for tool calls
    * Includes tools overview and context parameter instructions
    */
-  private buildSessionContext(sessionId?: string, workspaceId?: string, toolAgents?: ToolAgentInfo[]): string | null {
+  private buildSessionContext(sessionId?: string, workspaceId?: string): string | null {
     const effectiveSessionId = sessionId || `session_${Date.now()}`;
     const effectiveWorkspaceId = workspaceId || 'default';
 
     let prompt = '<tools_and_context>\n';
 
-    // Tools overview - dynamically built from registered agents
-    prompt += `AVAILABLE AGENTS AND TOOLS:
-You have two meta-tools: getTools (discover) and useTools (execute).
-
-`;
-
-    if (toolAgents && toolAgents.length > 0) {
-      // Dynamic list from agent registry - always use live tool manifest
-      for (const agent of toolAgents) {
-        prompt += `- ${agent.name}: ${agent.description}\n`;
-        prompt += `  Tools: ${agent.tools.join(', ')}\n\n`;
-      }
-    } else {
-      // No static fallback - use getTools to discover available tools
-      prompt += `Use getTools to discover available agents and their tools.\n\n`;
-    }
-
-    prompt += `HOW TO USE TOOLS:
-
-1. DISCOVER: Call getTools to get parameter schemas for tools you need
-2. EXECUTE: Call useTools with context and calls array
+    prompt += `You have two meta-tools:
+- getTools: discover the tools and schemas needed for the next step
+- useTools: execute tool calls
 
 Context (REQUIRED in every useTools call):
 - workspaceId: "${effectiveWorkspaceId}"
 - sessionId: "${effectiveSessionId}"
-- memory: 1-3 sentences summarizing conversation so far
-- goal: 1-3 sentences describing current objective
+- memory: brief summary of the conversation so far
+- goal: brief statement of the current objective
 - constraints: (optional) any rules or limits
 
 Calls array: [{ agent: "agentName", tool: "toolName", params: {...} }]
 
-IMPORTANT:
-- Keep workspaceId and sessionId EXACTLY as shown
-- Update memory and goal as conversation evolves
-- Use "params" (not "parameters") for tool-specific arguments
+Use getTools narrowly. Do not assume schemas from memory. Use "params" for tool arguments.
+Keep workspaceId and sessionId exactly as shown.
 `;
 
     prompt += '</tools_and_context>';
 
     return prompt;
+  }
+
+  /**
+   * Build the lean working strategy section
+   */
+  private buildWorkingStrategySection(): string {
+    return `<working_strategy>
+If a workspace is selected, use it as the primary context.
+
+If no workspace is selected and the request looks like ongoing or multi-step work, consider whether an existing workspace should be loaded first. Ask before creating a new workspace.
+
+For multi-step or ongoing work, suggest using TaskManager to track it. Ask before creating task/project structure unless the user clearly asked for it.
+
+Before major structured action, check whether a useful custom prompt already exists. If the pattern seems reusable or recurring, suggest creating a custom prompt or workflow. Ask before creating either. If a workflow is created, consider attaching the right prompt or agent.
+
+Gather context progressively:
+1. list or search to narrow scope
+2. read the most relevant files, notes, workspace data, prompts, or tasks
+3. then write or edit once you have enough context
+
+Prefer targeted context gathering over large dumps.
+</working_strategy>`;
   }
 
   /**
@@ -270,8 +259,8 @@ IMPORTANT:
       const content = await this.readNoteContent(notePath);
 
       prompt += `<${xmlTag}>\n`;
-      prompt += `${notePath}\n\n`;
-      prompt += content || '[File content unavailable]';
+      prompt += `${this.escapeXmlContent(notePath)}\n\n`;
+      prompt += this.escapeXmlContent(content || '[File content unavailable]');
       prompt += `\n</${xmlTag}>\n`;
     }
 
@@ -280,7 +269,7 @@ IMPORTANT:
       for (const note of messageEnhancement!.notes) {
         const xmlTag = this.normalizePathToXmlTag(note.path);
         prompt += `<${xmlTag}>\n`;
-        prompt += `${note.path}\n\n`;
+        prompt += `${this.escapeXmlContent(note.path)}\n\n`;
         prompt += this.escapeXmlContent(note.content);
         prompt += `\n</${xmlTag}>\n`;
       }
@@ -303,8 +292,8 @@ IMPORTANT:
     prompt += 'The user has requested to use the following tools:\n\n';
 
     for (const tool of messageEnhancement.tools) {
-      prompt += `Tool: ${tool.name}\n`;
-      prompt += `Description: ${tool.schema.description}\n`;
+      prompt += `Tool: ${this.escapeXmlContent(tool.name)}\n`;
+      prompt += `Description: ${this.escapeXmlContent(tool.schema.description)}\n`;
       prompt += 'Please prioritize using this tool when applicable.\n\n';
     }
 
@@ -350,11 +339,11 @@ IMPORTANT:
       prompt += 'The user has referenced the following workspaces:\n\n';
 
       for (const workspace of messageEnhancement.workspaces) {
-        prompt += `Workspace: ${workspace.name}\n`;
+        prompt += `Workspace: ${this.escapeXmlContent(workspace.name)}\n`;
         if (workspace.description) {
-          prompt += `Description: ${workspace.description}\n`;
+          prompt += `Description: ${this.escapeXmlContent(workspace.description)}\n`;
         }
-        prompt += `Root Folder: ${workspace.rootFolder}\n\n`;
+        prompt += `Root Folder: ${this.escapeXmlContent(workspace.rootFolder)}\n\n`;
       }
 
       prompt += '</workspaces>';
@@ -377,8 +366,7 @@ IMPORTANT:
             const workspaceName = workspaceData.context?.name || workspaceRef.name;
             prompt += `<workspace name="${this.escapeXmlAttribute(workspaceName)}" id="${this.escapeXmlAttribute(workspaceRef.id)}">\n`;
 
-            // Use shared utility for formatting
-            prompt += this.escapeXmlContent(formatWorkspaceDataForPrompt(workspaceData));
+            prompt += this.escapeXmlContent(JSON.stringify(workspaceData, null, 2));
 
             prompt += `\n</workspace>\n\n`;
           } else {
@@ -413,7 +401,7 @@ IMPORTANT:
       return null;
     }
 
-    return `<selected_prompt>\n${customPrompt}\n</selected_prompt>`;
+    return `<selected_prompt>\n${this.escapeXmlContent(customPrompt)}\n</selected_prompt>`;
   }
 
   /**
@@ -425,7 +413,7 @@ IMPORTANT:
     loadedWorkspaceData?: any | null,
     workspaceContext?: WorkspaceContext | null
   ): string | null {
-    // If we have full comprehensive data, use that
+    // If we have full workspace data, include the complete object
     if (loadedWorkspaceData) {
       const workspaceName = loadedWorkspaceData.context?.name ||
                            loadedWorkspaceData.name ||
@@ -433,10 +421,8 @@ IMPORTANT:
       const workspaceId = loadedWorkspaceData.id || 'unknown';
 
       let prompt = `<selected_workspace name="${this.escapeXmlAttribute(workspaceName)}" id="${this.escapeXmlAttribute(workspaceId)}">\n`;
-      prompt += 'This workspace is currently selected. Use its context for your responses:\n\n';
-
-      // Use shared utility for formatting
-      prompt += this.escapeXmlContent(formatWorkspaceDataForPrompt(loadedWorkspaceData));
+      prompt += 'This workspace is currently selected. Use it as the primary context.\n\n';
+      prompt += this.escapeXmlContent(JSON.stringify(loadedWorkspaceData, null, 2));
       prompt += '\n</selected_workspace>';
 
       return prompt;
@@ -447,96 +433,7 @@ IMPORTANT:
       return null;
     }
 
-    return `<selected_workspace>\n${JSON.stringify(workspaceContext, null, 2)}\n</selected_workspace>`;
-  }
-
-  /**
-   * Build vault structure section (dynamic - shows root folders and files)
-   * Provides the LLM with awareness of the vault's organization
-   */
-  private buildVaultStructureSection(vaultStructure?: VaultStructure | null): string | null {
-    if (!vaultStructure) {
-      return null;
-    }
-
-    const { rootFolders, rootFiles } = vaultStructure;
-
-    // Don't include section if vault is empty
-    if (rootFolders.length === 0 && rootFiles.length === 0) {
-      return null;
-    }
-
-    let prompt = '<vault_structure>\n';
-    prompt += 'The following is the root-level structure of the Obsidian vault:\n\n';
-
-    if (rootFolders.length > 0) {
-      prompt += 'Folders:\n';
-      for (const folder of rootFolders) {
-        prompt += `  - ${folder}/\n`;
-      }
-      prompt += '\n';
-    }
-
-    if (rootFiles.length > 0) {
-      prompt += 'Files:\n';
-      for (const file of rootFiles) {
-        prompt += `  - ${file}\n`;
-      }
-    }
-
-    prompt += '\nUse storageManager or searchManager tools to explore subfolders or search for specific content.\n';
-    prompt += '</vault_structure>';
-
-    return prompt;
-  }
-
-  /**
-   * Build available workspaces section (dynamic - lists all workspaces)
-   * Helps the LLM understand what workspaces exist and can be loaded
-   */
-  private buildAvailableWorkspacesSection(workspaces?: WorkspaceSummary[]): string | null {
-    if (!workspaces || workspaces.length === 0) {
-      return null;
-    }
-
-    let prompt = '<available_workspaces>\n';
-    prompt += 'The following workspaces are available in this vault:\n\n';
-
-    for (const workspace of workspaces) {
-      prompt += `- ${this.escapeXmlContent(workspace.name)} (id: "${workspace.id}")\n`;
-      if (workspace.description) {
-        prompt += `  Description: ${this.escapeXmlContent(workspace.description)}\n`;
-      }
-      prompt += `  Root folder: ${workspace.rootFolder}\n`;
-      prompt += '\n';
-    }
-
-    prompt += 'Use memoryManager with loadWorkspace mode to get full workspace context.\n';
-    prompt += '</available_workspaces>';
-
-    return prompt;
-  }
-
-  /**
-   * Build available prompts section (dynamic - lists custom prompts)
-   * Informs the LLM about custom prompts that can be used
-   */
-  private buildAvailablePromptsSection(prompts?: PromptSummary[]): string | null {
-    if (!prompts || prompts.length === 0) {
-      return null;
-    }
-
-    let prompt = '<available_prompts>\n';
-    prompt += 'The following custom prompts are available:\n\n';
-
-    for (const customPrompt of prompts) {
-      prompt += `- ${this.escapeXmlContent(customPrompt.name)} (id: "${customPrompt.id}")\n`;
-      prompt += `  ${this.escapeXmlContent(customPrompt.description)}\n\n`;
-    }
-
-    prompt += '</available_prompts>';
-
-    return prompt;
+    return `<selected_workspace>\n${this.escapeXmlContent(JSON.stringify(workspaceContext, null, 2))}\n</selected_workspace>`;
   }
 
   /**

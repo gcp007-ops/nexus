@@ -5,6 +5,7 @@
 import { ConversationData } from '../../../types/chat/ChatTypes';
 import { ModelOption } from '../types/SelectionTypes';
 import { ContextUsage } from '../components/ContextProgressBar';
+import { ContextBudgetService, NormalizedTokenUsage } from '../../../services/chat/ContextBudgetService';
 
 export class TokenCalculator {
   /**
@@ -20,7 +21,6 @@ export class TokenCalculator {
         return { used: 0, total: 0, percentage: 0 };
       }
 
-      // Estimate token count for current conversation
       const totalTokens = this.estimateTokenCount(currentConversation, currentSystemPrompt);
       const contextWindow = selectedModel.contextWindow;
       const percentage = (totalTokens / contextWindow) * 100;
@@ -43,110 +43,21 @@ export class TokenCalculator {
     conversation: ConversationData,
     currentSystemPrompt?: string | null
   ): number {
-    let totalTokens = 0;
-
-    // Add system prompt tokens if provided (always estimated)
-    if (currentSystemPrompt) {
-      const systemPromptTokens = this.estimateTextTokens(currentSystemPrompt);
-      totalTokens += systemPromptTokens;
-    }
-
-    // Add message tokens - USE ACTUAL USAGE DATA when available
-    conversation.messages.forEach((message: any, index) => {
-      const normalizedUsage = this.normalizeUsage(message.usage);
-      if (normalizedUsage) {
-        const totalMessageTokens = normalizedUsage.totalTokens ??
-          (normalizedUsage.promptTokens + normalizedUsage.completionTokens);
-        totalTokens += totalMessageTokens;
-      } else {
-        // Fallback to estimation if no usage data
-        const messageTokens = this.estimateTextTokens(message.content);
-        totalTokens += messageTokens;
-
-        // Add tokens for tool calls if present (estimated)
-        if (message.toolCalls) {
-          message.toolCalls.forEach((toolCall: { function?: { name?: string; arguments?: string }; parameters?: unknown; result?: unknown }) => {
-            if (toolCall.parameters) {
-              const paramTokens = this.estimateTextTokens(JSON.stringify(toolCall.parameters));
-              totalTokens += paramTokens;
-            }
-            if (toolCall.result) {
-              const resultText = typeof toolCall.result === 'string'
-                ? toolCall.result
-                : JSON.stringify(toolCall.result);
-              const resultTokens = this.estimateTextTokens(resultText);
-              totalTokens += resultTokens;
-            }
-          });
-        }
-      }
-    });
-    return totalTokens;
-  }
-
-  private static normalizeUsage(
-    usage: any
-  ): { promptTokens: number; completionTokens: number; totalTokens?: number } | null {
-    if (!usage || typeof usage !== 'object') {
-      return null;
-    }
-
-    const promptTokens = this.getNumericUsageValue(
-      usage,
-      'promptTokens',
-      'prompt_tokens',
-      'inputTokens',
-      'input_tokens'
-    );
-    const completionTokens = this.getNumericUsageValue(
-      usage,
-      'completionTokens',
-      'completion_tokens',
-      'outputTokens',
-      'output_tokens'
-    );
-    const totalTokens = this.getNumericUsageValue(
-      usage,
-      'totalTokens',
-      'total_tokens'
-    );
-
-    const hasRecognizedUsage =
-      promptTokens !== undefined ||
-      completionTokens !== undefined ||
-      totalTokens !== undefined;
-
-    if (!hasRecognizedUsage) {
-      return null;
-    }
-
-    return {
-      promptTokens: promptTokens ?? 0,
-      completionTokens: completionTokens ?? 0,
-      totalTokens
-    };
-  }
-
-  private static getNumericUsageValue(
-    usage: Record<string, unknown>,
-    ...keys: string[]
-  ): number | undefined {
-    for (const key of keys) {
-      const value = usage[key];
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return value;
-      }
-    }
-
-    return undefined;
+    return ContextBudgetService.estimateConversationTokens(conversation, currentSystemPrompt);
   }
 
   /**
    * Rough estimation of token count for text (4 chars ≈ 1 token)
    */
   static estimateTextTokens(text: string | null | undefined): number {
-    if (!text) return 0;
-    return Math.ceil(text.length / 4);
+    return ContextBudgetService.estimateTextTokens(text);
+  }
+
+  /**
+   * Normalize provider usage into the internal camelCase shape.
+   */
+  static normalizeUsage(usage: unknown): NormalizedTokenUsage | null {
+    return ContextBudgetService.normalizeUsage(usage);
   }
 
   /**
