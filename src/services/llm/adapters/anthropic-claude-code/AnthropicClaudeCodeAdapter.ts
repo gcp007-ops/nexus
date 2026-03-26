@@ -84,6 +84,7 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
 
     const tempDir = await fsPromises.mkdtemp(pathMod.join(osMod.tmpdir(), 'nexus-claude-code-adapter-'));
     const mcpConfigPath = pathMod.join(tempDir, 'mcp.json');
+    const systemPromptPath = pathMod.join(tempDir, 'system-prompt.txt');
     const trimmedSystemPrompt = options?.systemPrompt?.trim();
     const toolCalls = new Map<string, ClaudeCodeToolCall>();
     let accumulatedText = '';
@@ -120,7 +121,8 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
       ];
 
       if (trimmedSystemPrompt) {
-        args.push('--append-system-prompt', trimmedSystemPrompt);
+        await fsPromises.writeFile(systemPromptPath, trimmedSystemPrompt, 'utf8');
+        args.push('--append-system-prompt-file', systemPromptPath);
       }
 
       if (options?.enableThinking && options?.thinkingEffort) {
@@ -502,7 +504,7 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
     const estimatedArgvChars = this.estimateArgvChars(command, args);
     if (estimatedArgvChars > MAX_SAFE_WINDOWS_ARGV_CHARS) {
       throw new LLMProviderError(
-        'Claude Code could not start because the appended system prompt is too large for Windows command-line limits. Reduce attached context files or shorten the system prompt and try again.',
+        'Claude Code could not start because the local CLI command was too long for Windows command-line limits. Reduce attached context files and try again.',
         this.name,
         'REQUEST_TOO_LARGE'
       );
