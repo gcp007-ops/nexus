@@ -59,10 +59,11 @@ describe('AnthropicClaudeCodeAdapter', () => {
     } as any);
   });
 
-  it('keeps the appended system prompt on argv and sends the user prompt through stdin', async () => {
+  it('writes the system prompt to a temp file and sends the user prompt through stdin', async () => {
     const child = createMockChildProcess();
     const stdinChunks: string[] = [];
     let capturedArgs: string[] = [];
+    let systemPromptContents = '';
 
     child.stdin.on('data', (chunk: Buffer | string) => {
       stdinChunks.push(chunk.toString());
@@ -70,8 +71,13 @@ describe('AnthropicClaudeCodeAdapter', () => {
 
     spawnDesktopProcess.mockImplementation((_childProcess, _command, args) => {
       capturedArgs = args;
+      const systemPromptIndex = args.indexOf('--append-system-prompt-file');
+      const systemPromptPath = systemPromptIndex >= 0 ? args[systemPromptIndex + 1] : '';
 
-      process.nextTick(() => {
+      process.nextTick(async () => {
+        systemPromptContents = systemPromptPath
+          ? await fsPromises.readFile(systemPromptPath, 'utf8')
+          : '';
         child.stdout.write(JSON.stringify({
           type: 'assistant',
           message: {
@@ -93,11 +99,11 @@ describe('AnthropicClaudeCodeAdapter', () => {
       chunks.push(chunk);
     }
 
-    expect(capturedArgs).toContain('--append-system-prompt');
-    expect(capturedArgs).toContain('Use the workspace notes');
-    expect(capturedArgs).not.toContain('--system-prompt-file');
-    expect(capturedArgs).not.toContain('--append-system-prompt-file');
+    expect(capturedArgs).toContain('--append-system-prompt-file');
+    expect(capturedArgs).not.toContain('--append-system-prompt');
+    expect(capturedArgs).not.toContain('Use the workspace notes');
     expect(capturedArgs).not.toContain('Explain the bug');
+    expect(systemPromptContents).toBe('Use the workspace notes');
     expect(stdinChunks.join('')).toBe('Explain the bug');
     expect(chunks.some((chunk) => chunk.content === 'Hello from Claude Code')).toBe(true);
   });
@@ -105,10 +111,13 @@ describe('AnthropicClaudeCodeAdapter', () => {
   it('cleans up temp files after a successful run', async () => {
     const child = createMockChildProcess();
     let mcpConfigPath = '';
+    let systemPromptPath = '';
 
     spawnDesktopProcess.mockImplementation((_childProcess, _command, args) => {
       const configIndex = args.indexOf('--mcp-config');
       mcpConfigPath = configIndex >= 0 ? args[configIndex + 1] : '';
+      const systemPromptIndex = args.indexOf('--append-system-prompt-file');
+      systemPromptPath = systemPromptIndex >= 0 ? args[systemPromptIndex + 1] : '';
 
       process.nextTick(() => {
         child.stdout.end();
@@ -126,15 +135,46 @@ describe('AnthropicClaudeCodeAdapter', () => {
     }
 
     await expect(fsPromises.access(mcpConfigPath)).rejects.toThrow();
+    await expect(fsPromises.access(systemPromptPath)).rejects.toThrow();
   });
 
-  it('blocks oversized appended system prompts on Windows before spawn', async () => {
+  it('allows large system prompts on Windows because they are written to a temp file', async () => {
     Platform.isWin = true;
     const oversizedSystemPrompt = 'A'.repeat(40_000);
+    const child = createMockChildProcess();
+    let capturedSystemPrompt = '';
+
+    spawnDesktopProcess.mockImplementation((_childProcess, _command, args) => {
+      const systemPromptIndex = args.indexOf('--append-system-prompt-file');
+      const systemPromptPath = systemPromptIndex >= 0 ? args[systemPromptIndex + 1] : '';
+
+      process.nextTick(async () => {
+        capturedSystemPrompt = await fsPromises.readFile(systemPromptPath, 'utf8');
+        child.stdout.end();
+        child.stderr.end();
+        child.emit('close', 0, null);
+      });
+
+      return child;
+    });
+
+    for await (const _chunk of adapter.generateStreamAsync('Explain the bug', {
+      systemPrompt: oversizedSystemPrompt
+    })) {
+      // drain
+    }
+
+    expect(spawnDesktopProcess).toHaveBeenCalledTimes(1);
+    expect(capturedSystemPrompt).toBe(oversizedSystemPrompt);
+  });
+
+  it('still blocks oversized remaining argv on Windows before spawn', async () => {
+    Platform.isWin = true;
+    const oversizedModel = 'A'.repeat(40_000);
 
     await expect(async () => {
       for await (const _chunk of adapter.generateStreamAsync('Explain the bug', {
-        systemPrompt: oversizedSystemPrompt
+        model: oversizedModel
       })) {
         // drain
       }
