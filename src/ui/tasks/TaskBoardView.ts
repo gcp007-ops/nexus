@@ -33,6 +33,31 @@ const STATUS_COLUMNS: Array<{ id: TaskStatus; label: string }> = [
   { id: 'cancelled', label: 'Cancelled' }
 ];
 
+type TaskSortField = 'created' | 'updated' | 'priority' | 'title' | 'dueDate';
+type TaskSortOrder = 'asc' | 'desc';
+
+const SORT_OPTIONS: Array<{ field: TaskSortField; label: string }> = [
+  { field: 'created', label: 'Date created' },
+  { field: 'updated', label: 'Last updated' },
+  { field: 'priority', label: 'Priority' },
+  { field: 'title', label: 'Title' },
+  { field: 'dueDate', label: 'Due date' }
+];
+
+const PRIORITY_ORDER: Record<string, number> = {
+  critical: 1,
+  high: 2,
+  medium: 3,
+  low: 4
+};
+
+interface SwimlaneGroup {
+  parentId: string | null;
+  parentTask: TaskBoardTask | null;
+  children: TaskBoardTask[];
+  progress: { done: number; total: number };
+}
+
 export class TaskBoardView extends ItemView {
   private workspaceService: WorkspaceService | null = null;
   private taskService: TaskService | null = null;
@@ -43,7 +68,9 @@ export class TaskBoardView extends ItemView {
   private filterState: TaskBoardViewState = {
     workspaceId: '',
     projectId: '',
-    search: ''
+    search: '',
+    sortField: 'created',
+    sortOrder: 'asc'
   };
   private dragTaskId: string | null = null;
   private isClosing = false;
@@ -51,6 +78,9 @@ export class TaskBoardView extends ItemView {
   private isSyncingBoardData = false;
   private isEditModalOpen = false;
   private hasPendingEventSync = false;
+  private columnsContainer: HTMLElement | null = null;
+  private statsContainer: HTMLElement | null = null;
+  private collapsedSwimlanes = new Set<string>();
 
   constructor(leaf: WorkspaceLeaf, private plugin: NexusPlugin) {
     super(leaf);
@@ -76,7 +106,9 @@ export class TaskBoardView extends ItemView {
     this.filterState = {
       workspaceId: state?.workspaceId || '',
       projectId: state?.projectId || '',
-      search: state?.search || ''
+      search: state?.search || '',
+      sortField: state?.sortField || 'created',
+      sortOrder: state?.sortOrder || 'asc'
     };
 
     if (this.isReady) {
@@ -243,7 +275,30 @@ export class TaskBoardView extends ItemView {
     const shell = container.createDiv('nexus-task-board-shell');
     this.renderHeader(shell);
     this.renderToolbar(shell);
-    this.renderColumns(shell);
+    this.columnsContainer = shell.createDiv();
+    this.renderColumns();
+  }
+
+  /**
+   * Re-render only the columns and stats, preserving the toolbar (search input keeps focus).
+   */
+  private refreshColumns(): void {
+    if (this.columnsContainer) {
+      this.renderColumns();
+    }
+    if (this.statsContainer) {
+      this.statsContainer.empty();
+      const filteredTasks = this.getFilteredAndSortedTasks();
+      const projectCount = new Set(filteredTasks.map(task => task.projectId)).size;
+      this.statsContainer.createDiv({
+        cls: 'nexus-task-board-stat',
+        text: `${filteredTasks.length} tasks`
+      });
+      this.statsContainer.createDiv({
+        cls: 'nexus-task-board-stat',
+        text: `${projectCount} projects`
+      });
+    }
   }
 
   private renderHeader(container: HTMLElement): void {
@@ -274,7 +329,7 @@ export class TaskBoardView extends ItemView {
     this.registerDomEvent(workspaceSelect, 'change', () => {
       this.filterState.workspaceId = workspaceSelect.value;
       this.ensureValidFilters();
-      this.renderBoard();
+      this.refreshColumns();
     });
 
     const projectField = toolbar.createDiv('nexus-task-board-field');
@@ -290,7 +345,7 @@ export class TaskBoardView extends ItemView {
     projectSelect.value = this.filterState.projectId || 'all';
     this.registerDomEvent(projectSelect, 'change', () => {
       this.filterState.projectId = projectSelect.value;
-      this.renderBoard();
+      this.refreshColumns();
     });
 
     const searchField = toolbar.createDiv('nexus-task-board-field nexus-task-board-field-search');
@@ -305,34 +360,60 @@ export class TaskBoardView extends ItemView {
     searchInput.value = this.filterState.search || '';
     this.registerDomEvent(searchInput, 'input', () => {
       this.filterState.search = searchInput.value;
-      this.renderBoard();
+      this.refreshColumns();
     });
 
-    const stats = toolbar.createDiv('nexus-task-board-stats');
-    const filteredTasks = this.getFilteredTasks();
+    const sortField = toolbar.createDiv('nexus-task-board-field');
+    sortField.createEl('label', { cls: 'nexus-task-board-field-label', text: 'Sort by' });
+    const sortSelect = sortField.createEl('select', { cls: 'nexus-task-board-input' });
+    SORT_OPTIONS.forEach(option => {
+      sortSelect.createEl('option', {
+        value: option.field,
+        text: option.label
+      });
+    });
+    sortSelect.value = this.filterState.sortField || 'created';
+    this.registerDomEvent(sortSelect, 'change', () => {
+      this.filterState.sortField = sortSelect.value;
+      this.refreshColumns();
+    });
+
+    const orderField = toolbar.createDiv('nexus-task-board-field');
+    orderField.createEl('label', { cls: 'nexus-task-board-field-label', text: 'Order' });
+    const orderSelect = orderField.createEl('select', { cls: 'nexus-task-board-input' });
+    orderSelect.createEl('option', { value: 'asc', text: 'Ascending' });
+    orderSelect.createEl('option', { value: 'desc', text: 'Descending' });
+    orderSelect.value = this.filterState.sortOrder || 'asc';
+    this.registerDomEvent(orderSelect, 'change', () => {
+      this.filterState.sortOrder = orderSelect.value;
+      this.refreshColumns();
+    });
+
+    this.statsContainer = toolbar.createDiv('nexus-task-board-stats');
+    const filteredTasks = this.getFilteredAndSortedTasks();
     const projectCount = new Set(filteredTasks.map(task => task.projectId)).size;
-    stats.createDiv({
+    this.statsContainer.createDiv({
       cls: 'nexus-task-board-stat',
       text: `${filteredTasks.length} tasks`
     });
-    stats.createDiv({
+    this.statsContainer.createDiv({
       cls: 'nexus-task-board-stat',
       text: `${projectCount} projects`
     });
   }
 
-  private renderColumns(container: HTMLElement): void {
-    const columns = container.createDiv('nexus-task-board-columns');
-    const filteredTasks = this.getFilteredTasks();
+  private renderColumns(): void {
+    if (!this.columnsContainer) return;
+    this.columnsContainer.empty();
+    const columns = this.columnsContainer.createDiv('nexus-task-board-columns');
+    const filteredTasks = this.getFilteredAndSortedTasks();
 
     STATUS_COLUMNS.forEach(column => {
       const columnEl = columns.createDiv('nexus-task-board-column');
       const header = columnEl.createDiv('nexus-task-board-column-header');
       header.createEl('h3', { text: column.label });
-      header.createEl('span', {
-        cls: 'nexus-task-board-column-count',
-        text: String(filteredTasks.filter(task => task.status === column.id).length)
-      });
+
+      const columnTasks = filteredTasks.filter(task => task.status === column.id);
 
       const body = columnEl.createDiv('nexus-task-board-column-body');
       body.dataset.status = column.id;
@@ -352,54 +433,127 @@ export class TaskBoardView extends ItemView {
         void this.handleTaskStatusDrop(taskId, column.id);
       });
 
-      const tasks = filteredTasks.filter(task => task.status === column.id);
-      if (tasks.length === 0) {
+      const groups = this.groupTasksByParent(columnTasks);
+      const cardCount = groups.reduce((sum, g) => sum + g.children.length, 0);
+
+      header.createEl('span', {
+        cls: 'nexus-task-board-column-count',
+        text: String(cardCount)
+      });
+
+      if (cardCount === 0) {
         body.createDiv({
           cls: 'nexus-task-board-empty-column',
           text: 'No tasks'
         });
+        return;
       }
 
-      tasks.forEach(task => {
-        const card = body.createDiv('nexus-task-board-card');
-        card.draggable = true;
-        this.registerDomEvent(card, 'dragstart', (event) => {
-          this.dragTaskId = task.id;
-          card.addClass('is-dragging');
-          event.dataTransfer?.setData('text/plain', task.id);
-          if (event.dataTransfer) {
-            event.dataTransfer.effectAllowed = 'move';
-          }
-        });
-        this.registerDomEvent(card, 'dragend', () => {
-          card.removeClass('is-dragging');
-          this.dragTaskId = null;
-        });
-
-        const row = card.createDiv('nexus-task-board-card-row');
-        row.createDiv({
-          cls: 'nexus-task-board-card-title',
-          text: task.title
-        });
-
-        const editButton = row.createEl('button', {
-          cls: 'clickable-icon nexus-task-board-icon-button',
-          attr: {
-            'aria-label': `Edit ${task.title}`,
-            type: 'button'
-          }
-        });
-        setIcon(editButton, 'edit');
-        this.registerDomEvent(editButton, 'click', (event) => {
-          event.stopPropagation();
-          this.openEditModal(task);
-        });
-
-        card.createDiv({
-          cls: 'nexus-task-board-card-meta',
-          text: `${task.workspaceName} · ${task.projectName}`
-        });
+      groups.forEach(group => {
+        this.renderSwimlane(body, group, column.id);
       });
+    });
+  }
+
+  private renderSwimlane(container: HTMLElement, group: SwimlaneGroup, columnStatus: string): void {
+    const swimlane = container.createDiv('nexus-task-board-swimlane');
+
+    const collapseKey = `${columnStatus}::${group.parentId || '__ungrouped'}`;
+    const isCollapsed = this.collapsedSwimlanes.has(collapseKey);
+    if (isCollapsed) {
+      swimlane.addClass('is-collapsed');
+    }
+
+    const headerEl = swimlane.createDiv('nexus-task-board-swimlane-header');
+
+    if (group.parentTask) {
+      // Parent swimlane with collapse toggle and progress
+      const toggleBtn = headerEl.createEl('button', {
+        cls: 'clickable-icon nexus-task-board-swimlane-toggle',
+        attr: {
+          'aria-label': `Toggle ${group.parentTask.title}`,
+          'aria-expanded': String(!isCollapsed),
+          type: 'button'
+        }
+      });
+      setIcon(toggleBtn, isCollapsed ? 'chevron-right' : 'chevron-down');
+
+      this.registerDomEvent(toggleBtn, 'click', () => {
+        if (this.collapsedSwimlanes.has(collapseKey)) {
+          this.collapsedSwimlanes.delete(collapseKey);
+          swimlane.removeClass('is-collapsed');
+          toggleBtn.setAttribute('aria-expanded', 'true');
+          setIcon(toggleBtn, 'chevron-down');
+        } else {
+          this.collapsedSwimlanes.add(collapseKey);
+          swimlane.addClass('is-collapsed');
+          toggleBtn.setAttribute('aria-expanded', 'false');
+          setIcon(toggleBtn, 'chevron-right');
+        }
+      });
+
+      headerEl.createDiv({
+        cls: 'nexus-task-board-swimlane-title',
+        text: group.parentTask.title
+      });
+
+      headerEl.createDiv({
+        cls: 'nexus-task-board-swimlane-progress',
+        text: `${group.progress.done}/${group.progress.total}`
+      });
+    } else {
+      // Ungrouped section
+      swimlane.addClass('nexus-task-board-swimlane-ungrouped');
+      headerEl.createDiv({
+        cls: 'nexus-task-board-swimlane-title',
+        text: 'Ungrouped'
+      });
+    }
+
+    const bodyEl = swimlane.createDiv('nexus-task-board-swimlane-body');
+    group.children.forEach(task => {
+      this.renderTaskCard(bodyEl, task);
+    });
+  }
+
+  private renderTaskCard(container: HTMLElement, task: TaskBoardTask): void {
+    const card = container.createDiv('nexus-task-board-card');
+    card.draggable = true;
+    this.registerDomEvent(card, 'dragstart', (event) => {
+      this.dragTaskId = task.id;
+      card.addClass('is-dragging');
+      event.dataTransfer?.setData('text/plain', task.id);
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+      }
+    });
+    this.registerDomEvent(card, 'dragend', () => {
+      card.removeClass('is-dragging');
+      this.dragTaskId = null;
+    });
+
+    const row = card.createDiv('nexus-task-board-card-row');
+    row.createDiv({
+      cls: 'nexus-task-board-card-title',
+      text: task.title
+    });
+
+    const editButton = row.createEl('button', {
+      cls: 'clickable-icon nexus-task-board-icon-button',
+      attr: {
+        'aria-label': `Edit ${task.title}`,
+        type: 'button'
+      }
+    });
+    setIcon(editButton, 'edit');
+    this.registerDomEvent(editButton, 'click', (event) => {
+      event.stopPropagation();
+      this.openEditModal(task);
+    });
+
+    card.createDiv({
+      cls: 'nexus-task-board-card-meta',
+      text: `${task.workspaceName} · ${task.projectName}`
     });
   }
 
@@ -410,10 +564,10 @@ export class TaskBoardView extends ItemView {
     return this.projects.filter(project => project.workspaceId === this.filterState.workspaceId);
   }
 
-  private getFilteredTasks(): TaskBoardTask[] {
+  private getFilteredAndSortedTasks(): TaskBoardTask[] {
     const searchQuery = (this.filterState.search || '').trim().toLowerCase();
 
-    return this.tasks.filter(task => {
+    const filtered = this.tasks.filter(task => {
       const matchesWorkspace = !this.filterState.workspaceId || this.filterState.workspaceId === 'all'
         || task.workspaceId === this.filterState.workspaceId;
       const matchesProject = !this.filterState.projectId || this.filterState.projectId === 'all'
@@ -441,6 +595,134 @@ export class TaskBoardView extends ItemView {
 
       return haystack.includes(searchQuery);
     });
+
+    const sortField = (this.filterState.sortField || 'created') as TaskSortField;
+    const sortOrder = (this.filterState.sortOrder || 'asc') as TaskSortOrder;
+    const multiplier = sortOrder === 'asc' ? 1 : -1;
+
+    filtered.sort((a, b) => {
+      let comparison = 0;
+      switch (sortField) {
+        case 'created':
+          comparison = a.created - b.created;
+          break;
+        case 'updated':
+          comparison = a.updated - b.updated;
+          break;
+        case 'priority':
+          comparison = (PRIORITY_ORDER[a.priority] ?? 5) - (PRIORITY_ORDER[b.priority] ?? 5);
+          break;
+        case 'title':
+          comparison = a.title.localeCompare(b.title);
+          break;
+        case 'dueDate': {
+          const aDue = a.dueDate ?? Number.MAX_SAFE_INTEGER;
+          const bDue = b.dueDate ?? Number.MAX_SAFE_INTEGER;
+          comparison = aDue - bDue;
+          break;
+        }
+      }
+      return comparison * multiplier;
+    });
+
+    return filtered;
+  }
+
+  private groupTasksByParent(columnTasks: TaskBoardTask[]): SwimlaneGroup[] {
+    const allTaskMap = new Map(this.tasks.map(t => [t.id, t]));
+
+    // Identify which task IDs are parents (have at least one child in the filtered set)
+    const parentIdsWithChildren = new Set<string>();
+    for (const task of this.getFilteredAndSortedTasks()) {
+      if (task.parentTaskId && task.parentTaskId !== task.id && allTaskMap.has(task.parentTaskId)) {
+        parentIdsWithChildren.add(task.parentTaskId);
+      }
+    }
+
+    const grouped = new Map<string, TaskBoardTask[]>();
+    const ungrouped: TaskBoardTask[] = [];
+
+    for (const task of columnTasks) {
+      // If this task IS a parent (it's a swimlane header, not a card)
+      if (parentIdsWithChildren.has(task.id)) {
+        continue;
+      }
+
+      const parentId = task.parentTaskId;
+      if (parentId && parentId !== task.id && allTaskMap.has(parentId) && parentIdsWithChildren.has(parentId)) {
+        const group = grouped.get(parentId);
+        if (group) {
+          group.push(task);
+        } else {
+          grouped.set(parentId, [task]);
+        }
+      } else {
+        ungrouped.push(task);
+      }
+    }
+
+    const groups: SwimlaneGroup[] = [];
+    for (const [parentId, children] of grouped) {
+      groups.push({
+        parentId,
+        parentTask: allTaskMap.get(parentId) || null,
+        children,
+        progress: this.getParentProgress(parentId, parentIdsWithChildren)
+      });
+    }
+
+    // Sort groups using same sort logic as tasks, applied to the parent task
+    const sortField = (this.filterState.sortField || 'created') as TaskSortField;
+    const sortOrder = (this.filterState.sortOrder || 'asc') as TaskSortOrder;
+    const multiplier = sortOrder === 'asc' ? 1 : -1;
+
+    groups.sort((a, b) => {
+      if (!a.parentTask || !b.parentTask) return 0;
+      let comparison = 0;
+      switch (sortField) {
+        case 'created': comparison = a.parentTask.created - b.parentTask.created; break;
+        case 'updated': comparison = a.parentTask.updated - b.parentTask.updated; break;
+        case 'priority': comparison = (PRIORITY_ORDER[a.parentTask.priority] ?? 5) - (PRIORITY_ORDER[b.parentTask.priority] ?? 5); break;
+        case 'title': comparison = a.parentTask.title.localeCompare(b.parentTask.title); break;
+        case 'dueDate': {
+          const aDue = a.parentTask.dueDate ?? Number.MAX_SAFE_INTEGER;
+          const bDue = b.parentTask.dueDate ?? Number.MAX_SAFE_INTEGER;
+          comparison = aDue - bDue;
+          break;
+        }
+      }
+      return comparison * multiplier;
+    });
+
+    if (ungrouped.length > 0) {
+      groups.push({
+        parentId: null,
+        parentTask: null,
+        children: ungrouped,
+        progress: { done: 0, total: 0 }
+      });
+    }
+
+    return groups;
+  }
+
+  private getParentProgress(parentTaskId: string, parentIds: Set<string>): { done: number; total: number } {
+    // Count across ALL tasks (not just current column), but respect workspace/project filter
+    const children = this.tasks.filter(task => {
+      if (task.parentTaskId !== parentTaskId) return false;
+      if (parentIds.has(task.id)) return false; // skip tasks that are themselves parents (they're headers)
+
+      const matchesWorkspace = !this.filterState.workspaceId || this.filterState.workspaceId === 'all'
+        || task.workspaceId === this.filterState.workspaceId;
+      const matchesProject = !this.filterState.projectId || this.filterState.projectId === 'all'
+        || task.projectId === this.filterState.projectId;
+      return matchesWorkspace && matchesProject;
+    });
+
+    return {
+      done: children.filter(t => t.status === 'done').length,
+      total: children.length
+    };
   }
 
   private openEditModal(task: TaskBoardTask): void {
@@ -538,13 +820,13 @@ export class TaskBoardView extends ItemView {
 
     const previousStatus = task.status;
     task.status = newStatus;
-    this.renderBoard();
+    this.refreshColumns();
 
     try {
       await this.taskService.updateTask(taskId, { status: newStatus });
     } catch (error) {
       task.status = previousStatus;
-      this.renderBoard();
+      this.refreshColumns();
       const message = error instanceof Error ? error.message : 'Failed to update task status';
       new Notice(message);
     }
