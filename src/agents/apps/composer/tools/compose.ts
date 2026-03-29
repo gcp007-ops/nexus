@@ -113,23 +113,21 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
       await vault.delete(existingFile);
     }
 
-    // --- 3. Select composer ---
-    const composers: IFormatComposer[] = [
-      new TextComposer(),
-      new PdfComposer(),
-      new AudioComposer(),
-    ];
-
-    const formatToComposer: Record<string, IFormatComposer | undefined> = {
-      'markdown': composers.find(c => c.supportedExtensions.includes('md')),
-      'pdf': composers.find(c => c.supportedExtensions.includes('pdf')),
-      'audio': composers.find(c => c.supportedExtensions.includes('mp3')),
-    };
-
-    const composer = formatToComposer[format];
-    if (!composer) {
-      return this.prepareResult(false, undefined,
-        `Unsupported format: "${format}". Use listFormats to see supported formats.`);
+    // --- 3. Select composer (lazy — only instantiate the one needed) ---
+    let composer: IFormatComposer;
+    switch (format) {
+      case 'markdown':
+        composer = new TextComposer();
+        break;
+      case 'pdf':
+        composer = new PdfComposer();
+        break;
+      case 'audio':
+        composer = new AudioComposer();
+        break;
+      default:
+        return this.prepareResult(false, undefined,
+          `Unsupported format: "${format}". Use listFormats to see supported formats.`);
     }
 
     if (!composer.isAvailableOnPlatform) {

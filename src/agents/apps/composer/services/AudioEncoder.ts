@@ -101,47 +101,46 @@ export class AudioEncoder {
   private async encodeWebm(buffer: AudioBuffer): Promise<Uint8Array> {
     const audioCtx = new AudioContext({ sampleRate: buffer.sampleRate });
 
-    try {
-      const dest = audioCtx.createMediaStreamDestination();
-      const source = audioCtx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(dest);
+    const dest = audioCtx.createMediaStreamDestination();
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(dest);
 
-      const recorder = new MediaRecorder(dest.stream, {
-        mimeType: 'audio/webm;codecs=opus',
-      });
+    const recorder = new MediaRecorder(dest.stream, {
+      mimeType: 'audio/webm;codecs=opus',
+    });
 
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    return new Promise<Uint8Array>((resolve, reject) => {
+      recorder.onstop = async () => {
+        try {
+          const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+          const arrayBuffer = await blob.arrayBuffer();
+          resolve(new Uint8Array(arrayBuffer));
+        } catch (err) {
+          reject(new ComposerError(`WebM encoding post-processing failed: ${err}`));
+        } finally {
+          audioCtx.close();
+        }
       };
 
-      return new Promise<Uint8Array>((resolve, reject) => {
-        recorder.onstop = async () => {
-          try {
-            const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-            const arrayBuffer = await blob.arrayBuffer();
-            resolve(new Uint8Array(arrayBuffer));
-          } catch (err) {
-            reject(new ComposerError(`WebM encoding post-processing failed: ${err}`));
-          }
-        };
+      recorder.onerror = () => {
+        audioCtx.close();
+        reject(new ComposerError('WebM encoding failed'));
+      };
 
-        recorder.onerror = () => {
-          reject(new ComposerError('WebM encoding failed'));
-        };
+      recorder.start();
+      source.start(0);
 
-        recorder.start();
-        source.start(0);
-
-        // Stop recording when buffer playback completes
-        source.onended = () => {
-          recorder.stop();
-        };
-      });
-    } finally {
-      audioCtx.close();
-    }
+      // Stop recording when buffer playback completes
+      source.onended = () => {
+        recorder.stop();
+      };
+    });
   }
 
   /**
