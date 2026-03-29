@@ -3,7 +3,7 @@ Last Updated: 2026-03-29
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.5.7
+- **Version**: 5.6.0
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -258,6 +258,13 @@ onCreate(file: TFile) {
 ## Recent Milestones
 
 ### March 2026
+
+**Mar 29**: Web Tools Agent ✅ (PR #82)
+- New `WebToolsAgent` with 5 desktop-only tools: `openWebpage`, `capturePagePdf`, `capturePagePng`, `captureToMarkdown`, `extractLinks`
+- Electron BrowserWindow (`webViewer.ts`) renders pages headlessly; captures via `webContents.printToPDF()`, `capturePage()`, and DOM extraction
+- `captureToMarkdown`: strips boilerplate (nav/header/footer/ads), converts HTML→Markdown via Turndown
+- `extractLinks`: full link inventory with URL, text, and type (internal/external/anchor/resource)
+- Desktop-only (`Platform.isDesktop` guard) — requires Electron APIs
 
 **Mar 29**: Nexus Ingester ✅ (PR #83)
 - New `IngestManagerAgent` with `ingest` + `listCapabilities` tools
@@ -520,19 +527,9 @@ agents/
 `main`
 
 ### Open PRs
-- **PR #85** `fix/crlf-replace-normalization` — Fix CRLF line ending bug in contentManager.replace (issue #84)
+None.
 
 ### Current Work
-
-**Semantic Note Suggester** — ✅ Complete (Mar 29, uncommitted). `src/utils/noteSearch.ts` is the shared `searchNotes()` utility (semantic → fuzzy → recent). Both `NoteInputSuggester` (task board modal) and `TextAreaNoteSuggester` (chat `[[` picker) now delegate to it. New files: `src/ui/tasks/NoteInputSuggester.ts`, `src/utils/noteSearch.ts`.
-
-**GitHub Copilot Responses API** — ✅ Implemented. `gpt-5.4` now routes to `https://api.githubcopilot.com/responses` via dual-endpoint routing in `GithubCopilotAdapter.ts`. Changes uncommitted on `main` branch — pending test + PR.
-
-**Copilot API gotchas (CRITICAL — same as Codex)**:
-- `delta` is plain string, not object — `typeof event.delta === 'string'` check required
-- Request format: `input` array (not `messages`), `instructions` (not system message)
-- Route via `supported_endpoints` from `/models` response; fallback: GPT-5+ → `/responses`, else → `/chat/completions`
-- `generateUncached()` still uses `/chat/completions` only — non-streaming gpt-5.4 calls will fail (streaming path is used in practice)
 
 **Context Budget Service** — `feat/context-budget-service` branch is the user's active in-progress branch. Work ongoing.
 
@@ -552,8 +549,6 @@ A branch IS a conversation with parent metadata:
 - `src/ui/chat/services/ContextTracker.ts` - Token/cost tracking
 
 ### Known Issues
-
-**contentManager.replace CRLF bug** — ✅ Fixed in PR #85 (branch `fix/crlf-replace-normalization`). `normalizeCRLF` now strips all `\r` (not just `\r\n` pairs); `existingContent` normalized at read time. 27 tests pass. Awaiting merge.
 
 **Task Board: No JSONL→SQLite sync for tasks** (Mar 26 — fix in progress, branch `fix/task-board-sync`):
 - Fix implemented: `TaskEventApplier.ts` (new), `SyncCoordinator.rebuildTasks()`, `clearAllData()` now clears task tables, `reconcileMissingTasks()` in HybridStorageAdapter, workspace name→UUID resolution in TaskService
@@ -754,7 +749,7 @@ Whisper API (OpenAI + Groq) only. Excluded in v1:
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 3a831b09-2738-4a1b-b245-c65642ee664d`
-- Team: `pact-3a831b09`
-- Started: 2026-03-29 17:47:19 UTC
+- Resume: `claude --resume 2e726e80-57fb-4b21-8de4-d96a935e92e3`
+- Team: `pact-2e726e80`
+- Started: 2026-03-29 19:18:19 UTC
 <!-- SESSION_END -->
