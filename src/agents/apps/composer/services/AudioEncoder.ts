@@ -197,6 +197,8 @@ function getChannelDataArrays(buffer: AudioBuffer): Float32Array[] {
  * Averages all channels into L/R by splitting odd/even or averaging all.
  */
 function downmixToStereo(buffer: AudioBuffer): AudioBuffer {
+  // OfflineAudioContext used only for createBuffer (no startRendering call).
+  // OfflineAudioContext has no close() method — GC handles cleanup.
   const ctx = new OfflineAudioContext(2, buffer.length, buffer.sampleRate);
   const newBuffer = ctx.createBuffer(2, buffer.length, buffer.sampleRate);
 

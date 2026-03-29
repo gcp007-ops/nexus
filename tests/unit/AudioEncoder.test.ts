@@ -141,12 +141,20 @@ jest.mock('wasm-media-encoders', () => ({
 // Import AFTER mocks are set up
 import { AudioEncoder } from '../../src/agents/apps/composer/services/AudioEncoder';
 
+// Use fake timers to prevent open handle warnings from setTimeout in MediaRecorder mock
+beforeAll(() => jest.useFakeTimers());
+afterAll(() => jest.useRealTimers());
+
 describe('AudioEncoder', () => {
   let encoder: AudioEncoder;
 
   beforeEach(() => {
     encoder = new AudioEncoder();
     jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
   });
 
   describe('WAV encoding', () => {

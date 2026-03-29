@@ -35,6 +35,7 @@ interface ComposeParams extends CommonParameters {
   headerLevel?: 1 | 2 | 3 | 4 | 5 | 6;
   frontmatterHandling?: 'first' | 'merge' | 'strip';
   maxFileSizeMb?: number;
+  maxTotalSizeMb?: number;
   audioMode?: 'concat' | 'mix';
   tracks?: Array<{
     file: string;
@@ -94,23 +95,41 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
           return this.prepareResult(false, undefined,
             `Invalid track file path: "${track.file}"`);
         }
+        if (track.volume !== undefined && (track.volume < 0 || track.volume > 1)) {
+          return this.prepareResult(false, undefined,
+            `Track volume must be 0.0-1.0, got ${track.volume} for "${track.file}"`);
+        }
+        if (track.offset !== undefined && track.offset < 0) {
+          return this.prepareResult(false, undefined,
+            `Track offset must be >= 0, got ${track.offset} for "${track.file}"`);
+        }
+        if (track.fadeIn !== undefined && track.fadeIn < 0) {
+          return this.prepareResult(false, undefined,
+            `Track fadeIn must be >= 0, got ${track.fadeIn} for "${track.file}"`);
+        }
+        if (track.fadeOut !== undefined && track.fadeOut < 0) {
+          return this.prepareResult(false, undefined,
+            `Track fadeOut must be >= 0, got ${track.fadeOut} for "${track.file}"`);
+        }
       }
     } else {
       if (!files || files.length === 0) {
         return this.prepareResult(false, undefined,
           'At least one file path is required in "files" array');
       }
+      const invalidPaths = files.filter(f => !isValidPath(f));
+      if (invalidPaths.length > 0) {
+        return this.prepareResult(false, undefined,
+          `Invalid file path(s): ${invalidPaths.map(p => `"${p}"`).join(', ')} — must be vault-relative, no ".." or absolute paths`);
+      }
     }
 
-    // --- 2. Output conflict resolution ---
+    // --- 2. Output conflict check ---
     const normalizedOutput = normalizePath(outputPath);
     const existingFile = vault.getAbstractFileByPath(normalizedOutput);
-    if (existingFile) {
-      if (!overwrite) {
-        return this.prepareResult(false, undefined,
-          `File already exists at ${normalizedOutput}. Set overwrite: true to replace.`);
-      }
-      await vault.delete(existingFile);
+    if (existingFile && !overwrite) {
+      return this.prepareResult(false, undefined,
+        `File already exists at ${normalizedOutput}. Set overwrite: true to replace.`);
     }
 
     // --- 3. Select composer (lazy — only instantiate the one needed) ---
@@ -160,16 +179,25 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
       }
     } catch (err) {
       if (err instanceof ComposerError) {
-        return this.prepareResult(false, undefined, err.message);
+        const msg = err.failedFiles.length > 0
+          ? `${err.message} [failedFiles: ${err.failedFiles.join(', ')}]`
+          : err.message;
+        return this.prepareResult(false, undefined, msg);
       }
       throw err;
     }
 
-    // --- 5. Compute total input size ---
+    // --- 5. Compute total input size + aggregate limit ---
     const allFiles = input.mode === 'concat'
       ? input.files
       : input.tracks.map(t => t.file);
     const totalInputSize = allFiles.reduce((sum, f) => sum + f.stat.size, 0);
+
+    const maxTotalBytes = (params.maxTotalSizeMb ?? 200) * 1024 * 1024;
+    if (totalInputSize > maxTotalBytes) {
+      return this.prepareResult(false, undefined,
+        `Total input size (${(totalInputSize / 1024 / 1024).toFixed(1)}MB) exceeds limit of ${params.maxTotalSizeMb ?? 200}MB`);
+    }
 
     // --- 6. Compose with timeout ---
     const options: ComposeOptions = {
@@ -191,7 +219,10 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
       ]);
     } catch (err) {
       if (err instanceof ComposerError) {
-        return this.prepareResult(false, undefined, err.message);
+        const msg = err.failedFiles.length > 0
+          ? `${err.message} [failedFiles: ${err.failedFiles.join(', ')}]`
+          : err.message;
+        return this.prepareResult(false, undefined, msg);
       }
       return this.prepareResult(false, undefined,
         `Composition failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -213,17 +244,31 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
 
     let outputSize: number;
     try {
-      if (typeof output === 'string') {
-        await vault.create(normalizedOutput, output);
-        outputSize = new TextEncoder().encode(output).byteLength;
+      if (existingFile) {
+        // Safe overwrite: write to temp path first, delete old, then rename
+        const tempPath = normalizedOutput + '.composing';
+        if (typeof output === 'string') {
+          await vault.create(tempPath, output);
+          outputSize = new TextEncoder().encode(output).byteLength;
+        } else {
+          const arrayBuffer = toArrayBuffer(output);
+          await vault.createBinary(tempPath, arrayBuffer);
+          outputSize = output.byteLength;
+        }
+        await vault.delete(existingFile);
+        const tempFile = vault.getAbstractFileByPath(tempPath);
+        if (tempFile) {
+          await vault.rename(tempFile, normalizedOutput);
+        }
       } else {
-        // vault.createBinary expects ArrayBuffer, not Uint8Array
-        // Handle sub-views safely
-        const arrayBuffer = output.byteOffset === 0 && output.byteLength === output.buffer.byteLength
-          ? output.buffer
-          : output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength);
-        await vault.createBinary(normalizedOutput, arrayBuffer as ArrayBuffer);
-        outputSize = output.byteLength;
+        if (typeof output === 'string') {
+          await vault.create(normalizedOutput, output);
+          outputSize = new TextEncoder().encode(output).byteLength;
+        } else {
+          const arrayBuffer = toArrayBuffer(output);
+          await vault.createBinary(normalizedOutput, arrayBuffer);
+          outputSize = output.byteLength;
+        }
       }
     } catch (err) {
       return this.prepareResult(false, undefined,
@@ -279,6 +324,10 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
           type: 'number',
           description: 'Per-file size limit in MB. Default: 50',
         },
+        maxTotalSizeMb: {
+          type: 'number',
+          description: 'Aggregate size limit for all input files in MB. Default: 200',
+        },
         audioMode: {
           type: 'string',
           enum: ['concat', 'mix'],
@@ -316,4 +365,20 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
       required: ['format', 'outputPath'],
     });
   }
+}
+
+/**
+ * Convert a Uint8Array to an ArrayBuffer safely.
+ * Handles sub-views where buffer.byteLength !== view.byteLength,
+ * and ensures the result is an ArrayBuffer (not SharedArrayBuffer).
+ */
+function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+  if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+      && data.buffer instanceof ArrayBuffer) {
+    return data.buffer;
+  }
+  // Copy into a fresh ArrayBuffer to handle sub-views and SharedArrayBuffer
+  const copy = new ArrayBuffer(data.byteLength);
+  new Uint8Array(copy).set(data);
+  return copy;
 }

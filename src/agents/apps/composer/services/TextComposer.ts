@@ -9,6 +9,7 @@
  */
 
 import { Vault } from 'obsidian';
+import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 import { IFormatComposer, ComposeInput, ComposeOptions, ComposerError } from '../types';
 
 export class TextComposer implements IFormatComposer {
@@ -82,8 +83,8 @@ export class TextComposer implements IFormatComposer {
 
 /**
  * Extract YAML frontmatter from markdown content.
- * Uses a simple line-by-line parser — no YAML library dependency.
- * Handles the common case of simple key-value frontmatter.
+ * Uses the 'yaml' package for robust parsing of nested structures,
+ * arrays, and multi-line values.
  */
 function extractFrontmatter(content: string): {
   frontmatter: Record<string, unknown> | null;
@@ -96,24 +97,22 @@ function extractFrontmatter(content: string): {
   if (!match) return { frontmatter: null, body: trimmed };
 
   const body = trimmed.slice(match[0].length);
-  const frontmatter: Record<string, unknown> = {};
 
-  for (const line of match[1].split('\n')) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.slice(0, colonIdx).trim();
-      const value = line.slice(colonIdx + 1).trim();
-      frontmatter[key] = value;
+  try {
+    const parsed = yamlParse(match[1]);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { frontmatter: parsed, body };
     }
+    return { frontmatter: null, body: trimmed };
+  } catch {
+    // Malformed YAML — treat as no frontmatter
+    return { frontmatter: null, body: trimmed };
   }
-
-  return { frontmatter, body };
 }
 
 /**
  * Serialize a frontmatter object back to YAML format.
  */
 function serializeFrontmatter(fm: Record<string, unknown>): string {
-  const lines = Object.entries(fm).map(([k, v]) => `${k}: ${v}`);
-  return '---\n' + lines.join('\n') + '\n---';
+  return '---\n' + yamlStringify(fm).trimEnd() + '\n---';
 }

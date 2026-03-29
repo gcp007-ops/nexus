@@ -88,6 +88,14 @@ export class AudioComposer implements IFormatComposer {
     }
 
     const sampleRate = decodedBuffers[0].sampleRate;
+    const mismatchedFiles = files.filter((_, i) => decodedBuffers[i].sampleRate !== sampleRate);
+    if (mismatchedFiles.length > 0) {
+      throw new ComposerError(
+        `Sample rate mismatch: first file is ${sampleRate}Hz but ${mismatchedFiles.length} file(s) differ. ` +
+        `All audio files must share the same sample rate for concatenation.`,
+        mismatchedFiles.map(f => f.path)
+      );
+    }
     const numberOfChannels = Math.max(...decodedBuffers.map(b => b.numberOfChannels));
     const totalLength = decodedBuffers.reduce((sum, b) => sum + b.length, 0);
 
