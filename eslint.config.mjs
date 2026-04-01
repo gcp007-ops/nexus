@@ -1,6 +1,8 @@
 import { defineConfig } from "eslint/config";
 import tseslint from "typescript-eslint";
 import obsidianPlugin from "eslint-plugin-obsidianmd";
+import { DEFAULT_BRANDS } from "eslint-plugin-obsidianmd/dist/lib/rules/ui/brands.js";
+import { DEFAULT_ACRONYMS } from "eslint-plugin-obsidianmd/dist/lib/rules/ui/acronyms.js";
 
 export default defineConfig([
     // Global ignores (must be first so they apply to all configs)
@@ -63,6 +65,13 @@ export default defineConfig([
             // Bot parity: obsidianmd recommended sets "warn", but the bot
             // treats prefer-file-manager-trash-file as Required (error).
             "obsidianmd/prefer-file-manager-trash-file": "error",
+
+            // Extend sentence-case with project-specific acronyms and brands
+            "obsidianmd/ui/sentence-case": ["error", {
+                acronyms: [...DEFAULT_ACRONYMS, "MCP", "LLM"],
+                brands: [...DEFAULT_BRANDS, "Claude Desktop", "Claude", "Nexus", "LM Studio", "Ollama", "WebLLM"],
+                ignoreRegex: ["^e\\.g\\.", "^ollama\\s"],
+            }],
         },
     },
 
