@@ -96,33 +96,180 @@ These services can be reused directly. The audio editor adds **visual interactio
 #### Verdict
 **Tone.js** for effects processing — tree-shakeable, rich effects library, MIT license. Keep the existing Web Audio API approach for basic operations (concat, mix, fade). Skip ffmpeg.wasm (too heavy).
 
-### 3.3 DAW-like UI / Multi-track Timeline
+### 3.3 Complete DAW-like Solutions (Drop-In Evaluation)
 
-#### waveform-playlist (naomiaro)
-- **GitHub**: ~1.2k stars
+#### waveform-playlist (naomiaro) — CLOSEST TO WHAT WE WANT
+- **GitHub**: 1.5k stars, updated Apr 2, 2026 (but npm `4.3.3` last published ~2022)
 - **License**: MIT
-- **Key features**: Multi-track audio editor UI, timeline with cursor, track-level volume/pan/solo/mute, region selection, fade curves, non-destructive edits, export to AudioBuffer
-- **Built on**: Web Audio API + wavesurfer-like canvas rendering
-- **Trade-offs**: Less maintained than wavesurfer.js, but provides the closest thing to a "drop-in DAW UI"
+- **Built on**: React + Tone.js + Web Audio API
+- **Features that match our needs**:
+  - Multi-track timeline with canvas waveforms
+  - Drag-and-drop audio clips onto tracks
+  - Trim clip boundaries, split at playhead
+  - Fade in/out curves (visual + adjustable)
+  - Full transport (play/pause/stop/seek/loop)
+  - Per-track volume/pan/mute/solo
+  - Export mixdown to AudioBuffer
+  - **Time-synced text annotations** — perfect for transcript alignment, keyboard nav
+  - Event emitter architecture (programmatic control)
+- **Concerns**:
+  - **React dependency** — Obsidian plugins don't use React
+  - Has a **Lit-based Web Components variant** (`@dawcore/components`) — framework-agnostic, promising for Obsidian
+  - Electron usage reported working (GitHub Issue #26) but was from 2016
+  - npm package possibly stale vs GitHub source
 
-#### Build custom with wavesurfer.js
-- wavesurfer.js Regions plugin + custom track layout = multi-track editor
-- More work but more control over Obsidian integration
-- Each track = one wavesurfer instance stacked vertically with synchronized playback
+#### audapolis (bugbakery) — Best UX reference for transcript-first
+- **License**: **AGPL v3** (incompatible with plugin distribution)
+- **Stack**: Electron + React + TypeScript
+- **Features**: Word-processor-like audio editing, automatic transcription, paragraph-level editing
+- **Verdict**: **Cannot use code** (AGPL), but excellent UX inspiration for transcript-first workflow
 
-#### Verdict
-**Two viable approaches**:
+#### audiomass (pkalogiros)
+- **License**: None specified (legally unusable)
+- **Single-track only** (multi-track "planned")
+- Standalone app, not embeddable
 
-1. **Quick path**: Use **waveform-playlist** as a starting point — it already has multi-track timeline, transport controls, and region editing. Style it to match Obsidian.
-2. **Custom path**: Build multi-track on top of **wavesurfer.js** — more control, better long-term maintainability, aligns with Obsidian's DOM API patterns.
+#### wavacity (ahilss) — Audacity WASM port
+- **GitHub**: 464 stars, Emscripten/WASM compilation of Audacity
+- **License**: GPL (incompatible)
+- **Verdict**: Monolithic standalone app, not embeddable as a component
 
-**Recommendation**: Start with **wavesurfer.js + custom track layout** for v1. The Task Board pattern shows that manual DOM management with Obsidian APIs works well. We can build a track container that hosts multiple wavesurfer instances with a shared transport.
+#### openDAW (andremichelle) / GridSound
+- **openDAW**: AGPL v3 (incompatible). Great architecture inspiration (minimal deps, AudioWorklet + WASM)
+- **GridSound**: "Half open-source", unclear license. Not viable.
+
+#### BBC react-transcript-editor
+- **License**: MIT
+- **Purpose**: React component for transcript editing with word-level alignment
+- **Status**: Unmaintained (v1.4.4, published 4+ years ago)
+- **Verdict**: Concept is right, implementation is dead. Could study the approach.
+
+### 3.4 Verdict: Complete Solutions
+
+**waveform-playlist is the only viable near-complete solution** (MIT, multi-track, transport, drag-drop, annotations). Two integration paths:
+
+1. **Adapt waveform-playlist's Lit Web Components variant** — if it's mature enough, embed it in the `ItemView` container. Framework-agnostic, no React needed. Wrap with workspace integration layer.
+
+2. **Use waveform-playlist as architecture reference, build with wavesurfer.js** — more control, cleaner Obsidian integration, but more upfront work. Each track = one wavesurfer instance with shared transport.
+
+**Recommendation**: Investigate waveform-playlist's `@dawcore/components` (Lit) maturity first. If it has the core features (multi-track, drag-drop, transport, annotations), use it. If not, build custom on wavesurfer.js using waveform-playlist's event architecture as the blueprint.
 
 ---
 
-## 4. Proposed Architecture
+## 4. Workspace Integration
 
-### 4.1 File Structure
+The audio editor is its own leaf view, but it populates projects from the scoped workspace — same way tasks are workspace-scoped.
+
+### 4.1 How Workspace Scoping Works
+
+```
+Workspace "Podcast Project"
+├── rootFolder: "podcast-project/"     ← vault path constraint
+├── context.keyFiles: [...]
+├── sessions: [...]
+└── Audio Editor reads from this scope:
+    ├── podcast-project/recordings/episode-01.mp3
+    ├── podcast-project/recordings/interview-raw.wav
+    ├── podcast-project/music/intro-jingle.mp3
+    └── podcast-project/sfx/transition.ogg
+```
+
+**WorkspaceService** provides:
+- `getWorkspaces()` — list all workspaces (for workspace picker dropdown)
+- `workspace.rootFolder` — the vault path that scopes file discovery
+- `workspace.id` — join key for audio project JSONL storage
+
+### 4.2 Audio File Discovery from Workspace
+
+When the editor opens or workspace changes:
+
+```typescript
+// Scan workspace rootFolder for audio files
+async function discoverAudioFiles(workspace: IndividualWorkspace): Promise<TFile[]> {
+  const root = app.vault.getAbstractFileByPath(
+    normalizePath(workspace.rootFolder)
+  );
+  if (!root || !(root instanceof TFolder)) return [];
+
+  const audioExtensions = new Set(['mp3', 'wav', 'ogg', 'webm', 'aac', 'm4a', 'flac']);
+  const audioFiles: TFile[] = [];
+
+  Vault.recurseChildren(root, (file) => {
+    if (file instanceof TFile && audioExtensions.has(file.extension)) {
+      audioFiles.push(file);
+    }
+  });
+
+  return audioFiles;
+}
+```
+
+### 4.3 Audio Project Storage (per workspace)
+
+```
+.nexus/audio/projects_{workspaceId}.jsonl
+```
+
+Event-sourced, same pattern as tasks:
+```jsonl
+{"type":"project_created","data":{"id":"proj_1","workspaceId":"ws_abc","name":"Episode 01 Edit","created":1712345678}}
+{"type":"track_added","data":{"projectId":"proj_1","trackId":"trk_1","sourceFile":"podcast-project/recordings/episode-01.mp3"}}
+{"type":"edit_applied","data":{"projectId":"proj_1","trackId":"trk_1","edit":{"type":"trim","startTime":0,"endTime":45.2}}}
+{"type":"transcript_attached","data":{"projectId":"proj_1","trackId":"trk_1","words":[{"word":"So","start":0.0,"end":0.15},...]}}
+```
+
+### 4.4 View State Flow
+
+```
+┌──────────────────────────────────────────────────────┐
+│ AudioEditorView (ItemView)                           │
+├──────────────────────────────────────────────────────┤
+│ Workspace: [Podcast Project ▾]  Project: [Ep 01 ▾]  │  ← workspace picker
+├──────────────────────────────────────────────────────┤
+│ ┌──────────────────────────────┐ ┌─────────────────┐ │
+│ │ Audio Files (from workspace) │ │ Timeline/Editor  │ │
+│ │                              │ │                  │ │
+│ │ 📁 recordings/               │ │ [waveforms...]   │ │
+│ │   🎵 episode-01.mp3         │ │                  │ │
+│ │   🎵 interview-raw.wav      │ │                  │ │
+│ │ 📁 music/                    │ │                  │ │
+│ │   🎵 intro-jingle.mp3       │ │                  │ │
+│ │                              │ │                  │ │
+│ │ [drag files → to tracks]     │ │                  │ │
+│ └──────────────────────────────┘ └─────────────────┘ │
+├──────────────────────────────────────────────────────┤
+│ Transcript Panel (optional)                          │
+└──────────────────────────────────────────────────────┘
+```
+
+The left sidebar is a **workspace-scoped file browser** (reuse `FilePickerRenderer` pattern with audio extension filter). Users drag audio files from the sidebar onto timeline tracks.
+
+### 4.5 Service Dependencies
+
+```typescript
+class AudioEditorView extends ItemView {
+  // From plugin:
+  private workspaceService: WorkspaceService;    // Workspace listing + rootFolder
+  private audioProjectService: AudioProjectService;  // JSONL project state (new)
+
+  // Reused from Composer:
+  private audioComposer: AudioComposer;          // Mix/concat for export
+  private audioEncoder: AudioEncoder;            // WAV/MP3/WebM encoding
+
+  // Reused from IngestManager:
+  private transcriptionService: TranscriptionService;  // Whisper/Groq/Google transcription
+
+  // New:
+  private editorState: AudioEditorState;         // In-memory EDL + event bus
+  private transportController: TransportController;  // Shared playback sync
+}
+```
+
+---
+
+## 5. Proposed File Structure
+
+### 5.1 Directory Layout
 
 ```
 src/
