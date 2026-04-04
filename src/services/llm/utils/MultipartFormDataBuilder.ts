@@ -22,14 +22,16 @@ export function buildMultipartFormData(fields: MultipartField[]): MultipartResul
   const parts: Uint8Array[] = [];
 
   for (const field of fields) {
+    const safeFieldName = field.name.replace(/["\r\n]/g, '');
     let header = `--${boundary}${CRLF}`;
 
     if (field.filename) {
-      const safeName = field.filename.replace(/["\r\n]/g, '');
-      header += `Content-Disposition: form-data; name="${field.name}"; filename="${safeName}"${CRLF}`;
-      header += `Content-Type: ${field.contentType || 'application/octet-stream'}${CRLF}`;
+      const safeFileName = field.filename.replace(/["\r\n]/g, '');
+      const safeContentType = (field.contentType || 'application/octet-stream').replace(/[\r\n]/g, '');
+      header += `Content-Disposition: form-data; name="${safeFieldName}"; filename="${safeFileName}"${CRLF}`;
+      header += `Content-Type: ${safeContentType}${CRLF}`;
     } else {
-      header += `Content-Disposition: form-data; name="${field.name}"${CRLF}`;
+      header += `Content-Disposition: form-data; name="${safeFieldName}"${CRLF}`;
     }
 
     header += CRLF;

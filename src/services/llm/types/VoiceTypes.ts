@@ -7,6 +7,10 @@
 
 import type { LLMProviderSettings } from '../../../types/llm/ProviderTypes';
 
+/** Default prompt for multimodal audio transcription (Google, OpenRouter). */
+export const DEFAULT_TRANSCRIPTION_PROMPT =
+  'Transcribe this audio verbatim. Return only the transcript text with no commentary, labels, or markdown.';
+
 export type TranscriptionProvider = 'openai' | 'groq' | 'google' | 'openrouter' | 'mistral' | 'deepgram' | 'assemblyai';
 
 export type TranscriptionExecution =

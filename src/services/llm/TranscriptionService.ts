@@ -22,6 +22,45 @@ import { chunkAudio } from './utils/AudioChunkingService';
 export class TranscriptionService {
   private adapters = new Map<TranscriptionProvider, BaseTranscriptionAdapter>();
 
+  private static cachedInstance: TranscriptionService | null = null;
+  private static cachedSettingsFingerprint: string | null = null;
+
+  /**
+   * Returns a cached TranscriptionService if settings haven't changed,
+   * or creates a new one if they have. Avoids re-instantiating adapters
+   * on every execution when provider config is stable.
+   */
+  static createOrReuse(settings: LLMProviderSettings | null): TranscriptionService {
+    const fingerprint = TranscriptionService.computeFingerprint(settings);
+    if (
+      TranscriptionService.cachedInstance &&
+      TranscriptionService.cachedSettingsFingerprint === fingerprint
+    ) {
+      return TranscriptionService.cachedInstance;
+    }
+
+    TranscriptionService.cachedInstance = new TranscriptionService(settings);
+    TranscriptionService.cachedSettingsFingerprint = fingerprint;
+    return TranscriptionService.cachedInstance;
+  }
+
+  private static computeFingerprint(settings: LLMProviderSettings | null): string {
+    if (!settings?.providers) {
+      return 'null';
+    }
+
+    const parts: string[] = [];
+    const providers = settings.providers;
+    for (const key of Object.keys(providers).sort()) {
+      const config = providers[key as keyof typeof providers];
+      if (config && typeof config === 'object') {
+        const c = config as { enabled?: boolean; apiKey?: string };
+        parts.push(`${key}:${c.enabled ?? false}:${c.apiKey ?? ''}`);
+      }
+    }
+    return parts.join('|');
+  }
+
   constructor(private llmSettings: LLMProviderSettings | null = null) {
     this.initializeAdapters();
   }

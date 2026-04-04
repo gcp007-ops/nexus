@@ -1,14 +1,12 @@
 import { requestUrl } from 'obsidian';
 import { BaseTranscriptionAdapter } from '../BaseTranscriptionAdapter';
-import type {
-  AudioChunk,
-  TranscriptionProvider,
-  TranscriptionRequest,
-  TranscriptionSegment
+import {
+  DEFAULT_TRANSCRIPTION_PROMPT,
+  type AudioChunk,
+  type TranscriptionProvider,
+  type TranscriptionRequest,
+  type TranscriptionSegment
 } from '../../types/VoiceTypes';
-
-const DEFAULT_PROMPT =
-  'Transcribe this audio verbatim. Return only the transcript text with no commentary, labels, or markdown.';
 
 export class GoogleTranscriptionAdapter extends BaseTranscriptionAdapter {
   readonly provider: TranscriptionProvider = 'google';
@@ -28,7 +26,7 @@ export class GoogleTranscriptionAdapter extends BaseTranscriptionAdapter {
         contents: [{
           role: 'user',
           parts: [
-            { text: request.prompt?.trim() || DEFAULT_PROMPT },
+            { text: request.prompt?.trim() || DEFAULT_TRANSCRIPTION_PROMPT },
             {
               inline_data: {
                 mime_type: chunk.mimeType,

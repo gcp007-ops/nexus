@@ -28,7 +28,8 @@ export abstract class BaseTranscriptionAdapter {
 
   abstract transcribeChunk(
     chunk: AudioChunk,
-    request: TranscriptionRequest & { provider: TranscriptionProvider; model: string }
+    request: TranscriptionRequest & { provider: TranscriptionProvider; model: string },
+    options?: { signal?: AbortSignal }
   ): Promise<TranscriptionSegment[]>;
 
   protected mimeToExtension(mimeType: string): string {

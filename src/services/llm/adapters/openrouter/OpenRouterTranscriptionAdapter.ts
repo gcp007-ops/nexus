@@ -1,14 +1,12 @@
 import { requestUrl } from 'obsidian';
 import { BaseTranscriptionAdapter } from '../BaseTranscriptionAdapter';
-import type {
-  AudioChunk,
-  TranscriptionProvider,
-  TranscriptionRequest,
-  TranscriptionSegment
+import {
+  DEFAULT_TRANSCRIPTION_PROMPT,
+  type AudioChunk,
+  type TranscriptionProvider,
+  type TranscriptionRequest,
+  type TranscriptionSegment
 } from '../../types/VoiceTypes';
-
-const DEFAULT_PROMPT =
-  'Transcribe this audio verbatim. Return only the transcript text with no commentary, labels, or markdown.';
 
 export class OpenRouterTranscriptionAdapter extends BaseTranscriptionAdapter {
   readonly provider: TranscriptionProvider = 'openrouter';
@@ -35,7 +33,7 @@ export class OpenRouterTranscriptionAdapter extends BaseTranscriptionAdapter {
             content: [
               {
                 type: 'text',
-                text: request.prompt?.trim() || DEFAULT_PROMPT
+                text: request.prompt?.trim() || DEFAULT_TRANSCRIPTION_PROMPT
               },
               {
                 type: 'input_audio',

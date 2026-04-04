@@ -11,6 +11,19 @@ import type { AudioChunk } from '../types/VoiceTypes';
 const MAX_CHUNK_SIZE_BYTES = 25 * 1024 * 1024;
 const TARGET_CHUNK_DURATION_SECONDS = 600;
 
+/** Average bitrates (bytes per second) for estimating duration of single-chunk files */
+const AVERAGE_BYTES_PER_SECOND: Record<string, number> = {
+  'audio/mpeg': 16000,       // ~128 kbps MP3
+  'audio/mp4': 16000,        // ~128 kbps AAC
+  'audio/aac': 16000,        // ~128 kbps AAC
+  'audio/ogg': 16000,        // ~128 kbps Vorbis/Opus
+  'audio/opus': 8000,        // ~64 kbps Opus
+  'audio/wav': 176400,       // 44.1kHz 16-bit stereo PCM
+  'audio/flac': 88200,       // ~50% of WAV
+  'audio/webm': 8000,        // ~64 kbps Opus in WebM
+  'audio/x-ms-wma': 16000    // ~128 kbps WMA
+};
+
 export async function chunkAudio(
   audioData: ArrayBuffer,
   mimeType: string
@@ -20,7 +33,7 @@ export async function chunkAudio(
       data: audioData,
       mimeType,
       startSeconds: 0,
-      durationSeconds: 0
+      durationSeconds: estimateDuration(audioData.byteLength, mimeType)
     }];
   }
 
@@ -48,9 +61,19 @@ export async function chunkAudio(
       data: audioData,
       mimeType,
       startSeconds: 0,
-      durationSeconds: 0
+      durationSeconds: estimateDuration(audioData.byteLength, mimeType)
     }];
   }
+}
+
+/**
+ * Estimate audio duration from file size and mime type using average bitrates.
+ * Returns a rough estimate — the actual duration from the provider response
+ * will be more accurate, but this avoids returning 0 for single-chunk files.
+ */
+function estimateDuration(byteLength: number, mimeType: string): number {
+  const bytesPerSecond = AVERAGE_BYTES_PER_SECOND[mimeType] ?? 16000;
+  return Math.max(1, Math.round(byteLength / bytesPerSecond));
 }
 
 async function decodeAndChunk(audioData: ArrayBuffer): Promise<AudioChunk[]> {

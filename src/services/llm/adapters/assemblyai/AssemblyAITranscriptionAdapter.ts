@@ -18,11 +18,12 @@ export class AssemblyAITranscriptionAdapter extends BaseTranscriptionAdapter {
 
   async transcribeChunk(
     chunk: AudioChunk,
-    request: TranscriptionRequest & { provider: TranscriptionProvider; model: string }
+    request: TranscriptionRequest & { provider: TranscriptionProvider; model: string },
+    options?: { signal?: AbortSignal }
   ): Promise<TranscriptionSegment[]> {
     const audioUrl = await this.uploadChunk(chunk);
     const transcriptId = await this.submitTranscript(audioUrl, request);
-    const transcript = await this.pollTranscript(transcriptId);
+    const transcript = await this.pollTranscript(transcriptId, options?.signal);
     return this.parseTranscript(transcript, chunk.durationSeconds);
   }
 
@@ -76,16 +77,21 @@ export class AssemblyAITranscriptionAdapter extends BaseTranscriptionAdapter {
 
     const parsed = response.json as { id?: unknown; error?: unknown };
     if (typeof parsed.id !== 'string' || !parsed.id) {
-      throw new Error(
-        typeof parsed.error === 'string' ? parsed.error : 'AssemblyAI transcript submit did not return an ID'
-      );
+      if (typeof parsed.error === 'string') {
+        console.error('[AssemblyAI] Transcript submit error:', parsed.error);
+      }
+      throw new Error('AssemblyAI transcript submission failed');
     }
 
     return parsed.id;
   }
 
-  private async pollTranscript(transcriptId: string): Promise<unknown> {
+  private async pollTranscript(transcriptId: string, signal?: AbortSignal): Promise<unknown> {
     for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+      if (signal?.aborted) {
+        throw new Error('AssemblyAI transcription was cancelled');
+      }
+
       const response = await requestUrl({
         url: `${this.transcriptEndpoint}/${transcriptId}`,
         method: 'GET',
@@ -104,7 +110,10 @@ export class AssemblyAITranscriptionAdapter extends BaseTranscriptionAdapter {
       }
 
       if (parsed.status === 'error') {
-        throw new Error(typeof parsed.error === 'string' ? parsed.error : 'AssemblyAI transcription failed');
+        if (typeof parsed.error === 'string') {
+          console.error('[AssemblyAI] Transcription error:', parsed.error);
+        }
+        throw new Error('AssemblyAI transcription failed');
       }
 
       await this.sleep(POLL_INTERVAL_MS);
