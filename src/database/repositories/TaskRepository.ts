@@ -236,7 +236,11 @@ export class TaskRepository
       });
 
       // 3. Invalidate cache
-      this.invalidateCache(id);
+      if (data.status !== undefined || data.projectId !== undefined) {
+        this.invalidateCache();
+      } else {
+        this.invalidateCache(id);
+      }
       this.log('update', { id });
     } catch (error) {
       this.logError('update', error);

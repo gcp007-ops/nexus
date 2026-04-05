@@ -199,7 +199,12 @@ export class ProjectRepository
       });
 
       // 3. Invalidate cache
-      this.invalidateCache(id);
+      if (data.status !== undefined) {
+        this.invalidateCache();
+        this.queryCache.invalidateByType('task');
+      } else {
+        this.invalidateCache(id);
+      }
       this.log('update', { id });
     } catch (error) {
       this.logError('update', error);
