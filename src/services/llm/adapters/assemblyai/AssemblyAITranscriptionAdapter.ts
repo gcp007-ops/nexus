@@ -63,7 +63,10 @@ export class AssemblyAITranscriptionAdapter extends BaseTranscriptionAdapter {
       },
       body: JSON.stringify({
         audio_url: audioUrl,
-        speech_models: [request.model],
+        // 'best' is our internal meta-selector — omit speech_models to let
+        // AssemblyAI pick its current best model. Only send speech_models
+        // when the ID is a real API model (e.g. 'universal-3-pro').
+        ...(request.model !== 'best' ? { speech_models: [request.model] } : {}),
         speaker_labels: request.requestSpeakerLabels === true,
         punctuate: true,
         format_text: true,

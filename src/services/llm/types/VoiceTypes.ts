@@ -142,7 +142,7 @@ const TRANSCRIPTION_MODELS: TranscriptionModelDeclaration[] = [
   {
     provider: 'assemblyai',
     id: 'best',
-    name: 'Best',
+    name: 'Best (Default)',
     execution: 'speech-api-async',
     supportsWordTimestamps: true,
     supportsSpeakerLabels: true,

@@ -17,6 +17,14 @@ export class MistralTranscriptionAdapter extends BaseTranscriptionAdapter {
     chunk: AudioChunk,
     request: TranscriptionRequest & { provider: TranscriptionProvider; model: string }
   ): Promise<TranscriptionSegment[]> {
+    // Mistral's Pydantic backend doesn't parse PHP-style `timestamp_granularities[]`
+    // array fields — it concatenates values (e.g. "segmentword"). Send a single field
+    // with the JSON array instead. OpenAI/Groq handle the `[]` convention fine in their
+    // own adapters.
+    const granularities = request.requestWordTimestamps
+      ? ['segment', 'word']
+      : ['segment'];
+
     const fields = [
       {
         name: 'file',
@@ -26,12 +34,8 @@ export class MistralTranscriptionAdapter extends BaseTranscriptionAdapter {
       },
       { name: 'model', value: request.model },
       { name: 'response_format', value: 'verbose_json' },
-      { name: 'timestamp_granularities[]', value: 'segment' }
+      { name: 'timestamp_granularities', value: JSON.stringify(granularities) }
     ];
-
-    if (request.requestWordTimestamps) {
-      fields.push({ name: 'timestamp_granularities[]', value: 'word' });
-    }
 
     if (request.requestSpeakerLabels) {
       fields.push({ name: 'diarize', value: 'true' });
