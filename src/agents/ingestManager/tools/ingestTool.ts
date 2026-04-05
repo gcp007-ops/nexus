@@ -217,7 +217,9 @@ function computeSettingsHash(settings: unknown): string {
   for (const [key, value] of Object.entries(providers as Record<string, unknown>)) {
     if (value && typeof value === 'object') {
       const v = value as Record<string, unknown>;
-      parts.push(`${key}:${String(v.enabled ?? '')}:${String(v.apiKey ?? '').length}`);
+      const enabled = typeof v.enabled === 'boolean' ? String(v.enabled) : '';
+      const keyLen = typeof v.apiKey === 'string' ? v.apiKey.length : 0;
+      parts.push(`${key}:${enabled}:${keyLen}`);
     }
   }
   return parts.sort().join('|');
