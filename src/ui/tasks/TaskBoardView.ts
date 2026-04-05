@@ -79,7 +79,7 @@ export class TaskBoardView extends ItemView {
   private isReady = false;
   private isSyncingBoardData = false;
   private isEditModalOpen = false;
-  private hasPendingEventSync = false;
+  private pendingEvent: TaskBoardDataChangedEvent | null = null;
   private columnsContainer: HTMLElement | null = null;
   private statsContainer: HTMLElement | null = null;
   private projectSelect: HTMLSelectElement | null = null;
@@ -595,9 +595,10 @@ export class TaskBoardView extends ItemView {
     this.registerDomEvent(card, 'dragend', () => {
       card.removeClass('is-dragging');
       this.dragTaskId = null;
-      if (this.hasPendingEventSync) {
-        this.hasPendingEventSync = false;
-        void this.syncFromEvent();
+      if (this.pendingEvent) {
+        const event = this.pendingEvent;
+        this.pendingEvent = null;
+        void this.syncFromEvent(event);
       }
     });
 
@@ -859,9 +860,10 @@ export class TaskBoardView extends ItemView {
       },
       onClose: () => {
         this.isEditModalOpen = false;
-        if (this.hasPendingEventSync) {
-          this.hasPendingEventSync = false;
-          void this.syncFromEvent();
+        if (this.pendingEvent) {
+          const event = this.pendingEvent;
+          this.pendingEvent = null;
+          void this.syncFromEvent(event);
         }
       }
     }).open();
@@ -959,7 +961,7 @@ export class TaskBoardView extends ItemView {
     }
 
     if (this.isEditModalOpen || this.dragTaskId || this.isSyncingBoardData) {
-      this.hasPendingEventSync = true;
+      this.pendingEvent = event;
       return;
     }
 
@@ -976,7 +978,6 @@ export class TaskBoardView extends ItemView {
       await this.loadBoardData();
       if (!this.isClosing) {
         if (event?.entity === 'task' && event.action !== 'moved') {
-          this.refreshProjectDropdown();
           this.refreshColumns();
         } else {
           this.renderBoard();

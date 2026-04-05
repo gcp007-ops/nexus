@@ -236,7 +236,9 @@ export class TaskRepository
       });
 
       // 3. Invalidate cache
-      if (data.status !== undefined || data.projectId !== undefined) {
+      const statusChanged = data.status !== undefined && data.status !== existing.status;
+      const projectChanged = data.projectId !== undefined && data.projectId !== existing.projectId;
+      if (statusChanged || projectChanged) {
         this.invalidateCache();
       } else {
         this.invalidateCache(id);

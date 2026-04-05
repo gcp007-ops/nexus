@@ -199,7 +199,8 @@ export class ProjectRepository
       });
 
       // 3. Invalidate cache
-      if (data.status !== undefined) {
+      const statusChanged = data.status !== undefined && data.status !== existing.status;
+      if (statusChanged) {
         this.invalidateCache();
         this.queryCache.invalidateByType('task');
       } else {

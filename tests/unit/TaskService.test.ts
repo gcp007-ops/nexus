@@ -879,8 +879,9 @@ describe('TaskService', () => {
       taskRepo.getAllDependencyEdges.mockResolvedValue([]);
 
       const result = await service.getWorkspaceSummary('ws-1');
-      expect(result.projects.active).toBe(1);
-      expect(result.projects.items).toHaveLength(2); // active + completed visible, archived excluded
+      expect(result.projects.total).toBe(3);          // all projects including archived
+      expect(result.projects.active).toBe(1);          // only status === 'active'
+      expect(result.projects.items).toHaveLength(2);   // active + completed visible, archived excluded
     });
 
     it('should limit next actions to 5', async () => {
