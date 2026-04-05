@@ -32,7 +32,7 @@ function makeRequest(
     mimeType: 'audio/mpeg',
     fileName: 'test.mp3',
     provider: 'assemblyai',
-    model: 'best',
+    model: 'universal-3-pro',
     ...overrides
   };
 }
@@ -116,7 +116,7 @@ describe('AssemblyAITranscriptionAdapter', () => {
 
       const submitBody = JSON.parse(capturedRequests[1].body as string);
       expect(submitBody.audio_url).toBe('https://cdn.assemblyai.com/upload/abc123');
-      expect(submitBody.speech_models).toEqual(['best']);
+      expect(submitBody.speech_models).toEqual(['universal-3-pro']);
     });
 
     it('sends prompt when provided', async () => {

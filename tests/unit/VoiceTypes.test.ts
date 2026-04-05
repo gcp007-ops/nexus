@@ -63,8 +63,8 @@ describe('VoiceTypes', () => {
       expect(getTranscriptionModel('openai', 'nonexistent')).toBeUndefined();
     });
 
-    it('finds assemblyai best model', () => {
-      const model = getTranscriptionModel('assemblyai', 'best');
+    it('finds assemblyai universal-3-pro model', () => {
+      const model = getTranscriptionModel('assemblyai', 'universal-3-pro');
       expect(model).toBeDefined();
       expect(model?.execution).toBe('speech-api-async');
     });
