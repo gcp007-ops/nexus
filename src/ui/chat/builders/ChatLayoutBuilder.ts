@@ -201,7 +201,7 @@ export class ChatLayoutBuilder {
         placeholder: 'Search by title...',
         'aria-label': 'Search conversations by title',
       }
-    }) as HTMLInputElement;
+    });
 
     const conversationListContainer = sidebarContainer.createDiv('conversation-list-container');
 
