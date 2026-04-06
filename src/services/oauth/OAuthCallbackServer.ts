@@ -11,6 +11,7 @@
  * waits for callback, then shuts down).
  */
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
+import { desktopRequire } from '../../utils/desktopRequire';
 
 /** Common no-cache headers for all callback responses (prevents browser caching auth codes) */
 const NO_CACHE_HEADERS: Record<string, string> = {
@@ -96,9 +97,9 @@ export interface CallbackServerOptions {
  * @throws Error with descriptive message on EADDRINUSE or other server errors
  */
 export function startCallbackServer(options: CallbackServerOptions): Promise<CallbackServerHandle> {
-  const nodeHttp = require('node:http') as typeof import('node:http');
-  const nodeUrl = require('node:url') as typeof import('node:url');
-  const nodeCrypto = require('node:crypto') as typeof import('node:crypto');
+  const nodeHttp = desktopRequire<typeof import('node:http')>('node:http');
+  const nodeUrl = desktopRequire<typeof import('node:url')>('node:url');
+  const nodeCrypto = desktopRequire<typeof import('node:crypto')>('node:crypto');
 
   const {
     port,

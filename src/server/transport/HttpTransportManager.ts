@@ -7,6 +7,7 @@ import { Server as MCPSDKServer } from '@modelcontextprotocol/sdk/server/index.j
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpError, ErrorCode, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../../utils/logger';
+import { desktopRequire } from '../../utils/desktopRequire';
 import type http from 'http';
 import express from 'express';
 import cors from 'cors';
@@ -126,7 +127,7 @@ export class HttpTransportManager {
             logger.systemLog(`[HTTP Transport] Creating new session for initialization`);
             
             transport = new StreamableHTTPServerTransport({
-                sessionIdGenerator: () => (require('node:crypto') as typeof import('node:crypto')).randomUUID(),
+                sessionIdGenerator: () => desktopRequire<typeof import('node:crypto')>('node:crypto').randomUUID(),
                 enableJsonResponse: true, // Enable JSON response mode for OpenAI MCP
                 onsessioninitialized: (newSessionId: string) => {
                     logger.systemLog(`[HTTP Transport] Session initialized: ${newSessionId}`);
@@ -167,7 +168,7 @@ export class HttpTransportManager {
         }
         try {
             // Create HTTP server with Express app
-            const nodeHttp = require('http') as typeof import('http');
+            const nodeHttp = desktopRequire<typeof import('http')>('http');
             this.httpServer = nodeHttp.createServer(this.app);
             const httpServer = this.httpServer;
             if (!httpServer) {

@@ -6,6 +6,7 @@
  */
 import { FileSystemAdapter, Vault } from 'obsidian';
 import { getAllPluginIds } from '../constants/branding';
+import { desktopRequire } from './desktopRequire';
 
 const DEFAULT_CONFIG_DIR = ['.', 'obsidian'].join('');
 
@@ -29,8 +30,8 @@ export function getConnectorPath(vaultPath: string | null, configDir = DEFAULT_C
     return null;
   }
 
-  const nodeFs = require('node:fs') as typeof import('node:fs');
-  const pathMod = require('node:path') as typeof import('node:path');
+  const nodeFs = desktopRequire<typeof import('node:fs')>('node:fs');
+  const pathMod = desktopRequire<typeof import('node:path')>('node:path');
 
   for (const pluginId of getAllPluginIds()) {
     const candidate = pathMod.join(vaultPath, configDir, 'plugins', pluginId, 'connector.js');
