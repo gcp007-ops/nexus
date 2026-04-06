@@ -12,13 +12,16 @@ export class ConversationList {
   private activeConversationId: string | null = null;
   private pendingDeleteConversationId: string | null = null;
   private pendingDeleteTimer: number | null = null;
+  private _hasMore = false;
+  private _isLoading = false;
 
   constructor(
     private container: HTMLElement,
     private onConversationSelect: (conversation: ConversationData) => void,
     private onConversationDelete: (conversationId: string) => void,
     private onConversationRename?: (conversationId: string, newTitle: string) => void,
-    private component?: Component
+    private component?: Component,
+    private onLoadMore?: () => void
   ) {
     this.render();
   }
@@ -29,6 +32,22 @@ export class ConversationList {
   setConversations(conversations: ConversationData[]): void {
     this.conversations = conversations.sort((a, b) => b.updated - a.updated);
     this.render();
+  }
+
+  /**
+   * Update pagination state for Load More button visibility
+   */
+  setHasMore(hasMore: boolean): void {
+    this._hasMore = hasMore;
+    this.updateLoadMoreButton();
+  }
+
+  /**
+   * Update loading state for Load More button
+   */
+  setIsLoading(isLoading: boolean): void {
+    this._isLoading = isLoading;
+    this.updateLoadMoreButton();
   }
 
   /**
@@ -113,6 +132,9 @@ export class ConversationList {
       };
       this.component?.registerDomEvent(deleteBtn, 'click', deleteHandler);
     });
+
+    // Load More button
+    this.renderLoadMoreButton();
   }
 
   /**
@@ -240,6 +262,42 @@ export class ConversationList {
     if (this.pendingDeleteTimer !== null) {
       window.clearTimeout(this.pendingDeleteTimer);
       this.pendingDeleteTimer = null;
+    }
+  }
+
+  /**
+   * Render or re-render the Load More button at the bottom of the list
+   */
+  private renderLoadMoreButton(): void {
+    if (!this._hasMore || !this.onLoadMore) return;
+
+    const btn = this.container.createEl('button', {
+      cls: 'conversation-load-more-btn',
+      text: this._isLoading ? 'Loading...' : 'Load more',
+    });
+    btn.setAttribute('aria-label', 'Load more conversations');
+    if (this._isLoading) {
+      btn.setAttribute('disabled', 'true');
+    }
+
+    const handler = () => {
+      if (!this._isLoading) {
+        this.onLoadMore?.();
+      }
+    };
+    this.component?.registerDomEvent(btn, 'click', handler);
+  }
+
+  /**
+   * Update Load More button visibility/state without full re-render
+   */
+  private updateLoadMoreButton(): void {
+    const existing = this.container.querySelector('.conversation-load-more-btn');
+    if (existing) {
+      existing.remove();
+    }
+    if (this._hasMore && this.onLoadMore && this.conversations.length > 0) {
+      this.renderLoadMoreButton();
     }
   }
 
