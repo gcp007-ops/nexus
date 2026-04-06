@@ -164,7 +164,6 @@ export class ConversationManager {
         created: item.created,
         updated: item.lastUpdated,
       }));
-      this._hasMore = false; // Search results are not paginated (MVP)
 
       this.events.onConversationsChanged();
     } catch {

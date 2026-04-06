@@ -11,32 +11,10 @@ import { Component } from 'obsidian';
 import { createMockElement } from '../mocks/obsidian/core';
 import { ConversationList } from '../../src/ui/chat/components/ConversationList';
 import { ConversationData } from '../../src/types/chat/ChatTypes';
-
-// ---------------------------------------------------------------------------
-// Factories
-// ---------------------------------------------------------------------------
-
-function createConversationData(overrides: Partial<ConversationData> = {}): ConversationData {
-  const id = overrides.id ?? `conv_${Math.random().toString(36).slice(2, 8)}`;
-  return {
-    id,
-    title: overrides.title ?? `Conversation ${id}`,
-    messages: overrides.messages ?? [],
-    created: overrides.created ?? Date.now(),
-    updated: overrides.updated ?? Date.now(),
-    ...overrides,
-  };
-}
-
-function createConversationBatch(count: number): ConversationData[] {
-  return Array.from({ length: count }, (_, i) =>
-    createConversationData({
-      id: `conv_${i}`,
-      title: `Conversation ${i}`,
-      updated: Date.now() - i * 1000,
-    })
-  );
-}
+import {
+  createConversationData,
+  createConversationBatch,
+} from './helpers/conversationTestHelpers';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -102,51 +80,48 @@ describe('ConversationList — Pagination UI', () => {
 
       list.setHasMore(true);
 
-      // renderLoadMoreButton creates an element via container.createEl
+      // renderLoadMoreButton creates a button via container.createEl
       expect(container.createEl).toHaveBeenCalledWith('button', expect.objectContaining({
         cls: 'conversation-load-more-btn',
-        text: 'Load more',
       }));
     });
 
-    it('should NOT render Load More button when hasMore is false', () => {
+    it('should NOT create Load More button when hasMore is false', () => {
       const conversations = createConversationBatch(5);
       const { list, container } = buildList({ conversations });
 
       list.setHasMore(false);
 
-      // querySelector is used to find existing button to remove
-      // Since hasMore is false, createEl should not be called with load-more btn
-      // after setHasMore(false). We verify by checking that the last call was NOT
-      // for the load-more button.
+      // Since hasMore is false and no button was previously created,
+      // no button createEl call should have been made for load-more
       const createElCalls = (container.createEl as jest.Mock).mock.calls;
       const loadMoreCalls = createElCalls.filter(
         (call: unknown[]) => call[0] === 'button' && (call[1] as { cls?: string })?.cls === 'conversation-load-more-btn'
       );
-      // There may be load-more button calls from the initial render when setConversations
-      // triggers render, but setHasMore(false) should not add a new one.
-      // The button is removed by updateLoadMoreButton when hasMore is false.
-      // We verify the button gets removed via querySelector + remove
-      expect(container.querySelector).toHaveBeenCalledWith('.conversation-load-more-btn');
+      expect(loadMoreCalls).toHaveLength(0);
     });
 
-    it('should show "Loading..." text and disable button when isLoading is true', () => {
+    it('should set "Loading..." text and disabled attribute when isLoading is true', () => {
       const conversations = createConversationBatch(5);
       const { list, container } = buildList({ conversations });
 
       list.setHasMore(true);
-      list.setIsLoading(true);
 
-      // The button should be re-rendered with "Loading..." text
+      // Get the button mock returned by createEl
       const createElCalls = (container.createEl as jest.Mock).mock.calls;
-      const loadMoreCalls = createElCalls.filter(
+      const loadMoreCall = createElCalls.find(
         (call: unknown[]) => call[0] === 'button' && (call[1] as { cls?: string })?.cls === 'conversation-load-more-btn'
       );
-      // The latest call should have "Loading..." text
-      if (loadMoreCalls.length > 0) {
-        const lastCall = loadMoreCalls[loadMoreCalls.length - 1];
-        expect((lastCall[1] as { text?: string }).text).toBe('Loading...');
-      }
+      expect(loadMoreCall).toBeDefined();
+      const btnMock = (container.createEl as jest.Mock).mock.results[
+        createElCalls.indexOf(loadMoreCall!)
+      ].value;
+
+      list.setIsLoading(true);
+
+      // syncLoadMoreButtonState sets textContent and setAttribute('disabled', 'true')
+      expect(btnMock.textContent).toBe('Loading...');
+      expect(btnMock.setAttribute).toHaveBeenCalledWith('disabled', 'true');
     });
 
     it('should not render Load More when no onLoadMore callback provided', () => {
@@ -192,12 +167,9 @@ describe('ConversationList — Pagination UI', () => {
     });
 
     it('should add conversation-list class to container', () => {
-      buildList({ conversations: createConversationBatch(1) });
-      // The render method does not pass the class directly — it calls container.addClass
-      // which is mocked. Let's verify it's called.
-      // Actually render() calls this.container.addClass('conversation-list')
-      // We can't easily verify because createMockElement returns mocks that return
-      // more mock elements. The important thing is no error was thrown during render.
+      const { container } = buildList({ conversations: createConversationBatch(1) });
+
+      expect(container.addClass).toHaveBeenCalledWith('conversation-list');
     });
   });
 
@@ -206,26 +178,47 @@ describe('ConversationList — Pagination UI', () => {
   // ========================================================================
 
   describe('setHasMore / setIsLoading', () => {
-    it('should update internal state via setHasMore', () => {
+    it('should create button on setHasMore(true) and call remove on setHasMore(false)', () => {
       const { list, container } = buildList({ conversations: createConversationBatch(5) });
 
       list.setHasMore(true);
-      // The button should be rendered — we verify via createEl being called
-      expect(container.createEl).toHaveBeenCalled();
+      // The button should be rendered — verify via createEl
+      const createElCalls = (container.createEl as jest.Mock).mock.calls;
+      const loadMoreCalls = createElCalls.filter(
+        (call: unknown[]) => call[0] === 'button' && (call[1] as { cls?: string })?.cls === 'conversation-load-more-btn'
+      );
+      expect(loadMoreCalls).toHaveLength(1);
+
+      // Get the button mock to check remove is called
+      const btnMock = (container.createEl as jest.Mock).mock.results[
+        createElCalls.indexOf(loadMoreCalls[0])
+      ].value;
+      // Simulate parentElement being set (button was appended)
+      btnMock.parentElement = container;
 
       list.setHasMore(false);
-      // querySelector called to remove existing button
-      expect(container.querySelector).toHaveBeenCalledWith('.conversation-load-more-btn');
+      expect(btnMock.remove).toHaveBeenCalled();
     });
 
-    it('should update internal state via setIsLoading', () => {
+    it('should update button text via syncLoadMoreButtonState on setIsLoading', () => {
       const { list, container } = buildList({ conversations: createConversationBatch(5) });
 
       list.setHasMore(true);
-      list.setIsLoading(true);
 
-      // Button should be re-rendered with loading state
-      expect(container.querySelector).toHaveBeenCalledWith('.conversation-load-more-btn');
+      // Get the button mock
+      const createElCalls = (container.createEl as jest.Mock).mock.calls;
+      const loadMoreCall = createElCalls.find(
+        (call: unknown[]) => call[0] === 'button' && (call[1] as { cls?: string })?.cls === 'conversation-load-more-btn'
+      );
+      const btnMock = (container.createEl as jest.Mock).mock.results[
+        createElCalls.indexOf(loadMoreCall!)
+      ].value;
+
+      list.setIsLoading(true);
+      expect(btnMock.textContent).toBe('Loading...');
+
+      list.setIsLoading(false);
+      expect(btnMock.textContent).toBe('Load more');
     });
   });
 
@@ -234,12 +227,14 @@ describe('ConversationList — Pagination UI', () => {
   // ========================================================================
 
   describe('setActiveConversation', () => {
-    it('should call updateActiveState without throwing', () => {
+    it('should query DOM for conversation-item elements to update active state', () => {
       const conversations = createConversationBatch(3);
-      const { list } = buildList({ conversations });
+      const { list, container } = buildList({ conversations });
 
-      // Should not throw — exercises updateActiveState path
-      expect(() => list.setActiveConversation(conversations[1].id)).not.toThrow();
+      list.setActiveConversation(conversations[1].id);
+
+      // updateActiveState queries for .conversation-item elements
+      expect(container.querySelectorAll).toHaveBeenCalledWith('.conversation-item');
     });
   });
 
@@ -264,10 +259,15 @@ describe('ConversationList — Pagination UI', () => {
       expect(itemCalls).toHaveLength(1);
     });
 
-    it('should render without error for multiple conversations', () => {
+    it('should render a conversation-item div for each of 5 conversations', () => {
       const conversations = createConversationBatch(5);
-      // Rendering exercises the full per-item path (content div, title, preview, actions, buttons)
-      expect(() => buildList({ conversations })).not.toThrow();
+      const { container } = buildList({ conversations });
+
+      const createDivCalls = (container.createDiv as jest.Mock).mock.calls;
+      const itemCalls = createDivCalls.filter(
+        (call: unknown[]) => call[0] === 'conversation-item'
+      );
+      expect(itemCalls).toHaveLength(5);
     });
   });
 
@@ -276,19 +276,33 @@ describe('ConversationList — Pagination UI', () => {
   // ========================================================================
 
   describe('timestamp formatting (via render)', () => {
-    it('should handle recent timestamps without error', () => {
+    it('should render conversation item for recent timestamp', () => {
       const conversations = [
         createConversationData({ id: 'c1', updated: Date.now() }),
       ];
-      // Rendering exercises formatTimestamp — no error means it works
-      expect(() => buildList({ conversations })).not.toThrow();
+      const { container } = buildList({ conversations });
+
+      // Verify render completed: container was cleared and item was created
+      expect(container.empty).toHaveBeenCalled();
+      const createDivCalls = (container.createDiv as jest.Mock).mock.calls;
+      const itemCalls = createDivCalls.filter(
+        (call: unknown[]) => call[0] === 'conversation-item'
+      );
+      expect(itemCalls).toHaveLength(1);
     });
 
-    it('should handle old timestamps without error', () => {
+    it('should render conversation item for 30-day-old timestamp', () => {
       const conversations = [
-        createConversationData({ id: 'c1', updated: Date.now() - 30 * 86400000 }), // 30 days ago
+        createConversationData({ id: 'c1', updated: Date.now() - 30 * 86400000 }),
       ];
-      expect(() => buildList({ conversations })).not.toThrow();
+      const { container } = buildList({ conversations });
+
+      expect(container.empty).toHaveBeenCalled();
+      const createDivCalls = (container.createDiv as jest.Mock).mock.calls;
+      const itemCalls = createDivCalls.filter(
+        (call: unknown[]) => call[0] === 'conversation-item'
+      );
+      expect(itemCalls).toHaveLength(1);
     });
   });
 
@@ -297,16 +311,22 @@ describe('ConversationList — Pagination UI', () => {
   // ========================================================================
 
   describe('setConversations', () => {
-    it('should sort conversations by updated descending', () => {
+    it('should sort conversations by updated descending and re-render', () => {
       const older = createConversationData({ id: 'old', updated: 1000 });
       const newer = createConversationData({ id: 'new', updated: 2000 });
       const { list, container } = buildList();
 
       list.setConversations([older, newer]);
 
-      // render is called, which iterates sorted conversations
-      // Just verify render was triggered (container.empty is called)
+      // Verify render was triggered
       expect(container.empty).toHaveBeenCalled();
+
+      // Verify 2 conversation-item divs were rendered
+      const createDivCalls = (container.createDiv as jest.Mock).mock.calls;
+      const itemCalls = createDivCalls.filter(
+        (call: unknown[]) => call[0] === 'conversation-item'
+      );
+      expect(itemCalls).toHaveLength(2);
     });
   });
 
@@ -315,7 +335,7 @@ describe('ConversationList — Pagination UI', () => {
   // ========================================================================
 
   describe('message preview', () => {
-    it('should render without error when conversations have messages', () => {
+    it('should render conversation item when conversation has messages', () => {
       const conversations = [
         createConversationData({
           id: 'c1',
@@ -324,10 +344,17 @@ describe('ConversationList — Pagination UI', () => {
           ],
         }),
       ];
-      expect(() => buildList({ conversations })).not.toThrow();
+      const { container } = buildList({ conversations });
+
+      // Verify the conversation-item was rendered
+      const createDivCalls = (container.createDiv as jest.Mock).mock.calls;
+      const itemCalls = createDivCalls.filter(
+        (call: unknown[]) => call[0] === 'conversation-item'
+      );
+      expect(itemCalls).toHaveLength(1);
     });
 
-    it('should render without error when message content is long', () => {
+    it('should render conversation item when message content is long', () => {
       const conversations = [
         createConversationData({
           id: 'c1',
@@ -336,7 +363,13 @@ describe('ConversationList — Pagination UI', () => {
           ],
         }),
       ];
-      expect(() => buildList({ conversations })).not.toThrow();
+      const { container } = buildList({ conversations });
+
+      const createDivCalls = (container.createDiv as jest.Mock).mock.calls;
+      const itemCalls = createDivCalls.filter(
+        (call: unknown[]) => call[0] === 'conversation-item'
+      );
+      expect(itemCalls).toHaveLength(1);
     });
   });
 
@@ -345,11 +378,14 @@ describe('ConversationList — Pagination UI', () => {
   // ========================================================================
 
   describe('cleanup', () => {
-    it('should clear pending delete state on cleanup', () => {
+    it('should be safe to call cleanup multiple times', () => {
       const { list } = buildList({ conversations: createConversationBatch(3) });
 
-      // Calling cleanup should not throw
-      expect(() => list.cleanup()).not.toThrow();
+      // First cleanup clears pending state, second verifies idempotency
+      list.cleanup();
+      list.cleanup();
+
+      // No error means clearPendingDeleteConversation handled null timer gracefully
     });
   });
 });

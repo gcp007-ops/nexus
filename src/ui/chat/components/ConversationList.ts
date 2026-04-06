@@ -15,6 +15,7 @@ export class ConversationList {
   private _hasMore = false;
   private _isLoading = false;
   private _isSearchActive = false;
+  private loadMoreBtn: HTMLButtonElement | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -31,7 +32,11 @@ export class ConversationList {
    * Set conversations to display
    */
   setConversations(conversations: ConversationData[]): void {
-    this.conversations = conversations.sort((a, b) => b.updated - a.updated);
+    // Shallow copy to avoid mutating the caller's array.
+    // Only sort by updated when browsing — search results preserve relevance ordering.
+    this.conversations = this._isSearchActive
+      ? [...conversations]
+      : [...conversations].sort((a, b) => b.updated - a.updated);
     this.render();
   }
 
@@ -71,6 +76,7 @@ export class ConversationList {
    */
   private render(): void {
     this.container.empty();
+    this.loadMoreBtn = null; // container.empty() destroys child nodes
     this.container.addClass('conversation-list');
 
     if (this.conversations.length === 0) {
@@ -276,38 +282,58 @@ export class ConversationList {
   }
 
   /**
-   * Render or re-render the Load More button at the bottom of the list
+   * Render the Load More button at the bottom of the list.
+   * Creates the button once and reuses it across updates.
    */
   private renderLoadMoreButton(): void {
     if (!this._hasMore || !this.onLoadMore) return;
 
-    const btn = this.container.createEl('button', {
-      cls: 'conversation-load-more-btn',
-      text: this._isLoading ? 'Loading...' : 'Load more',
-    });
-    btn.setAttribute('aria-label', 'Load more conversations');
-    if (this._isLoading) {
-      btn.setAttribute('disabled', 'true');
+    if (!this.loadMoreBtn) {
+      this.loadMoreBtn = this.container.createEl('button', {
+        cls: 'conversation-load-more-btn',
+      });
+      this.loadMoreBtn.setAttribute('aria-label', 'Load more conversations');
+      const handler = () => {
+        if (!this._isLoading) {
+          this.onLoadMore?.();
+        }
+      };
+      this.component?.registerDomEvent(this.loadMoreBtn, 'click', handler);
+    } else {
+      this.container.appendChild(this.loadMoreBtn);
     }
 
-    const handler = () => {
-      if (!this._isLoading) {
-        this.onLoadMore?.();
-      }
-    };
-    this.component?.registerDomEvent(btn, 'click', handler);
+    this.syncLoadMoreButtonState();
+  }
+
+  /**
+   * Sync Load More button text and disabled state to current loading state
+   */
+  private syncLoadMoreButtonState(): void {
+    if (!this.loadMoreBtn) return;
+    this.loadMoreBtn.textContent = this._isLoading ? 'Loading...' : 'Load more';
+    if (this._isLoading) {
+      this.loadMoreBtn.setAttribute('disabled', 'true');
+    } else {
+      this.loadMoreBtn.removeAttribute('disabled');
+    }
   }
 
   /**
    * Update Load More button visibility/state without full re-render
    */
   private updateLoadMoreButton(): void {
-    const existing = this.container.querySelector('.conversation-load-more-btn');
-    if (existing) {
-      existing.remove();
-    }
     if (this._hasMore && this.onLoadMore && this.conversations.length > 0) {
-      this.renderLoadMoreButton();
+      if (this.loadMoreBtn) {
+        if (!this.loadMoreBtn.parentElement) {
+          this.container.appendChild(this.loadMoreBtn);
+        }
+        this.syncLoadMoreButtonState();
+      } else {
+        this.renderLoadMoreButton();
+      }
+    } else if (this.loadMoreBtn?.parentElement) {
+      this.loadMoreBtn.remove();
     }
   }
 

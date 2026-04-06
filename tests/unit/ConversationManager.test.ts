@@ -9,52 +9,11 @@ import { ConversationManager, ConversationManagerEvents } from '../../src/ui/cha
 import { ConversationData } from '../../src/types/chat/ChatTypes';
 import type { PaginatedResult } from '../../src/types/pagination/PaginationTypes';
 import { App } from 'obsidian';
-
-// ---------------------------------------------------------------------------
-// Factories
-// ---------------------------------------------------------------------------
-
-function createConversationData(overrides: Partial<ConversationData> = {}): ConversationData {
-  const id = overrides.id ?? `conv_${Math.random().toString(36).slice(2, 8)}`;
-  return {
-    id,
-    title: overrides.title ?? `Conversation ${id}`,
-    messages: overrides.messages ?? [],
-    created: overrides.created ?? Date.now(),
-    updated: overrides.updated ?? Date.now(),
-    ...overrides,
-  };
-}
-
-function createConversationBatch(count: number, startIndex = 0): ConversationData[] {
-  return Array.from({ length: count }, (_, i) =>
-    createConversationData({
-      id: `conv_${startIndex + i}`,
-      title: `Conversation ${startIndex + i}`,
-      created: Date.now() - (startIndex + i) * 1000,
-      updated: Date.now() - (startIndex + i) * 1000,
-    })
-  );
-}
-
-function createPaginatedResult(
-  items: ConversationData[],
-  hasNextPage: boolean,
-  page = 0,
-  pageSize = 20,
-  totalItems?: number
-): PaginatedResult<ConversationData> {
-  const total = totalItems ?? (hasNextPage ? (page + 2) * pageSize : (page * pageSize) + items.length);
-  return {
-    items,
-    page,
-    pageSize,
-    totalItems: total,
-    totalPages: Math.ceil(total / pageSize),
-    hasNextPage,
-    hasPreviousPage: page > 0,
-  };
-}
+import {
+  createConversationData,
+  createConversationBatch,
+  createPaginatedResult,
+} from './helpers/conversationTestHelpers';
 
 // ---------------------------------------------------------------------------
 // Mock ChatService
