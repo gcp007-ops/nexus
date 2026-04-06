@@ -28,6 +28,7 @@ export interface ChatLayoutElements {
   sidebarContainer: HTMLElement;
   loadingOverlay: HTMLElement;
   branchHeaderContainer: HTMLElement;
+  searchInput: HTMLInputElement;
 }
 
 export class ChatLayoutBuilder {
@@ -62,7 +63,7 @@ export class ChatLayoutBuilder {
 
     // Backdrop and sidebar
     const backdrop = chatLayout.createDiv('chat-backdrop');
-    const { sidebarContainer, conversationListContainer, newChatButton } = this.createSidebar(chatLayout);
+    const { sidebarContainer, conversationListContainer, newChatButton, searchInput } = this.createSidebar(chatLayout);
 
     return {
       messageContainer,
@@ -76,7 +77,8 @@ export class ChatLayoutBuilder {
       backdrop,
       sidebarContainer,
       loadingOverlay,
-      branchHeaderContainer
+      branchHeaderContainer,
+      searchInput
     };
   }
 
@@ -172,12 +174,13 @@ export class ChatLayoutBuilder {
   }
 
   /**
-   * Create sidebar with conversation list
+   * Create sidebar with conversation list and search input
    */
   private static createSidebar(container: HTMLElement): {
     sidebarContainer: HTMLElement;
     conversationListContainer: HTMLElement;
     newChatButton: HTMLElement;
+    searchInput: HTMLInputElement;
   } {
     const sidebarContainer = container.createDiv('chat-sidebar');
     sidebarContainer.addClass('chat-sidebar-hidden');
@@ -189,8 +192,19 @@ export class ChatLayoutBuilder {
       text: 'New chat'
     });
 
+    // Search input between header and list
+    const searchContainer = sidebarContainer.createDiv('conversation-search-container');
+    const searchInput = searchContainer.createEl('input', {
+      cls: 'conversation-search-input',
+      attr: {
+        type: 'text',
+        placeholder: 'Search by title...',
+        'aria-label': 'Search conversations by title',
+      }
+    }) as HTMLInputElement;
+
     const conversationListContainer = sidebarContainer.createDiv('conversation-list-container');
 
-    return { sidebarContainer, conversationListContainer, newChatButton };
+    return { sidebarContainer, conversationListContainer, newChatButton, searchInput };
   }
 }
