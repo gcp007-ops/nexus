@@ -184,11 +184,13 @@
     display: flex;
     gap: 0.25rem;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 0.2s;
 }
 
 .conversation-item:hover .conversation-actions {
     opacity: 1;
+    pointer-events: auto;
 }
 
 /* Individual action button styling */
