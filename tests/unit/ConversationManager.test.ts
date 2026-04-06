@@ -256,7 +256,7 @@ describe('ConversationManager — Pagination & Search', () => {
 
       // Activate search
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0, lastUpdated: Date.now() }
+        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0, created: Date.now() - 60000, lastUpdated: Date.now() }
       ]);
       await manager.searchConversations('test');
       expect(manager.isSearchActive).toBe(true);
@@ -318,8 +318,8 @@ describe('ConversationManager — Pagination & Search', () => {
       expect(manager.getConversations().length).toBe(20);
 
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Meeting Notes', summary: '', relevanceScore: 0.8, lastUpdated: Date.now() },
-        { id: 'sr2', title: 'Meeting Agenda', summary: '', relevanceScore: 0.7, lastUpdated: Date.now() },
+        { id: 'sr1', title: 'Meeting Notes', summary: '', relevanceScore: 0.8, created: Date.now() - 60000, lastUpdated: Date.now() },
+        { id: 'sr2', title: 'Meeting Agenda', summary: '', relevanceScore: 0.7, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
 
       await manager.searchConversations('meeting');
@@ -332,8 +332,9 @@ describe('ConversationManager — Pagination & Search', () => {
 
     it('should map ConversationListItem to ConversationData with empty messages', async () => {
       const lastUpdated = Date.now();
+      const created = lastUpdated - 60000;
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Result One', summary: '', relevanceScore: 0.9, lastUpdated },
+        { id: 'sr1', title: 'Result One', summary: '', relevanceScore: 0.9, created, lastUpdated },
       ]);
 
       await manager.searchConversations('result');
@@ -343,7 +344,7 @@ describe('ConversationManager — Pagination & Search', () => {
         id: 'sr1',
         title: 'Result One',
         messages: [],
-        created: lastUpdated,
+        created,
         updated: lastUpdated,
       });
     });
@@ -352,7 +353,7 @@ describe('ConversationManager — Pagination & Search', () => {
       await manager.loadConversations();
 
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0.8, lastUpdated: Date.now() },
+        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0.8, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
       await manager.searchConversations('test');
       expect(manager.isSearchActive).toBe(true);
@@ -369,7 +370,7 @@ describe('ConversationManager — Pagination & Search', () => {
       await manager.loadConversations();
 
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0.8, lastUpdated: Date.now() },
+        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0.8, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
       await manager.searchConversations('test');
 
@@ -416,7 +417,7 @@ describe('ConversationManager — Pagination & Search', () => {
       await manager.loadConversations();
 
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0.8, lastUpdated: Date.now() },
+        { id: 'sr1', title: 'Result', summary: '', relevanceScore: 0.8, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
       await manager.searchConversations('test');
       expect(manager.isSearchActive).toBe(true);
@@ -458,7 +459,7 @@ describe('ConversationManager — Pagination & Search', () => {
 
       // Start search while load is still in-flight
       mockService.searchConversations.mockResolvedValue([
-        { id: 'sr1', title: 'Search Result', summary: '', relevanceScore: 0.9, lastUpdated: Date.now() },
+        { id: 'sr1', title: 'Search Result', summary: '', relevanceScore: 0.9, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
       const searchPromise = manager.searchConversations('query');
 
@@ -474,7 +475,7 @@ describe('ConversationManager — Pagination & Search', () => {
     });
 
     it('should discard stale search response when new search starts', async () => {
-      let resolveSlowSearch!: (value: Array<{ id: string; title: string; summary: string; relevanceScore: number; lastUpdated: number }>) => void;
+      let resolveSlowSearch!: (value: Array<{ id: string; title: string; summary: string; relevanceScore: number; created: number; lastUpdated: number }>) => void;
       mockService.searchConversations.mockReturnValueOnce(
         new Promise(resolve => {
           resolveSlowSearch = resolve;
@@ -484,13 +485,13 @@ describe('ConversationManager — Pagination & Search', () => {
       const search1 = manager.searchConversations('old query');
 
       mockService.searchConversations.mockResolvedValueOnce([
-        { id: 'new1', title: 'New Result', summary: '', relevanceScore: 0.9, lastUpdated: Date.now() },
+        { id: 'new1', title: 'New Result', summary: '', relevanceScore: 0.9, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
       const search2 = manager.searchConversations('new query');
 
       // Resolve the old search
       resolveSlowSearch([
-        { id: 'old1', title: 'Old Result', summary: '', relevanceScore: 0.5, lastUpdated: Date.now() },
+        { id: 'old1', title: 'Old Result', summary: '', relevanceScore: 0.5, created: Date.now() - 60000, lastUpdated: Date.now() },
       ]);
       await search1;
       await search2;

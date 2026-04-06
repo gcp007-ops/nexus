@@ -25,6 +25,7 @@ interface ConversationListItem {
   title: string;
   summary: string;
   relevanceScore: number;
+  created: number;
   lastUpdated: number;
 }
 
@@ -458,6 +459,7 @@ export class ChatService {
       title: conv.title,
       summary: conv.messages[0]?.content.substring(0, 100) + '...',
       relevanceScore: 0.8,
+      created: conv.created,
       lastUpdated: conv.updated
     }));
   }

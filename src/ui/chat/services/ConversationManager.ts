@@ -161,7 +161,7 @@ export class ConversationManager {
         id: item.id,
         title: item.title,
         messages: [],
-        created: item.lastUpdated,
+        created: item.created,
         updated: item.lastUpdated,
       }));
       this._hasMore = false; // Search results are not paginated (MVP)

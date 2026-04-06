@@ -736,6 +736,26 @@ export class ConversationService {
   }
 
   /**
+   * Count total conversations (excludes branches)
+   */
+  async count(): Promise<number> {
+    return withDualBackend(
+      this.storageAdapterOrGetter,
+      async (adapter) => {
+        const result = await adapter.getConversations({
+          pageSize: 1,
+          page: 0
+        });
+        return result.totalItems;
+      },
+      async () => {
+        const index = await this.indexManager.loadConversationIndex();
+        return Object.keys(index.conversations).length;
+      }
+    );
+  }
+
+  /**
    * Get conversation stats (uses index)
    */
   async getConversationStats(): Promise<{

@@ -827,6 +827,7 @@ export class ChatView extends ItemView {
 
   private async handleConversationsChanged(): Promise<void> {
     if (this.conversationList) {
+      this.conversationList.setIsSearchActive(this.conversationManager.isSearchActive);
       this.conversationList.setConversations(this.conversationManager.getConversations());
       this.conversationList.setHasMore(this.conversationManager.hasMore);
       this.conversationList.setIsLoading(this.conversationManager.isLoading);
@@ -835,8 +836,9 @@ export class ChatView extends ItemView {
     const conversations = this.conversationManager.getConversations();
     const currentConversation = this.conversationManager.getCurrentConversation();
 
-    if (conversations.length === 0) {
+    if (conversations.length === 0 && !this.conversationManager.isSearchActive) {
       // Re-initialize with defaults when returning to welcome state
+      // (only when truly empty — not when search returns zero results)
       await this.modelAgentManager.initializeDefaults();
 
       const hasProviders = this.chatService.hasConfiguredProviders();

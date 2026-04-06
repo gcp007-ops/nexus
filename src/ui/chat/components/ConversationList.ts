@@ -14,6 +14,7 @@ export class ConversationList {
   private pendingDeleteTimer: number | null = null;
   private _hasMore = false;
   private _isLoading = false;
+  private _isSearchActive = false;
 
   constructor(
     private container: HTMLElement,
@@ -51,6 +52,13 @@ export class ConversationList {
   }
 
   /**
+   * Update search state for contextual empty state message
+   */
+  setIsSearchActive(isSearchActive: boolean): void {
+    this._isSearchActive = isSearchActive;
+  }
+
+  /**
    * Set active conversation
    */
   setActiveConversation(conversationId: string): void {
@@ -67,7 +75,9 @@ export class ConversationList {
 
     if (this.conversations.length === 0) {
       const emptyState = this.container.createDiv('conversation-list-empty');
-      emptyState.textContent = 'No conversations yet';
+      emptyState.textContent = this._isSearchActive
+        ? 'No results found'
+        : 'No conversations yet';
       return;
     }
 
