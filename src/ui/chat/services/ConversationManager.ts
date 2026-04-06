@@ -88,6 +88,7 @@ export class ConversationManager {
       if (gen !== this.generation) return;
 
       this.applyPaginatedResult(result, false);
+      this._isLoading = false;
       this.events.onConversationsChanged();
 
       // Auto-select the most recent conversation
@@ -96,6 +97,7 @@ export class ConversationManager {
       }
     } catch {
       if (gen !== this.generation) return;
+      this._isLoading = false;
       this.events.onError('Failed to load conversations');
     } finally {
       if (gen === this.generation) {
@@ -125,9 +127,11 @@ export class ConversationManager {
 
       this.applyPaginatedResult(result, true);
       this.currentPage = nextPage;
+      this._isLoading = false;
       this.events.onConversationsChanged();
     } catch {
       if (gen !== this.generation) return;
+      this._isLoading = false;
       this.events.onError('Failed to load more conversations');
     } finally {
       if (gen === this.generation) {
@@ -165,9 +169,11 @@ export class ConversationManager {
         updated: item.lastUpdated,
       }));
 
+      this._isLoading = false;
       this.events.onConversationsChanged();
     } catch {
       if (gen !== this.generation) return;
+      this._isLoading = false;
       this.events.onError('Failed to search conversations');
     } finally {
       if (gen === this.generation) {
