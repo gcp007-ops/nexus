@@ -4,8 +4,6 @@
  * Shared vault base path and connector.js resolution helpers.
  * Used by CLI adapter runtimes (Claude Code, Gemini CLI) and auth services.
  */
-import * as nodeFs from 'node:fs';
-import * as pathMod from 'node:path';
 import { FileSystemAdapter, Vault } from 'obsidian';
 import { getAllPluginIds } from '../constants/branding';
 
@@ -30,6 +28,9 @@ export function getConnectorPath(vaultPath: string | null, configDir = DEFAULT_C
   if (!vaultPath) {
     return null;
   }
+
+  const nodeFs = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
 
   for (const pluginId of getAllPluginIds()) {
     const candidate = pathMod.join(vaultPath, configDir, 'plugins', pluginId, 'connector.js');

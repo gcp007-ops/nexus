@@ -3,8 +3,7 @@
  * Follows Single Responsibility Principle by focusing only on IPC transport
  */
 
-import { Server as NetServer, Socket, createServer } from 'net';
-import { promises as fs } from 'fs';
+import type { Server as NetServer, Socket } from 'net';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Server as MCPSDKServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { ServerConfiguration } from '../services/ServerConfiguration';
@@ -46,7 +45,8 @@ export class IPCTransportManager {
 
         return new Promise((resolve, reject) => {
             try {
-                const server = createServer((socket) => {
+                const net = require('net') as typeof import('net');
+                const server = net.createServer((socket) => {
                     this.handleSocketConnection(socket).catch(error => {
                         logger.systemError(error as Error, 'IPC Socket Handling');
                         const netSocket = socket;
@@ -243,6 +243,7 @@ export class IPCTransportManager {
         _reject: (error: Error) => void
     ): void {
         if (!isWindows) {
+            const fs = (require('fs') as typeof import('fs')).promises;
             fs.chmod(ipcPath, 0o666).catch(error => {
                 logger.systemError(error as Error, 'Socket Permissions');
             });
@@ -305,6 +306,7 @@ export class IPCTransportManager {
         }
 
         try {
+            const fs = (require('fs') as typeof import('fs')).promises;
             await fs.unlink(this.configuration.getIPCPath());
         } catch (error) {
             // Ignore if file doesn't exist
@@ -385,6 +387,7 @@ export class IPCTransportManager {
         // Check if socket exists (for Unix systems)
         if (!this.configuration.isWindows()) {
             try {
+                const fs = (require('fs') as typeof import('fs')).promises;
                 fs.access(this.configuration.getIPCPath())
                     .then(() => {
                         diagnostics.socketExists = true;
@@ -409,6 +412,7 @@ export class IPCTransportManager {
         }
 
         try {
+            const fs = (require('fs') as typeof import('fs')).promises;
             await fs.unlink(this.configuration.getIPCPath());
             logger.systemLog('Socket force cleaned up successfully');
         } catch (error) {

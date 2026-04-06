@@ -10,9 +10,7 @@
  * Used by: OAuthService.ts (starts server before opening browser,
  * waits for callback, then shuts down).
  */
-import { createServer, IncomingMessage, ServerResponse, Server } from 'node:http';
-import { URL } from 'node:url';
-import { timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 
 /** Common no-cache headers for all callback responses (prevents browser caching auth codes) */
 const NO_CACHE_HEADERS: Record<string, string> = {
@@ -98,6 +96,10 @@ export interface CallbackServerOptions {
  * @throws Error with descriptive message on EADDRINUSE or other server errors
  */
 export function startCallbackServer(options: CallbackServerOptions): Promise<CallbackServerHandle> {
+  const nodeHttp = require('node:http') as typeof import('node:http');
+  const nodeUrl = require('node:url') as typeof import('node:url');
+  const nodeCrypto = require('node:crypto') as typeof import('node:crypto');
+
   const {
     port,
     callbackPath,
@@ -149,9 +151,9 @@ export function startCallbackServer(options: CallbackServerOptions): Promise<Cal
       callbackReject = reject;
     });
 
-    server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    server = nodeHttp.createServer((req: IncomingMessage, res: ServerResponse) => {
       // Only handle GET requests to the callback path
-      const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+      const url = new nodeUrl.URL(req.url || '/', `http://127.0.0.1:${port}`);
 
       if (url.pathname !== callbackPath) {
         res.writeHead(404, { 'Content-Type': 'text/plain', ...NO_CACHE_HEADERS });
@@ -178,7 +180,7 @@ export function startCallbackServer(options: CallbackServerOptions): Promise<Cal
       const state = url.searchParams.get('state') || '';
       const stateValid =
         state.length === expectedState.length &&
-        timingSafeEqual(Buffer.from(state), Buffer.from(expectedState));
+        nodeCrypto.timingSafeEqual(Buffer.from(state), Buffer.from(expectedState));
       if (!stateValid) {
         res.writeHead(400, { 'Content-Type': 'text/html', ...NO_CACHE_HEADERS });
         res.end(HTML_ERROR);
