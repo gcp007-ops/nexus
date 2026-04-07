@@ -74,8 +74,12 @@ export class Settings {
      * Save settings to plugin data
      */
     async saveSettings(): Promise<void> {
-        // Simple JSON-based storage
-        await this.plugin.saveData(this.settings);
+        const loadedData: unknown = await this.plugin.loadData();
+        const mergedData = loadedData && typeof loadedData === 'object'
+            ? { ...(loadedData as Record<string, unknown>), ...this.settings }
+            : this.settings;
+
+        await this.plugin.saveData(mergedData);
     }
 }
 
