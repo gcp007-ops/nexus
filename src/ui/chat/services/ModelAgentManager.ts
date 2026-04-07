@@ -623,9 +623,8 @@ export class ModelAgentManager {
    * When a workspace is selected in chat settings, load the same rich data
    * as the #workspace suggester (file structure, sessions, states, etc.)
    */
-  async setWorkspaceContext(workspaceId: string, context: WorkspaceContext): Promise<void> {
+  async setWorkspaceContext(workspaceId: string): Promise<void> {
     this.selectedWorkspaceId = workspaceId;
-    this.workspaceContext = context; // Keep basic context for backward compatibility
 
     // Load full comprehensive workspace data (same as #workspace suggester)
     try {
