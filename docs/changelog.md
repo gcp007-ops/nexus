@@ -44,6 +44,29 @@
 - HybridStorageAdapter conversation list fixes
 - ToolContinuationService refactor with ToolSchemaSupport extraction
 
+**Apr 6**: v5.6.9 — Conversation list pagination + search (PR #99)
+- "Load More" pagination for conversation sidebar with true database OFFSET/LIMIT
+- FTS title search in sidebar for filtering conversations
+- 63 new tests
+
+**Apr 6**: v5.6.8 — Chat UI bug fixes (PR #98)
+- 13 chat UI fixes from PR #97 audit: click-blocking invisible pill, text not selectable, branch copy returning wrong content, input auto-resize, tool accordion, and more
+- Dead code removal
+
+**Apr 5**: v5.6.7 — Multi-provider transcription + task board fixes (PRs #95, #96)
+- Shared `TranscriptionService` layer with 5 providers / 7 models: OpenAI (Whisper, GPT-4o Transcribe), Groq, Mistral (Voxtral), Deepgram, AssemblyAI
+- Task board fixes #92–#94
+
+**Apr 2**: v5.6.6 — CustomPromptStorageService dual-write fix (PR #89, issue #88)
+- Removed early returns that skipped `data.json` write after SQLite ops, preventing prompt loss on restart
+
+**Apr 1**: v5.6.5 — Plugin store compliance (PR #87)
+- Resolved all ~190 obsidian-releases bot lint violations for plugin store submission
+
+**Apr 1**: v5.6.4 — Type safety + linting (PR #86)
+- `any` → `unknown` type migration across codebase
+- ESLint v9 upgrade + obsidianmd community linter integration
+
 ## March 2026
 
 **Mar 29**: v5.6.3 — DOCX, PPTX, XLSX ingestion support
