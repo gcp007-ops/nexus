@@ -3,7 +3,7 @@ Last Updated: 2026-04-06
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.6.10
+- **Version**: 5.7.0
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -342,7 +342,9 @@ Adapters at `src/services/llm/adapters/{provider}/`. Types at `src/services/llm/
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume e2d81636-c5aa-4265-a772-384b26069c58`
-- Team: `pact-e2d81636`
-- Started: 2026-04-06 21:40:23 UTC
+- Resume: `claude --resume c5de3df6-8deb-4276-8c92-e89422ce357f`
+- Team: `pact-c5de3df6`
+- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/c5de3df6-8deb-4276-8c92-e89422ce357f`
+- Plugin root: `/Users/jrosenbaum/.claude/plugins/marketplaces/pact-marketplace/pact-plugin`
+- Started: 2026-04-08 11:05:59 UTC
 <!-- SESSION_END -->
