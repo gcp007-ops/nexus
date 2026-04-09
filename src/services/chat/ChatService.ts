@@ -44,6 +44,10 @@ interface ChatStreamingChunk {
   reasoning?: string;
   reasoningComplete?: boolean;
   usage?: ChatUsage;
+  // Final-chunk-only fields for single-save persistence
+  provider?: string;
+  model?: string;
+  cost?: { totalCost: number; currency: string };
 }
 
 interface ChatMessageCreateParams {

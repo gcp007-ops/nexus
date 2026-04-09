@@ -64,6 +64,9 @@ export interface StreamResult {
     completionTokens: number;
     totalTokens: number;
   };
+  provider?: string;   // Resolved provider from final chunk
+  model?: string;      // Resolved model from final chunk
+  cost?: { totalCost: number; currency: string };
 }
 
 /**
@@ -133,6 +136,9 @@ export class MessageStreamHandler {
     let hasStartedStreaming = false;
     let finalUsage: StreamResult['usage'] | undefined = undefined;
     let finalMetadata: Record<string, unknown> | undefined = undefined;
+    let resolvedProvider: string | undefined = undefined;
+    let resolvedModel: string | undefined = undefined;
+    let finalCost: StreamResult['cost'] | undefined = undefined;
 
     // Reasoning accumulation
     let reasoningAccumulator = '';
@@ -219,6 +225,13 @@ export class MessageStreamHandler {
         };
       }
 
+      // Capture provider/model/cost from final chunk (yielded by StreamingResponseService)
+      if (chunk.complete) {
+        if (chunk.provider) resolvedProvider = chunk.provider;
+        if (chunk.model) resolvedModel = chunk.model;
+        if (chunk.cost) finalCost = chunk.cost;
+      }
+
       // Handle completion
       if (chunk.complete) {
         // Check if this is TRULY the final complete
@@ -229,7 +242,7 @@ export class MessageStreamHandler {
         const isFinalComplete = !hasToolCalls || toolCallsHaveResults;
 
         if (isFinalComplete) {
-          // Update conversation with final content
+          // Update conversation with final content + provider/model/cost
           const placeholderMessageIndex = conversation.messages.findIndex(msg => msg.id === aiMessageId);
           if (placeholderMessageIndex >= 0) {
             conversation.messages[placeholderMessageIndex] = {
@@ -239,7 +252,11 @@ export class MessageStreamHandler {
             toolCalls: toolCalls?.map(toConversationToolCall),
             // Persist reasoning for re-render from storage
             reasoning: reasoningAccumulator || undefined,
-            metadata: finalMetadata
+            metadata: finalMetadata,
+            provider: resolvedProvider,
+            model: resolvedModel,
+            cost: finalCost,
+            usage: finalUsage,
           };
         }
 
@@ -266,7 +283,11 @@ export class MessageStreamHandler {
           state: 'complete',
           toolCalls: toolCalls?.map(toConversationToolCall),
           reasoning: reasoningAccumulator || undefined,
-          metadata: finalMetadata
+          metadata: finalMetadata,
+          provider: resolvedProvider,
+          model: resolvedModel,
+          cost: finalCost,
+          usage: finalUsage,
         };
       }
     }
@@ -276,7 +297,10 @@ export class MessageStreamHandler {
       toolCalls,
       reasoning: reasoningAccumulator || undefined,
       metadata: finalMetadata,
-      usage: finalUsage
+      usage: finalUsage,
+      provider: resolvedProvider,
+      model: resolvedModel,
+      cost: finalCost,
     };
   }
 
