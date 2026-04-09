@@ -51,6 +51,11 @@ export interface StreamingChunk {
   reasoningComplete?: boolean;  // True when reasoning finished
   // Token usage (available on complete chunk)
   usage?: MessageUsage;
+  // Available on final chunk only — lets the consumer persist these
+  // without requiring a second full-conversation save.
+  provider?: string;
+  model?: string;
+  cost?: MessageCost;
 }
 
 interface StreamingToolCall extends ToolCall {
@@ -277,7 +282,10 @@ export class StreamingResponseService {
       }
         }
 
-        // Save to database BEFORE yielding final chunk to ensure persistence
+        // On final chunk: calculate cost, persist the completed message, then yield.
+        // The save goes through MessageRepository.update() which has dirty-checking,
+        // so only the AI message that actually changed gets a JSONL write — not
+        // every message in the conversation (fixes O(N) write amplification).
         if (chunk.complete) {
           // Calculate cost from final usage using CostTrackingService
           if (finalUsage) {
@@ -298,7 +306,6 @@ export class StreamingResponseService {
           if (conv) {
             const msg = conv.messages.find((m) => m.id === messageId);
             if (msg) {
-              // Update existing placeholder message
               msg.content = accumulatedContent;
               msg.state = 'complete';
               if (toolCalls) {
@@ -307,31 +314,20 @@ export class StreamingResponseService {
               if (finalMetadata && Object.keys(finalMetadata).length > 0) {
                 msg.metadata = finalMetadata;
               }
-
-              // Only update cost/usage if we have values (don't overwrite with undefined)
-              // This prevents overwriting async updates from OpenRouter's generation API
               if (finalCost) {
                 msg.cost = finalCost;
               }
               if (finalUsage) {
                 msg.usage = finalUsage;
               }
-
               msg.provider = provider;
               msg.model = selectedModel;
 
-              // Save updated conversation
               await this.dependencies.conversationService.updateConversation(conversationId, {
                 messages: conv.messages,
                 metadata: conv.metadata
               });
             }
-          }
-
-          // Handle tool calls - if present, add separate message for pingpong response
-          if (toolCalls && toolCalls.length > 0) {
-            // Had tool calls - the placeholder is the tool call message, add pingpong response separately
-            // No separate message needed; placeholder already holds tool calls and final content
           }
         }
 
@@ -341,11 +337,14 @@ export class StreamingResponseService {
           messageId,
           toolCalls: toolCalls,
           metadata: chunk.complete ? finalMetadata : undefined,
-          // Pass through reasoning for UI display
           reasoning: chunk.reasoning,
           reasoningComplete: chunk.reasoningComplete,
-          // Pass through usage for context tracking
-          usage: chunk.complete ? finalUsage : undefined
+          usage: chunk.complete ? finalUsage : undefined,
+          // Final chunk carries provider/model/cost so the consumer can
+          // set them on the in-memory message (avoids needing to re-fetch).
+          provider: chunk.complete ? provider : undefined,
+          model: chunk.complete ? selectedModel : undefined,
+          cost: chunk.complete ? finalCost : undefined,
         };
 
         if (chunk.complete) {
