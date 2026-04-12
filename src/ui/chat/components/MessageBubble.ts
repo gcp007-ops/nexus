@@ -105,41 +105,25 @@ export class MessageBubble extends Component {
 
     const bubble = messageContainer.createDiv('message-bubble');
 
-    // Message header with role icon only
-    const header = bubble.createDiv('message-header');
-    const roleIcon = header.createDiv('message-role-icon');
-    if (this.message.role === 'user') {
-      setIcon(roleIcon, 'user');
-    } else if (this.message.role === 'tool') {
-      setIcon(roleIcon, 'wrench');
-    } else {
-      setIcon(roleIcon, 'bot');
-    }
-
-    // Add loading state in header if AI message is loading with empty content
+    // Loading state for empty assistant streaming — rendered inside the bubble
+    // ahead of content so the ThinkingLoader appears in place of the eventual
+    // text. No header / role-icon in the glass redesign.
     if (this.message.role === 'assistant' && this.message.isLoading && !this.message.content.trim()) {
-      const loadingShell = header.createDiv('ai-loading-header');
+      const loadingShell = bubble.createDiv('ai-loading-header');
       this.startThinkingLoader(loadingShell);
     }
-
-    // Create actions in header for user messages (next to icon), elsewhere for others
-    // This prevents action buttons from overlapping message content on mobile
-    let actions: HTMLElement;
-    if (this.message.role === 'user') {
-      actions = header.createDiv('message-actions-external');
-    } else if (this.message.role === 'assistant') {
-      actions = bubble.createDiv('message-actions-external');
-    } else {
-      actions = messageContainer.createDiv('message-actions-external');
-    }
-
-    this.createActionButtons(actions);
 
     // Message content
     const content = bubble.createDiv('message-content');
     this.renderContent(content, messageContent).catch(error => {
       console.error('[MessageBubble] Error rendering initial content:', error);
     });
+
+    // Action buttons sit OUTSIDE the bubble as a sibling that follows it,
+    // so they always render below the message regardless of role. The glass
+    // redesign uses subtle muted icons rather than the old hover-revealed pill.
+    const actions = messageContainer.createDiv('message-actions-external');
+    this.createActionButtons(actions);
 
     return messageContainer;
   }
