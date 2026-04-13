@@ -693,6 +693,31 @@ body.theme-light .chat-textarea {
     font-weight: 600;
 }
 
+/* Compaction divider — subtle centered rule with label, inserted
+   after context compaction completes. Transparent background so the
+   glass gradient shows through. */
+.compaction-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.65rem 1.5rem;
+}
+
+.compaction-divider-rule {
+    flex: 1;
+    height: 1px;
+    background: var(--background-modifier-border);
+}
+
+.compaction-divider-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+
 /* Message Container (wrapper for bubble + external actions) */
 .message-container {
     width: 90%;
@@ -7623,6 +7648,37 @@ body.is-mobile .nexus-task-board-shell {
   100% { background-position: 100% 0; }
 }
 
+/* Thinking Loader — inline icon + typewriter word in assistant bubble */
+.thinking-loader {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.4;
+  contain: layout;
+}
+
+.thinking-loader-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  color: var(--interactive-accent);
+}
+
+.thinking-loader-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.thinking-loader-text {
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tool-status-text-active {
     animation: none;
@@ -7686,6 +7742,11 @@ body.is-mobile .nexus-task-board-shell {
 .tool-status-row--meta button:hover {
   color: var(--text-normal);
   background: none !important;
+}
+
+.tool-status-agent-slot {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Tool status cost readout — ported from .mock-device--glass .tool-status-cost

@@ -53,7 +53,7 @@ export class ThinkingLoader extends Component {
       } while (next === this.currentWordIndex && THINKING_WORDS.length > 1);
       this.currentWordIndex = next;
       this.renderCurrentWord();
-    }, 2500);
+    }, 5000);
     this.registerInterval(this.cycleInterval);
   }
 
@@ -96,9 +96,9 @@ export class ThinkingLoader extends Component {
         }
         dotsCount = (dotsCount + 1) % 4;
         this.wordElement.textContent = text + '.'.repeat(dotsCount);
-      }, 300);
+      }, 500);
       this.registerInterval(this.typewriterInterval);
-    }, 90);
+    }, 180);
 
     this.registerInterval(this.typewriterInterval);
   }
