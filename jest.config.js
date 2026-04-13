@@ -44,6 +44,10 @@ module.exports = {
     // Conversation list pagination + search
     'src/ui/chat/services/ConversationManager.ts',
     'src/ui/chat/components/ConversationList.ts',
+    // Compaction + agent button fixes (tasks #8-12)
+    'src/services/chat/ContextCompactionService.ts',
+    'src/services/chat/ContextPreservationService.ts',
+    'src/services/chat/StreamingResponseService.ts',
     // Mobile chat glass migration (Phase 1 chrome)
     'src/ui/chat/components/ToolStatusBar.ts',
     'src/ui/chat/components/ContextBadge.ts',
@@ -255,6 +259,34 @@ module.exports = {
       functions: 50,
       lines: 55,
       statements: 55
+    },
+    // Compaction + agent button fixes: ContextCompactionService — pure logic,
+    // high coverage via dedicated test file. Uncovered lines 269-270 are
+    // defensive dead code in extractFileReferences() safe-access fallback.
+    './src/services/chat/ContextCompactionService.ts': {
+      branches: 80,
+      functions: 100,
+      lines: 95,
+      statements: 95
+    },
+    // ContextPreservationService — serializeMessagesToTranscript + forceStateSave
+    // tested. Remaining uncovered lines are attemptStateSave retry loop,
+    // onCompactionStatus callback, and internal state-save orchestration (210-238,
+    // 362-368, 397-398) that require full LLM streaming integration to exercise.
+    './src/services/chat/ContextPreservationService.ts': {
+      branches: 35,
+      functions: 100,
+      lines: 70,
+      statements: 70
+    },
+    // StreamingResponseService — only applyCompactionBoundary() tested (private,
+    // 50 lines). The rest (~400 lines) is LLM streaming orchestration requiring
+    // extensive integration-level mocking. Coverage reflects targeted scope.
+    './src/services/chat/StreamingResponseService.ts': {
+      branches: 4,
+      functions: 15,
+      lines: 14,
+      statements: 14
     },
     // Mobile chat glass migration (Phase 1): pure logic + constants (high bar)
     './src/ui/chat/constants/ContextThresholds.ts': {
