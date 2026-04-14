@@ -23,7 +23,26 @@ type ToolCallLike = NonNullable<ToolEventPayload['toolCall']>;
 type ToolEventData = ToolEventPayload;
 
 export class ToolEventCoordinator {
+  /**
+   * Caches tool metadata (technicalName, displayName, parameters, etc.) from
+   * 'detected' and 'started' events so that 'completed' events — which arrive
+   * without a tool name — can still produce meaningful status-bar labels.
+   *
+   * Entries are deleted on completion. As a safety net against leaks (e.g. a
+   * tool that starts but never completes), call {@link clearToolNameCache}
+   * when streaming ends.
+   */
+  private toolNameCache = new Map<string, ToolStatusEventData>();
+
   constructor(private controller: ToolStatusBarController) {}
+
+  /**
+   * Clear the tool name cache. Call when streaming ends or the coordinator
+   * is no longer needed, to prevent unbounded growth from orphaned entries.
+   */
+  clearToolNameCache(): void {
+    this.toolNameCache.clear();
+  }
 
   /**
    * Handle tool calls detected event.
@@ -71,7 +90,7 @@ export class ToolEventCoordinator {
             ? call.parameters as Record<string, unknown>
             : undefined;
 
-          this.controller.handleToolEvent(messageId, 'detected', {
+          const innerToolData: ToolStatusEventData = {
             id: toolCall.id,
             name: innerMeta.displayName,
             displayName: innerMeta.displayName,
@@ -81,7 +100,11 @@ export class ToolEventCoordinator {
             rawName: innerTechnical,
             parameters: innerParams,
             isComplete: toolCall.isComplete,
-          });
+          };
+
+          if (toolCall.id) this.toolNameCache.set(toolCall.id, innerToolData);
+
+          this.controller.handleToolEvent(messageId, 'detected', innerToolData);
         }
 
         // If no inner calls were extracted, fall through to the generic path
@@ -108,6 +131,8 @@ export class ToolEventCoordinator {
         success: toolCall.success
       };
 
+      if (toolCall.id) this.toolNameCache.set(toolCall.id, toolData);
+
       this.controller.handleToolEvent(messageId, 'detected', toolData);
 
       if (
@@ -129,17 +154,45 @@ export class ToolEventCoordinator {
   }
 
   /**
-   * Handle tool execution started event
+   * Handle tool execution started event.
+   *
+   * Enriches the raw tool call with metadata from getToolNameMetadata so the
+   * status bar can produce specific labels ("Opening note") instead of generic
+   * fallbacks ("Running Open").
    */
   handleToolExecutionStarted(messageId: string, toolCall: { id: string; name: string; parameters?: unknown }): void {
-    this.controller.handleToolEvent(messageId, 'started', toolCall);
+    const metadata = getToolNameMetadata(toolCall.name);
+    const enriched: ToolStatusEventData = {
+      ...toolCall,
+      technicalName: metadata.technicalName,
+      displayName: metadata.displayName,
+      agentName: metadata.agentName,
+      actionName: metadata.actionName,
+      rawName: toolCall.name,
+    };
+
+    if (toolCall.id) this.toolNameCache.set(toolCall.id, enriched);
+
+    this.controller.handleToolEvent(messageId, 'started', enriched);
   }
 
   /**
-   * Handle tool execution completed event
+   * Handle tool execution completed event.
+   *
+   * Merges cached metadata from earlier 'detected'/'started' events so the
+   * status bar can produce past-tense labels ("Opened note") instead of
+   * silently dropping the update due to missing technicalName.
    */
   handleToolExecutionCompleted(messageId: string, toolId: string, result: unknown, success: boolean, error?: string): void {
-    this.controller.handleToolEvent(messageId, 'completed', { toolId, result, success, error });
+    const cached = this.toolNameCache.get(toolId);
+    this.controller.handleToolEvent(messageId, 'completed', {
+      ...cached,
+      toolId,
+      result,
+      success,
+      error,
+    });
+    this.toolNameCache.delete(toolId);
   }
 
   /**
