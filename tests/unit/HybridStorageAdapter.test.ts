@@ -1,9 +1,108 @@
 jest.mock('@dao-xyz/sqlite3-vec/wasm', () => jest.fn(), { virtual: true });
 
-import { HybridStorageAdapter } from '../../src/database/adapters/HybridStorageAdapter';
+import {
+  HybridStorageAdapter,
+  shouldBlockStartupHydrationForVerifiedCutover
+} from '../../src/database/adapters/HybridStorageAdapter';
 import { ConversationEventApplier } from '../../src/database/sync/ConversationEventApplier';
 
 describe('HybridStorageAdapter', () => {
+  describe('shouldBlockStartupHydrationForVerifiedCutover', () => {
+    it('returns true for verified cutover when cache is empty but vault conversations exist', () => {
+      expect(shouldBlockStartupHydrationForVerifiedCutover({
+        migrationState: 'verified',
+        sourceOfTruthLocation: 'vault-root',
+        conversationFileCount: 12,
+        cachedConversationCount: 0,
+        cachedMessageCount: 0
+      })).toBe(true);
+    });
+
+    it('returns false when the cache already has conversations', () => {
+      expect(shouldBlockStartupHydrationForVerifiedCutover({
+        migrationState: 'verified',
+        sourceOfTruthLocation: 'vault-root',
+        conversationFileCount: 12,
+        cachedConversationCount: 4,
+        cachedMessageCount: 20
+      })).toBe(false);
+    });
+
+    it('returns false before verified cutover', () => {
+      expect(shouldBlockStartupHydrationForVerifiedCutover({
+        migrationState: 'pending',
+        sourceOfTruthLocation: 'legacy-dotnexus',
+        conversationFileCount: 12,
+        cachedConversationCount: 0,
+        cachedMessageCount: 0
+      })).toBe(false);
+    });
+  });
+
+  describe('applyStoragePlan', () => {
+    it('wires the vault event store and read gating into JSONLWriter', () => {
+      const adapter = Object.create(HybridStorageAdapter.prototype) as HybridStorageAdapter & {
+        app: unknown;
+        basePath: string;
+        mobileLogPath?: string;
+        vaultEventStore: unknown;
+        jsonlWriter: {
+          setBasePath: jest.Mock<void, [string]>;
+          setReadBasePaths: jest.Mock<void, [string[]]>;
+          setVaultEventStore: jest.Mock<void, [unknown]>;
+          setVaultEventStoreReadEnabled: jest.Mock<void, [boolean]>;
+        };
+        sqliteCache: {
+          setDbPath: jest.Mock<void, [string]>;
+        };
+      };
+
+      adapter.app = { vault: { adapter: {} } };
+      adapter.jsonlWriter = {
+        setBasePath: jest.fn(),
+        setReadBasePaths: jest.fn(),
+        setVaultEventStore: jest.fn(),
+        setVaultEventStoreReadEnabled: jest.fn()
+      };
+      adapter.sqliteCache = {
+        setDbPath: jest.fn()
+      };
+
+      (adapter as any).applyStoragePlan({
+        vaultWriteBasePath: 'Nexus/data',
+        legacyReadBasePaths: ['.obsidian/plugins/claudesidian-mcp/data', '.nexus'],
+        pluginCacheDbPath: '.obsidian/plugins/claudesidian-mcp/data/cache.db',
+        mobileLogPath: 'Nexus/data/_meta/mobile-sync-log.md',
+        state: {
+          storageVersion: 2,
+          sourceOfTruthLocation: 'vault-root',
+          migration: {
+            state: 'verified',
+            legacySourcesDetected: ['.obsidian/plugins/claudesidian-mcp/data', '.nexus'],
+            activeDestination: 'Nexus/data'
+          }
+        },
+        roots: {} as never,
+        vaultRoot: {
+          configuredPath: 'Nexus',
+          resolvedPath: 'Nexus',
+          dataPath: 'Nexus/data',
+          guidesPath: 'Nexus/guides',
+          maxShardBytes: 1024
+        }
+      });
+
+      expect(adapter.jsonlWriter.setBasePath).toHaveBeenCalledWith('Nexus/data');
+      expect(adapter.jsonlWriter.setReadBasePaths).toHaveBeenCalledWith([
+        '.obsidian/plugins/claudesidian-mcp/data',
+        '.nexus'
+      ]);
+      expect(adapter.jsonlWriter.setVaultEventStore).toHaveBeenCalledWith(expect.any(Object));
+      expect(adapter.jsonlWriter.setVaultEventStoreReadEnabled).toHaveBeenCalledWith(true);
+      expect(adapter.sqliteCache.setDbPath).toHaveBeenCalledWith('.obsidian/plugins/claudesidian-mcp/data/cache.db');
+    });
+  });
+
   describe('reconcileMissingConversations', () => {
     it('replays missing conversation JSONL files into SQLite cache', async () => {
       const adapter = Object.create(HybridStorageAdapter.prototype) as HybridStorageAdapter & {

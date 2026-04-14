@@ -7,4 +7,8 @@
  */
 
 export * from './JSONLWriter';
+export * from './StorageRouter';
 export * from './SQLiteCacheManager';
+export * from './VaultRootResolver';
+export * from './vaultRoot/VaultEventStore';
+export * from './vaultRoot/ShardedJsonlStreamStore';

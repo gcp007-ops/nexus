@@ -16,6 +16,20 @@ type SessionServiceType = import('../../services/session/SessionService').Sessio
 type ConversationServiceType = import('../../services/ConversationService').ConversationService;
 type CustomPromptStorageServiceType = import('../../agents/promptManager/services/CustomPromptStorageService').CustomPromptStorageService;
 
+export interface MCPStorageSettings {
+  schemaVersion?: number;
+  rootPath: string;
+  maxShardBytes: number;
+  /** Root paths from previous configurations, used as legacy read sources on next startup */
+  previousRootPaths?: string[];
+}
+
+export const DEFAULT_STORAGE_SETTINGS: MCPStorageSettings = {
+  schemaVersion: 2,
+  rootPath: 'Nexus',
+  maxShardBytes: 4 * 1024 * 1024
+};
+
 /**
  * Plugin services registry type
  * Provides typed access to plugin services
@@ -61,6 +75,7 @@ export interface MCPSettings {
   autoIngestion?: boolean; // Automatically convert newly added supported binary files to Markdown
   configFilePath?: string;
   memory?: MemorySettings;
+  storage?: MCPStorageSettings;
   customPrompts?: CustomPromptsSettings;
   llmProviders?: LLMProviderSettings;
   apps?: AppsSettings;
