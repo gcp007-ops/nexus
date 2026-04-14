@@ -1195,6 +1195,74 @@ body.theme-light .chat-textarea {
     pointer-events: none;
 }
 
+.chat-voice-visual {
+    display: none;
+    width: 100%;
+    min-height: 60px;
+    max-height: 146px;
+    padding: 0 55px 0 13px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 11px;
+    background: rgba(0, 0, 0, 0.2);
+    box-shadow: none;
+    align-items: center;
+    gap: 4px;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.chat-input-wrapper.chat-input-voice-recording .chat-textarea {
+    display: none;
+}
+
+.chat-input-wrapper.chat-input-voice-recording .chat-voice-visual {
+    display: flex;
+}
+
+.chat-input-wrapper.chat-input-voice-transcribing .chat-voice-visual {
+    opacity: 0.85;
+}
+
+.chat-voice-bar {
+    flex: 0 0 auto;
+    width: 3px;
+    border-radius: 999px;
+    background: var(--interactive-accent);
+    opacity: 0.9;
+    animation: chat-voice-pulse 920ms ease-in-out infinite;
+    transform-origin: center;
+}
+
+.chat-voice-bar-phase-0 { height: 10px; }
+.chat-voice-bar-phase-1 { height: 14px; }
+.chat-voice-bar-phase-2 { height: 20px; }
+.chat-voice-bar-phase-3 { height: 28px; }
+.chat-voice-bar-phase-4 { height: 18px; }
+.chat-voice-bar-phase-5 { height: 24px; }
+.chat-voice-bar-phase-6 { height: 16px; }
+.chat-voice-bar-phase-7 { height: 12px; }
+
+.chat-voice-bar-delay-0 { animation-delay: 0ms; }
+.chat-voice-bar-delay-1 { animation-delay: 55ms; }
+.chat-voice-bar-delay-2 { animation-delay: 110ms; }
+.chat-voice-bar-delay-3 { animation-delay: 165ms; }
+.chat-voice-bar-delay-4 { animation-delay: 220ms; }
+.chat-voice-bar-delay-5 { animation-delay: 275ms; }
+.chat-voice-bar-delay-6 { animation-delay: 330ms; }
+.chat-voice-bar-delay-7 { animation-delay: 385ms; }
+
+@keyframes chat-voice-pulse {
+    0%, 100% {
+        transform: scaleY(0.65);
+        opacity: 0.45;
+    }
+
+    50% {
+        transform: scaleY(1.08);
+        opacity: 1;
+    }
+}
+
 /* Reference badges in contenteditable */
 .chat-reference {
     display: inline-block;
@@ -5641,6 +5709,12 @@ body.is-mobile .chat-textarea {
     padding: 12px 52px 12px 14px; /* More room for send button */
 }
 
+body.is-mobile .chat-voice-visual {
+    min-height: 64px;
+    max-height: 160px;
+    padding: 0 52px 0 14px;
+}
+
 /* ------------------------------ */
 /* MESSAGE CONTAINER ADJUSTMENTS  */
 /* ------------------------------ */
@@ -8000,4 +8074,3 @@ body.is-mobile .nexus-task-board-shell {
         flex-direction: column;
     }
 }
-
