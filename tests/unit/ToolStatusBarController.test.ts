@@ -73,7 +73,7 @@ describe('ToolStatusBarController — subagent filter (PLAN CRITICAL)', () => {
     expect(entry.text.length).toBeGreaterThan(0);
   });
 
-  it('drops non-completed events when streamingController returns null (no active stream)', () => {
+  it('allows events through when streamingController returns null (early streaming phase)', () => {
     const bar = makeBar();
     const streaming = makeStreaming(null);
     const component = new Component();
@@ -89,7 +89,9 @@ describe('ToolStatusBarController — subagent filter (PLAN CRITICAL)', () => {
       parameters: { filePath: 'a.md' },
     });
 
-    expect(bar.pushStatus).not.toHaveBeenCalled();
+    // Events are allowed through when currentMsgId is null — streaming
+    // may have just started and not registered the messageId yet.
+    expect(bar.pushStatus).toHaveBeenCalledTimes(1);
   });
 
   it('allows completed events through when streamingController returns null (post-finalize)', () => {

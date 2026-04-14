@@ -57,6 +57,7 @@ export class ToolEventCoordinator {
   handleToolCallsDetected(messageId: string, toolCalls: ToolCallLike[]): void {
     if (!toolCalls || toolCalls.length === 0) return;
 
+
     for (const toolCall of toolCalls) {
       const rawName = toolCall.function?.name || toolCall.name;
 
@@ -73,9 +74,11 @@ export class ToolEventCoordinator {
       const normalized = rawName?.replace(/_/g, '.');
       const isUseTools = normalized === 'useTools' || (normalized?.endsWith('.useTools') ?? false);
 
+
       if (isUseTools && parameters && typeof parameters === 'object') {
         const params = parameters as Record<string, unknown>;
         const innerCalls = Array.isArray(params.calls) ? params.calls : [];
+
 
         for (const inner of innerCalls) {
           if (!inner || typeof inner !== 'object') continue;
@@ -102,7 +105,10 @@ export class ToolEventCoordinator {
             isComplete: toolCall.isComplete,
           };
 
-          if (toolCall.id) this.toolNameCache.set(toolCall.id, innerToolData);
+          if (toolCall.id) {
+
+            this.toolNameCache.set(toolCall.id, innerToolData);
+          }
 
           this.controller.handleToolEvent(messageId, 'detected', innerToolData);
         }
@@ -161,6 +167,7 @@ export class ToolEventCoordinator {
    * fallbacks ("Running Open").
    */
   handleToolExecutionStarted(messageId: string, toolCall: { id: string; name: string; parameters?: unknown }): void {
+
     const metadata = getToolNameMetadata(toolCall.name);
     const enriched: ToolStatusEventData = {
       ...toolCall,
@@ -185,6 +192,7 @@ export class ToolEventCoordinator {
    */
   handleToolExecutionCompleted(messageId: string, toolId: string, result: unknown, success: boolean, error?: string): void {
     const cached = this.toolNameCache.get(toolId);
+
     this.controller.handleToolEvent(messageId, 'completed', {
       ...cached,
       toolId,
@@ -199,6 +207,18 @@ export class ToolEventCoordinator {
    * Handle generic tool event with data enrichment
    */
   handleToolEvent(messageId: string, event: 'detected' | 'updated' | 'started' | 'completed', data: ToolEventData): void {
+    // Filter out useTools/getTools wrapper events — the inner tool events
+    // (unwrapped in handleToolCallsDetected or emitted directly by
+    // DirectToolExecutor) provide the meaningful status labels.
+    // Without this filter, useTools completion overwrites the inner tool's
+    // past-tense label ("Ran Read" → "Prepared actions").
+    const rawName = (data?.name as string) || (data?.technicalName as string) || '';
+    const normalized = rawName.replace(/_/g, '.');
+    if (normalized === 'useTools' || normalized === 'getTools' ||
+        normalized.endsWith('.useTools') || normalized.endsWith('.getTools')) {
+      return;
+    }
+
     const enriched = this.enrichToolEventData(data);
     this.controller.handleToolEvent(messageId, event, enriched as ToolStatusEventData);
   }

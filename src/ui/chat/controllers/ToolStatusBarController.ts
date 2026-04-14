@@ -85,14 +85,17 @@ export class ToolStatusBarController {
    * Handle generic tool event, mapping it to status bar updates
    */
   handleToolEvent(messageId: string, event: 'detected' | 'updated' | 'started' | 'completed', data: ToolStatusEventData): void {
-    if (this.isDisposed) return;
+    if (this.isDisposed) {
+
+      return;
+    }
     // Filter events to the current streaming turn.
-    // Allow 'completed' events through even if the streaming messageId has
-    // been cleared by finalizeStreaming() — they are terminal, per-execution
-    // events with no stale-data risk, and dropping them prevents the status
-    // bar from ever showing past-tense ("Opened note") labels.
-    if (messageId !== this.streamingController.getCurrentMessageId()) {
-      if (event !== 'completed') return;
+    // Allow through when: (a) messageId matches current streaming turn,
+    // (b) currentMsgId is null (streaming just started, not registered yet),
+    // (c) event is 'completed' (terminal, no stale-data risk).
+    const currentMsgId = this.streamingController.getCurrentMessageId();
+    if (currentMsgId !== null && messageId !== currentMsgId && event !== 'completed') {
+      return;
     }
 
     let statusType: ToolDisplayStatus = 'executing';
