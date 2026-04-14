@@ -157,23 +157,22 @@ describe('ToolStatusPipeline — integration', () => {
         },
       ] as Parameters<typeof coordinator.handleToolCallsDetected>[1]);
 
-      // useTools inner calls share the wrapper's ID (call_usetools_1).
-      // The state machine accepts the first detected transition but rejects
-      // the second as same-phase. So only 1 pushStatus call for detection.
-      expect(entries.length).toBeGreaterThanOrEqual(1);
+      // Each inner call gets a unique ID: call_usetools_1_0 (move) and call_usetools_1_1 (open).
+      // Both should receive detected events.
+      expect(entries.length).toBe(2);
       expect(entries[0].state).toBe('present');
+      expect(entries[1].state).toBe('present');
 
-      // Execution path fires separately for each inner tool with suffixed IDs.
-      // The state manager correlates call_usetools_1_0 → call_usetools_1 via prefix matching.
+      // Execution path fires with matching suffixed IDs.
       coordinator.handleToolExecutionStarted('msg-1', {
         id: 'call_usetools_1_0',
         name: 'storageManager_move',
         parameters: { source: 'a.md', target: 'b.md' },
       });
 
-      // started is forward from detected, so this fires
+      // started is forward from detected, so this advances the state
       const startedEntries = entries.filter(e => e.state === 'present');
-      expect(startedEntries.length).toBeGreaterThanOrEqual(1);
+      expect(startedEntries.length).toBeGreaterThanOrEqual(2);
 
       // First inner tool completes
       coordinator.handleToolExecutionCompleted('msg-1', 'call_usetools_1_0', {}, true);
@@ -181,22 +180,22 @@ describe('ToolStatusPipeline — integration', () => {
       const pastEntries = entries.filter(e => e.state === 'past');
       expect(pastEntries.length).toBeGreaterThanOrEqual(1);
 
-      // Second inner tool starts — different suffixed ID, but prefix matches the same canonical ID.
-      // Since the canonical ID is already completed (terminal), this should create a new entry
-      // only if the ID doesn't match. Let's check:
-      // call_usetools_1_1 starts with call_usetools_1, so it matches the existing completed entry.
-      // The state machine rejects started after completed. This is the expected limitation
-      // of sharing wrapper IDs.
+      // Second inner tool starts — unique ID call_usetools_1_1, separate lifecycle
       coordinator.handleToolExecutionStarted('msg-1', {
         id: 'call_usetools_1_1',
         name: 'storageManager_open',
         parameters: { path: 'b.md' },
       });
 
-      // The state manager rejects this because call_usetools_1 is already completed.
-      // This documents the current behavior — serial batch inner calls share fate.
-      const state = stateManager.getState('call_usetools_1');
-      expect(state?.phase).toBe('completed');
+      // Second tool should advance from detected to started
+      const state1 = stateManager.getState('call_usetools_1_1');
+      expect(state1?.phase).toBe('started');
+
+      // Second inner tool completes
+      coordinator.handleToolExecutionCompleted('msg-1', 'call_usetools_1_1', {}, true);
+
+      const state2 = stateManager.getState('call_usetools_1_1');
+      expect(state2?.phase).toBe('completed');
     });
   });
 
