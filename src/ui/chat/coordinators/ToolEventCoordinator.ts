@@ -129,7 +129,8 @@ export class ToolEventCoordinator {
         const innerCalls = Array.isArray(params.calls) ? params.calls : [];
 
 
-        for (const inner of innerCalls) {
+        for (let i = 0; i < innerCalls.length; i++) {
+          const inner = innerCalls[i];
           if (!inner || typeof inner !== 'object') continue;
           const call = inner as Record<string, unknown>;
           const agent = typeof call.agent === 'string' ? call.agent : '';
@@ -142,7 +143,10 @@ export class ToolEventCoordinator {
             ? call.parameters as Record<string, unknown>
             : undefined;
 
-          const toolCallId = toolCall.id || `detected_${innerTechnical}_${Date.now()}`;
+          // Append _N index to match execution path IDs (ToolBatchExecutionService
+          // generates stepIds like `call_abc_0`, `call_abc_1` for each inner call).
+          const baseId = toolCall.id || `detected_${innerTechnical}_${Date.now()}`;
+          const toolCallId = `${baseId}_${i}`;
 
           this.stateManager.transition(messageId, toolCallId, 'detected', {
             technicalName: innerMeta.technicalName,
