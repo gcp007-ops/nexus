@@ -257,12 +257,6 @@ export class ChatSendCoordinator {
       return;
     }
 
-    console.log('[Compaction] Starting compaction', {
-      conversationId: conversation.id,
-      messageCount: conversation.messages.length,
-      manual,
-    });
-
     let stateContent: string | undefined;
     let usedLLM = false;
 
@@ -286,13 +280,6 @@ export class ChatSendCoordinator {
         if (result.success && result.stateContent) {
           stateContent = result.stateContent;
           usedLLM = true;
-          console.log('[Compaction] forceStateSave succeeded', {
-            summaryLength: result.stateContent.length,
-          });
-        } else {
-          console.log('[Compaction] forceStateSave returned no content', {
-            success: result.success,
-          });
         }
       } catch (error) {
         console.error('[Compaction] LLM-driven saveState failed, using programmatic fallback:', error);
@@ -308,25 +295,9 @@ export class ChatSendCoordinator {
     });
 
     if (compactedContext.messagesRemoved <= 0 && !manual) {
-      console.log('[Compaction] Nothing to compact (auto)', {
-        messageCount: conversation.messages.length,
-        exchangesToKeep: 2,
-      });
       new Notice('Nothing to compact — conversation is short enough', 2500);
       return;
     }
-
-    if (compactedContext.messagesRemoved <= 0) {
-      console.log('[Compaction] Nothing to compact but proceeding (manual)', {
-        messageCount: conversation.messages.length,
-      });
-    }
-
-    console.log('[Compaction] compact() result', {
-      messagesRemoved: compactedContext.messagesRemoved,
-      messagesKept: compactedContext.messagesKept,
-      boundaryMessageId: compactedContext.boundaryMessageId,
-    });
 
     if (stateContent) {
       compactedContext.summary = stateContent;
@@ -368,8 +339,6 @@ export class ChatSendCoordinator {
       await this.deps.chatService.updateConversation(conversation);
     }
 
-    console.log('[Compaction] Conversation saved with compaction metadata');
-
     this.deps.onUpdateContextProgress();
 
     const savedMsg = usedLLM
@@ -400,8 +369,6 @@ export class ChatSendCoordinator {
     this.setPreSendCompactionState(true);
     try {
       await this.performContextCompaction(conversation, manual);
-    } catch (error) {
-      throw error;
     } finally {
       this.setPreSendCompactionState(false);
     }

@@ -42,6 +42,7 @@ function makeCallbacks(): Required<ToolStatusBarCallbacks> {
   return {
     onInspectClick: jest.fn(),
     onTaskClick: jest.fn(),
+    onAgentClick: jest.fn(),
     onCompactClick: jest.fn(),
   };
 }
@@ -103,13 +104,17 @@ describe('ToolStatusBar — construction', () => {
     expect(row2Classes).toEqual(expect.arrayContaining([
       'tool-status-inspect-icon',
       'tool-status-task-icon',
-      'nexus-agent-status-button',
+      'tool-status-agent-slot',
       'tool-status-compact-icon',
       'tool-status-cost',
     ]));
+    const agentSlotResult = row2Calls.find((call) => (call[1] as { cls?: string })?.cls === 'tool-status-agent-slot');
+    const agentSlotIndex = row2Calls.indexOf(agentSlotResult!);
+    const agentSlotEl = (row2El!.createEl as jest.Mock).mock.results[agentSlotIndex].value as HTMLElement;
+    expect(agentSlotEl.createEl).toHaveBeenCalledWith('button', { cls: 'tool-status-agent-icon' });
   });
 
-  it('registers click handlers for inspect/task/compact when callbacks are provided', () => {
+  it('registers click handlers for inspect/task/agent/compact when callbacks are provided', () => {
     const container = createMockElement('div');
     const component = new Component();
     const tracker = makeContextTracker();
@@ -124,9 +129,9 @@ describe('ToolStatusBar — construction', () => {
       component
     );
 
-    // Exactly three click handlers registered via Component.registerDomEvent
+    // Exactly four click handlers registered via Component.registerDomEvent
     const clickRegistrations = registerSpy.mock.calls.filter((c) => c[1] === 'click');
-    expect(clickRegistrations.length).toBe(3);
+    expect(clickRegistrations.length).toBe(4);
   });
 
   it('omits registerDomEvent calls for missing callbacks', () => {
@@ -160,7 +165,7 @@ describe('ToolStatusBar — accessors', () => {
 
     const slot = bar.getAgentSlotEl();
     expect(slot).toBeDefined();
-    // The agent slot should be the element keyed by 'nexus-agent-status-button'
+    expect(slot.createEl).toHaveBeenCalledWith('button', { cls: 'tool-status-agent-icon' });
   });
 
   it('getContextBadge returns a defined ContextBadge instance', () => {

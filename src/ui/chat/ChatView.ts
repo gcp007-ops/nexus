@@ -155,7 +155,7 @@ export class ChatView extends ItemView {
       getModelAgentManager: () => this.modelAgentManager ?? null,
       getStreamingController: () => this.streamingController ?? null,
       getToolEventCoordinator: () => this.toolEventCoordinator ?? null,
-      getAgentStatusSlot: () => undefined,
+      getAgentStatusSlot: () => this.toolStatusBar?.getAgentSlotEl(),
       getSettingsButton: () => undefined,
       getNavigationTarget: () => this.branchViewCoordinator ?? null,
     });

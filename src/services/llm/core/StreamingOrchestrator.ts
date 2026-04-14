@@ -134,14 +134,6 @@ export class StreamingOrchestrator {
 
       try {
         const adapterGenerateOptions = this.createAdapterGenerateOptions(generateOptions);
-        console.log('[Compaction] StreamingOrchestrator before adapter call', {
-          provider: activeProvider,
-          model: generateOptions.model,
-          promptLength: promptToPass.length,
-          systemPromptLength: generateOptions.systemPrompt?.length ?? 0,
-          toolCount: generateOptions.tools?.length ?? 0,
-          toolNames: JSON.stringify(generateOptions.tools?.map(t => t.function?.name) ?? []),
-        });
         for await (const chunk of activeAdapter.generateStreamAsync(promptToPass, adapterGenerateOptions)) {
           // Track usage from chunks
           if (chunk.usage) {

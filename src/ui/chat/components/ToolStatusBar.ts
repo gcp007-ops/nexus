@@ -27,6 +27,7 @@ export class ToolStatusBar {
   private inspectBtn!: HTMLButtonElement;
   private taskBtn!: HTMLButtonElement;
   private agentSlotEl!: HTMLElement;
+  private agentFallbackBtn!: HTMLButtonElement;
   private compactBtn!: HTMLButtonElement;
   private costEl!: HTMLElement;
   
@@ -67,13 +68,15 @@ export class ToolStatusBar {
       this.component.registerDomEvent(this.taskBtn, 'click', callbacks.onTaskClick);
     }
     
-    // Agent status — direct button, same as the other 3 icons.
-    this.agentSlotEl = this.row2El.createEl('button', { cls: 'tool-status-agent-icon' });
-    this.agentSlotEl.setAttribute('aria-label', 'Subagents');
-    this.agentSlotEl.setAttribute('title', 'Subagents');
-    setIcon(this.agentSlotEl, 'bot');
+    // Agent status slot. SubagentController replaces the fallback button with
+    // AgentStatusMenu once the subagent executor is ready.
+    this.agentSlotEl = this.row2El.createEl('div', { cls: 'tool-status-agent-slot' });
+    this.agentFallbackBtn = this.agentSlotEl.createEl('button', { cls: 'tool-status-agent-icon' });
+    this.agentFallbackBtn.setAttribute('aria-label', 'Subagents');
+    this.agentFallbackBtn.setAttribute('title', 'Subagents');
+    setIcon(this.agentFallbackBtn, 'bot');
     if (callbacks.onAgentClick) {
-      this.component.registerDomEvent(this.agentSlotEl, 'click', callbacks.onAgentClick);
+      this.component.registerDomEvent(this.agentFallbackBtn, 'click', callbacks.onAgentClick);
     }
     
     this.compactBtn = this.row2El.createEl('button', { cls: 'tool-status-compact-icon' });
@@ -107,10 +110,7 @@ export class ToolStatusBar {
   }
   
   public getAgentSlotEl(): HTMLElement {
-    // Return a detached div so AgentStatusMenu.render() doesn't empty/replace
-    // the real bot icon button. The bot icon is permanent; the modal opens
-    // via the onAgentClick callback, not via AgentStatusMenu's click handler.
-    return document.createElement('div');
+    return this.agentSlotEl;
   }
   
   public getContextBadge(): ContextBadge {

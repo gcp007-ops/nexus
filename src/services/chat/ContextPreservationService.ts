@@ -189,17 +189,11 @@ export class ContextPreservationService {
       };
     }
 
-    console.log('[Compaction] forceStateSave called', {
-      messagesCount: messages.length,
-      maxRetries: this.options.maxRetries,
-    });
-
     let attempts = 0;
     let currentMessages = [...messages];
 
     while (attempts < this.options.maxRetries) {
       attempts++;
-      console.log('[Compaction] forceStateSave attempt', { attempt: attempts });
 
       try {
         const result = await this.attemptStateSave(
@@ -263,12 +257,7 @@ export class ContextPreservationService {
       const label = msg.role === 'user' ? 'User' : 'Assistant';
       lines.push(`[${label}]: ${msg.content}`);
     }
-    const transcript = lines.join('\n\n');
-    console.log('[Compaction] serializeMessagesToTranscript', {
-      inputMessageCount: messages.length,
-      outputTranscriptLength: transcript.length,
-    });
-    return transcript;
+    return lines.join('\n\n');
   }
 
   /**
@@ -291,13 +280,6 @@ export class ContextPreservationService {
     // requires it to be role=user — passing raw messages fails when the last message
     // is an assistant message (empty prompt → HTTP 400).
     const transcript = this.serializeMessagesToTranscript(messages);
-
-    console.log('[Compaction] attemptStateSave', {
-      transcriptLength: transcript.length,
-      provider: llmOptions.provider ?? '(none)',
-      model: llmOptions.model ?? '(none)',
-    });
-    console.log('[Compaction] tool schema passed to LLM', JSON.stringify(createStateSchema));
 
     const conversationId = messages[0]?.conversationId || 'context_save';
     const wrappedMessage: ConversationMessage = {
@@ -322,7 +304,6 @@ export class ContextPreservationService {
         }
       )) {
         if (chunk.toolCalls && chunk.toolCalls.length > 0) {
-          console.log('[Compaction] raw chunk toolCalls', JSON.stringify(chunk.toolCalls));
           toolCalls = chunk.toolCalls;
           // Break early once we have a createState call — prevents ping-pong loop
           const hasCreateState = toolCalls.some(tc => {
@@ -333,10 +314,6 @@ export class ContextPreservationService {
         }
       }
     } catch (error) {
-      console.log('[Compaction] attemptStateSave LLM stream failed', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
       return {
         success: false,
         error: `LLM generation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -344,20 +321,11 @@ export class ContextPreservationService {
     }
 
     const toolNames = toolCalls.map(tc => tc.function?.name || tc.name || '(unknown)');
-    console.log('[Compaction] attemptStateSave LLM response', {
-      toolCallsFound: toolCalls.length,
-      toolNames: JSON.stringify(toolNames),
-    });
 
     // Validate we got a createState tool call
     const createStateCall = toolCalls.find((tc) => {
       const name = tc.function?.name || tc.name || '';
       return name === 'createState' || name.includes('createState');
-    });
-
-    console.log('[Compaction] createState search', {
-      found: !!createStateCall,
-      searchedNames: JSON.stringify(toolNames),
     });
 
     if (!createStateCall) {
@@ -382,7 +350,6 @@ export class ContextPreservationService {
     }
 
     // Override hallucinated workspace/session IDs with real values from context
-    console.log('[Compaction] contextOptions for override', { workspaceId: contextOptions.workspaceId, sessionId: contextOptions.sessionId });
     let finalArgs = rawArgs;
     try {
       const parsedArgs = JSON.parse(rawArgs) as Record<string, unknown>;
@@ -424,7 +391,6 @@ export class ContextPreservationService {
           stateContent: params.content,
         };
       } else {
-        console.log('[Compaction] createState execution result', { success: result?.success, error: result?.error });
         return {
           success: false,
           error: result?.error || 'createState execution failed',
