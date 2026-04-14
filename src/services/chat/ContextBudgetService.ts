@@ -116,7 +116,11 @@ export class ContextBudgetService {
   ): number {
     let totalTokens = this.estimateTextTokens(systemPrompt);
 
-    for (const message of conversation.messages) {
+    // Respect compaction boundary: only count messages that will be sent to the LLM.
+    // Messages before the boundary are summarized in the compaction frontier (system prompt).
+    const messages = this.getMessagesAfterCompactionBoundary(conversation);
+
+    for (const message of messages) {
       const normalizedUsage = this.normalizeUsage((message as { usage?: unknown }).usage);
 
       if (normalizedUsage) {
@@ -199,5 +203,31 @@ export class ContextBudgetService {
     }
 
     return undefined;
+  }
+
+  /**
+   * Return only messages after the latest compaction boundary.
+   * If no boundary exists, returns all messages.
+   */
+  private static getMessagesAfterCompactionBoundary(conversation: ConversationData): ConversationData['messages'] {
+    const metadata = conversation.metadata as Record<string, unknown> | undefined;
+    const compaction = metadata?.compaction as { frontier?: Array<{ boundaryMessageId?: string }> } | undefined;
+    const frontier = compaction?.frontier;
+    if (!frontier || frontier.length === 0) {
+      return conversation.messages;
+    }
+
+    const latestRecord = frontier[frontier.length - 1];
+    const boundaryId = latestRecord?.boundaryMessageId;
+    if (!boundaryId) {
+      return conversation.messages;
+    }
+
+    const boundaryIndex = conversation.messages.findIndex(m => m.id === boundaryId);
+    if (boundaryIndex <= 0) {
+      return conversation.messages;
+    }
+
+    return conversation.messages.slice(boundaryIndex);
   }
 }

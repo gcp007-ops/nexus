@@ -7,6 +7,7 @@ export interface ToolStatusBarCallbacks {
   onInspectClick?: () => void;
   onTaskClick?: () => void;
   onCompactClick?: () => void;
+  onAgentClick?: () => void;
 }
 
 export interface ToolStatusEntry {
@@ -51,8 +52,8 @@ export class ToolStatusBar {
     
     // Action icons
     this.inspectBtn = this.row2El.createEl('button', { cls: 'tool-status-inspect-icon' });
-    this.inspectBtn.setAttribute('aria-label', 'Inspect tools');
-    this.inspectBtn.setAttribute('aria-haspopup', 'dialog');
+    this.inspectBtn.setAttribute('aria-label', 'Tool history');
+    this.inspectBtn.setAttribute('title', 'Tool history');
     setIcon(this.inspectBtn, 'eye');
     if (callbacks.onInspectClick) {
       this.component.registerDomEvent(this.inspectBtn, 'click', callbacks.onInspectClick);
@@ -60,17 +61,24 @@ export class ToolStatusBar {
     
     this.taskBtn = this.row2El.createEl('button', { cls: 'tool-status-task-icon' });
     this.taskBtn.setAttribute('aria-label', 'Task board');
+    this.taskBtn.setAttribute('title', 'Task board');
     setIcon(this.taskBtn, 'clipboard-check');
     if (callbacks.onTaskClick) {
       this.component.registerDomEvent(this.taskBtn, 'click', callbacks.onTaskClick);
     }
     
-    this.agentSlotEl = this.row2El.createEl('button', { cls: 'nexus-agent-status-button' });
-    this.agentSlotEl.setAttribute('aria-label', 'Agent status');
+    // Agent status — direct button, same as the other 3 icons.
+    this.agentSlotEl = this.row2El.createEl('button', { cls: 'tool-status-agent-icon' });
+    this.agentSlotEl.setAttribute('aria-label', 'Subagents');
+    this.agentSlotEl.setAttribute('title', 'Subagents');
     setIcon(this.agentSlotEl, 'bot');
+    if (callbacks.onAgentClick) {
+      this.component.registerDomEvent(this.agentSlotEl, 'click', callbacks.onAgentClick);
+    }
     
     this.compactBtn = this.row2El.createEl('button', { cls: 'tool-status-compact-icon' });
-    this.compactBtn.setAttribute('aria-label', 'Compact conversation');
+    this.compactBtn.setAttribute('aria-label', 'Compact context');
+    this.compactBtn.setAttribute('title', 'Compact context');
     setIcon(this.compactBtn, 'library');
     if (callbacks.onCompactClick) {
       this.component.registerDomEvent(this.compactBtn, 'click', callbacks.onCompactClick);
@@ -99,7 +107,10 @@ export class ToolStatusBar {
   }
   
   public getAgentSlotEl(): HTMLElement {
-    return this.agentSlotEl;
+    // Return a detached div so AgentStatusMenu.render() doesn't empty/replace
+    // the real bot icon button. The bot icon is permanent; the modal opens
+    // via the onAgentClick callback, not via AgentStatusMenu's click handler.
+    return document.createElement('div');
   }
   
   public getContextBadge(): ContextBadge {

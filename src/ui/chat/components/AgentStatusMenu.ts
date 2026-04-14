@@ -87,6 +87,9 @@ export class AgentStatusMenu {
    * Create and render the status menu button
    */
   render(): HTMLElement {
+    // Clear any default placeholder icon in the slot
+    this.container.empty();
+
     // Create the button element
     const button = document.createElement('button');
     button.addClass('clickable-icon', 'nexus-agent-status-button');

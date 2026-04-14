@@ -251,6 +251,12 @@ export class OpenAIAdapter extends BaseAdapter {
           responseParams.include.push('reasoning.encrypted_content');
         }
 
+        console.log('[Compaction] OpenAIAdapter request tools', {
+          toolCount: responseParams.tools?.length ?? 0,
+          toolNames: JSON.stringify(responseParams.tools?.map(t => t.name) ?? []),
+          tools: JSON.stringify(responseParams.tools),
+        });
+
         lastRequestSummary = this.buildStreamingRequestSummary(responseParams, options, prompt);
 
         const nodeStream = await this.requestStream({

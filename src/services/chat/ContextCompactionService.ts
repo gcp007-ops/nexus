@@ -43,6 +43,8 @@ export interface CompactedContext {
   compactedAt: number;
   /** Exact transcript coverage for the compacted range, when available */
   transcriptCoverage?: CompactedTranscriptCoverageRef;
+  /** ID of the first message in the "kept" window — messages before this are compacted context */
+  boundaryMessageId?: string;
 }
 
 /**
@@ -131,15 +133,18 @@ export class ContextCompactionService {
       : [];
     const topics = this.extractTopics(removedMessages);
 
-    // 5. Calculate kept messages
+    // 5. Calculate kept messages (for counting only — messages are NOT deleted)
     const keptUnits = units.slice(unitsToRemove);
     const keptMessages: ConversationMessage[] = [];
     for (const unit of keptUnits) {
       keptMessages.push(...unit.messages);
     }
 
-    // 6. Update conversation messages in place
-    conversation.messages = keptMessages;
+    // 6. Return compaction boundary — do NOT mutate conversation.messages.
+    // The boundary marks the first kept message; messages before it are
+    // summarized context. The caller stores this in metadata and the LLM
+    // prompt assembly layer filters messages based on this boundary.
+    const boundaryMessageId = keptMessages.length > 0 ? keptMessages[0].id : undefined;
 
     return {
       summary,
@@ -148,6 +153,7 @@ export class ContextCompactionService {
       filesReferenced,
       topics,
       compactedAt: Date.now(),
+      boundaryMessageId,
     };
   }
 

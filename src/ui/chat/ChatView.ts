@@ -8,7 +8,7 @@
  * and tool event coordination to ToolEventCoordinator.
  */
 
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
 import { ConversationList } from './components/ConversationList';
 import { MessageDisplay } from './components/MessageDisplay';
 import { ChatInput } from './components/ChatInput';
@@ -37,6 +37,7 @@ import { SubagentController } from './controllers/SubagentController';
 
 // Coordinators
 import { ToolStatusBar } from './components/ToolStatusBar';
+import { openTaskBoardView } from '../tasks/taskBoardNavigation';
 import { ToolStatusLabelResolver } from './services/ToolStatusLabelResolver';
 import { setToolStatusLabelResolver } from './utils/toolDisplayFormatter';
 import type { AgentManager } from '../../services/AgentManager';
@@ -144,7 +145,7 @@ export class ChatView extends ItemView {
         getNexusPlugin<NexusPlugin>(this.app)?.getServiceIfReady<HybridStorageAdapter>('hybridStorageAdapter') ?? null,
       onUpdateContextProgress: () => {
         void this.updateContextProgress();
-      }
+      },
     });
     this.subagentIntegration = new ChatSubagentIntegration({
       app: this.app,
@@ -154,8 +155,8 @@ export class ChatView extends ItemView {
       getModelAgentManager: () => this.modelAgentManager ?? null,
       getStreamingController: () => this.streamingController ?? null,
       getToolEventCoordinator: () => this.toolEventCoordinator ?? null,
-      getAgentStatusSlot: () => this.toolStatusBar?.getAgentSlotEl(),
-      getSettingsButton: () => this.layoutElements.settingsButton,
+      getAgentStatusSlot: () => undefined,
+      getSettingsButton: () => undefined,
       getNavigationTarget: () => this.branchViewCoordinator ?? null,
     });
     this.branchViewCoordinator = new ChatBranchViewCoordinator({
@@ -615,8 +616,9 @@ export class ChatView extends ItemView {
         onInspectClick: () => this.handleInspectTools(),
         onTaskClick: () => this.handleOpenTasks(),
         onCompactClick: () => {
-          void this.sendCoordinator.compactCurrentConversation();
-        }
+          void this.ensurePreservationServiceAndCompact();
+        },
+        onAgentClick: () => { void this.handleOpenAgentStatus(); },
       },
       this
     );
@@ -835,7 +837,7 @@ export class ChatView extends ItemView {
   }
 
   private handleOpenTasks(): void {
-    void this.app.commands.executeCommandById('open-task-board');
+    void openTaskBoardView(this.app, {}, 'tab');
   }
 
   private handleInspectTools(): void {
@@ -851,6 +853,67 @@ export class ChatView extends ItemView {
           this.chatService.getToolCallMessagesForConversation(conversationId, options),
       },
     }).open();
+  }
+
+  private async ensurePreservationServiceAndCompact(): Promise<void> {
+    // Lazy-init preservationService if subagent infrastructure hasn't loaded yet.
+    // This decouples compaction from the subagent init path so the compact button
+    // always works, even before subagent setup completes.
+    if (!this.preservationService) {
+      try {
+        const plugin = getNexusPlugin(this.app) as { getServiceIfReady?<T>(name: string): T | null } | null;
+        const agentManager = plugin?.getServiceIfReady?.('agentManager') as AgentManager | null;
+        const llmService = this.chatService.getLLMService();
+        if (agentManager && llmService) {
+          const { DirectToolExecutor } = await import('../../services/chat/DirectToolExecutor');
+          const agentProvider = {
+            getAgent: (name: string) => agentManager.getAgent(name),
+            getAllAgents: () => agentManager.getAgents(),
+          };
+          const executor = new DirectToolExecutor({ agentProvider });
+          this.preservationService = new ContextPreservationService({
+            llmService: llmService as unknown as import('../../services/chat/ContextPreservationService').PreservationDependencies['llmService'],
+            getAgent: (name: string) => { try { return agentManager.getAgent(name); } catch { return null; } },
+            executeToolCalls: async (toolCalls: unknown[], context?: { sessionId?: string; workspaceId?: string }) => {
+              // ContextPreservationService calls tools by bare name (e.g. "createState").
+              // DirectToolExecutor expects "agentName_toolName" format. Map bare names
+              // to their agent-qualified form.
+              const mapped = toolCalls.map(tc => {
+                const call = tc as Record<string, unknown>;
+                const name = typeof call.name === 'string' ? call.name : '';
+                return { ...call, name: name.includes('_') ? name : `memoryManager_${name}` };
+              });
+              return executor.executeToolCalls(mapped as never, context as never);
+            },
+          });
+        }
+      } catch (error) {
+        console.warn('[ChatView] Failed to lazy-init preservationService:', error);
+      }
+    }
+    await this.sendCoordinator.compactCurrentConversation();
+  }
+
+  private async handleOpenAgentStatus(): Promise<void> {
+    if (!this.branchViewCoordinator) return;
+
+    // Lazy-init subagent infrastructure if it hasn't loaded yet
+    if (!this.subagentController) {
+      try {
+        await this.initializeSubagentInfrastructure();
+      } catch (error) {
+        console.warn('[ChatView] Failed to lazy-init subagent infrastructure for agent status:', error);
+        new Notice('Subagent system unavailable', 2500);
+        return;
+      }
+    }
+
+    try {
+      this.branchViewCoordinator.openAgentStatusModal();
+    } catch (error) {
+      console.warn('[ChatView] Failed to open agent status modal:', error);
+      new Notice('Subagent system unavailable', 2500);
+    }
   }
 
   private updateChatTitle(): void {

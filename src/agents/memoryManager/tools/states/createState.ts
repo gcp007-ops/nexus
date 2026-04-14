@@ -268,7 +268,7 @@ export class CreateStateTool extends BaseTool<CreateStateParams, StateResult> {
             }
 
             // Get the workspace to capture its current context
-            const workspace = await workspaceService.getWorkspace(workspaceId);
+            const workspace = await workspaceService.getWorkspaceByNameOrId(workspaceId);
             if (!workspace) {
                 return { success: false, error: `Workspace not found: ${workspaceId}` };
             }

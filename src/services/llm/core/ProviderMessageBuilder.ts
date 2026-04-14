@@ -398,6 +398,16 @@ export class ProviderMessageBuilder {
       };
     }
 
+    console.log('[Compaction] ProviderMessageBuilder.buildInitialOptions', {
+      provider,
+      model,
+      systemPromptLength: generateOptions.systemPrompt?.length ?? 0,
+      userPromptLength: userPrompt.length,
+      toolCount: generateOptions.tools?.length ?? 0,
+      toolNames: JSON.stringify(generateOptions.tools?.map(t => t.function?.name) ?? []),
+      hasConversationHistory: !!generateOptions.conversationHistory,
+    });
+
     return { generateOptions, userPrompt };
   }
 

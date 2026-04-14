@@ -26,64 +26,104 @@ export class ToolEventCoordinator {
   constructor(private controller: ToolStatusBarController) {}
 
   /**
-   * Handle tool calls detected event
+   * Handle tool calls detected event.
+   *
+   * In the two-tool architecture, the LLM only ever calls `useTools`.
+   * The individual tool invocations (contentManager.read, etc.) are
+   * buried inside useTools' `parameters.calls[]` array. This method
+   * unwraps that array and emits a synthetic `detected` event for each
+   * inner call so the status bar shows "Reading foo.md" instead of the
+   * generic "Preparing actions".
    */
   handleToolCallsDetected(messageId: string, toolCalls: ToolCallLike[]): void {
-    if (toolCalls && toolCalls.length > 0) {
-      for (const toolCall of toolCalls) {
+    if (!toolCalls || toolCalls.length === 0) return;
 
-        const metadata = getToolNameMetadata(
-          toolCall.function?.name || toolCall.name
-        );
+    for (const toolCall of toolCalls) {
+      const rawName = toolCall.function?.name || toolCall.name;
 
-        let parameters: unknown = toolCall.parameters || toolCall.arguments;
-        if (!parameters && toolCall.function?.arguments) {
-          parameters = toolCall.function.arguments;
-        }
-        if (typeof parameters === 'string') {
-          try {
-            parameters = JSON.parse(parameters);
-          } catch {
-            // leave as string if parsing fails
-          }
-        }
+      // Parse parameters from whichever location they live in.
+      let parameters: unknown = toolCall.parameters || toolCall.arguments;
+      if (!parameters && toolCall.function?.arguments) {
+        parameters = toolCall.function.arguments;
+      }
+      if (typeof parameters === 'string') {
+        try { parameters = JSON.parse(parameters); } catch { /* leave as string */ }
+      }
 
-        // Extract the tool call data in the format expected by the status bar controller.
-        const toolData: ToolStatusEventData = {
-          id: toolCall.id,
-          name: metadata.displayName,
-          displayName: metadata.displayName,
-          technicalName: metadata.technicalName,
-          agentName: metadata.agentName,
-          actionName: metadata.actionName,
-          rawName: toolCall.function?.name || toolCall.name,
-          parameters: parameters,
-          isComplete: toolCall.isComplete,
-          // Pass through reasoning-specific properties
-          type: toolCall.type,
-          result: toolCall.result,
-          status: toolCall.status,
-          isVirtual: toolCall.isVirtual,
-          success: toolCall.success
-        };
+      // Unwrap useTools: extract inner calls and emit each as its own event.
+      const normalized = rawName?.replace(/_/g, '.');
+      const isUseTools = normalized === 'useTools' || (normalized?.endsWith('.useTools') ?? false);
 
-        this.controller.handleToolEvent(messageId, 'detected', toolData);
+      if (isUseTools && parameters && typeof parameters === 'object') {
+        const params = parameters as Record<string, unknown>;
+        const innerCalls = Array.isArray(params.calls) ? params.calls : [];
 
-        if (
-          toolCall.providerExecuted &&
-          (
-            toolCall.result !== undefined ||
-            toolCall.success !== undefined ||
-            toolCall.error !== undefined
-          )
-        ) {
-          this.controller.handleToolEvent(messageId, 'completed', {
-            toolId: toolCall.id ?? undefined,
-            result: toolCall.result,
-            success: toolCall.success !== false,
-            error: toolCall.error
+        for (const inner of innerCalls) {
+          if (!inner || typeof inner !== 'object') continue;
+          const call = inner as Record<string, unknown>;
+          const agent = typeof call.agent === 'string' ? call.agent : '';
+          const tool = typeof call.tool === 'string' ? call.tool : '';
+          if (!agent || !tool) continue;
+
+          const innerTechnical = `${agent}.${tool}`;
+          const innerMeta = getToolNameMetadata(innerTechnical);
+          const innerParams = (typeof call.parameters === 'object' && call.parameters !== null)
+            ? call.parameters as Record<string, unknown>
+            : undefined;
+
+          this.controller.handleToolEvent(messageId, 'detected', {
+            id: toolCall.id,
+            name: innerMeta.displayName,
+            displayName: innerMeta.displayName,
+            technicalName: innerMeta.technicalName,
+            agentName: innerMeta.agentName,
+            actionName: innerMeta.actionName,
+            rawName: innerTechnical,
+            parameters: innerParams,
+            isComplete: toolCall.isComplete,
           });
         }
+
+        // If no inner calls were extracted, fall through to the generic path
+        // so the user at least sees "Preparing actions".
+        if (innerCalls.length > 0) continue;
+      }
+
+      // Default path: emit the tool call as-is (getTools, or useTools with no parseable calls).
+      const metadata = getToolNameMetadata(rawName);
+      const toolData: ToolStatusEventData = {
+        id: toolCall.id,
+        name: metadata.displayName,
+        displayName: metadata.displayName,
+        technicalName: metadata.technicalName,
+        agentName: metadata.agentName,
+        actionName: metadata.actionName,
+        rawName: toolCall.function?.name || toolCall.name,
+        parameters: parameters,
+        isComplete: toolCall.isComplete,
+        type: toolCall.type,
+        result: toolCall.result,
+        status: toolCall.status,
+        isVirtual: toolCall.isVirtual,
+        success: toolCall.success
+      };
+
+      this.controller.handleToolEvent(messageId, 'detected', toolData);
+
+      if (
+        toolCall.providerExecuted &&
+        (
+          toolCall.result !== undefined ||
+          toolCall.success !== undefined ||
+          toolCall.error !== undefined
+        )
+      ) {
+        this.controller.handleToolEvent(messageId, 'completed', {
+          toolId: toolCall.id ?? undefined,
+          result: toolCall.result,
+          success: toolCall.success !== false,
+          error: toolCall.error
+        });
       }
     }
   }

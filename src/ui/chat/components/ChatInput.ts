@@ -271,9 +271,9 @@ export class ChatInput {
       this.sendButton.classList.add('disabled-mode');
       this.sendButton.empty();
       setIcon(this.sendButton, 'arrow-up');
-      this.sendButton.setAttribute('aria-label', 'Compacting context before sending');
+      this.sendButton.setAttribute('aria-label', 'Compacting');
       this.inputElement.contentEditable = 'false';
-      this.inputElement.setAttribute('data-placeholder', 'Compacting context before sending...');
+      this.inputElement.setAttribute('data-placeholder', 'Compacting');
     } else if (actuallyLoading) {
       // Keep the input active so a new message can interrupt the current turn.
       this.sendButton.disabled = false;

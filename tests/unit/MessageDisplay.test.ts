@@ -271,7 +271,7 @@ describe('MessageDisplay', () => {
       display.setConversation(conversation);
       jest.clearAllMocks();
 
-      display.showTransientEventRow('Compacting context before sending...');
+      display.showTransientEventRow('Compacting');
 
       const eventRow = (display as MessageDisplayAccess).transientEventRow;
       expect(eventRow).toBeDefined();

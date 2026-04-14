@@ -80,6 +80,9 @@ export class MessageDisplay {
     // 2. Walk new messages in order: update existing, create new, ensure DOM order
     let previousElement: Element | null = null;
     for (const message of newMessages) {
+      if (message.metadata?.hidden) {
+        continue;
+      }
       const existingBubble = this.messageBubbles.get(message.id);
 
       if (existingBubble) {
@@ -140,6 +143,9 @@ export class MessageDisplay {
    * Add a message immediately using the actual message object (prevents duplicate message creation)
    */
   addMessage(message: ConversationMessage): void {
+    if (message.metadata?.hidden) {
+      return;
+    }
     const bubble = this.createMessageBubble(message);
     this.container.querySelector('.messages-container')?.appendChild(bubble);
     this.ensureTransientEventRowPosition(this.container.querySelector('.messages-container'));
@@ -229,8 +235,22 @@ export class MessageDisplay {
     // Create scrollable messages container
     const messagesContainer = this.container.createDiv('messages-container');
 
+    // Collect boundary message IDs from compaction frontier for divider insertion
+    const boundaryIds = this.getCompactionBoundaryIds();
+
     // Render all messages (no branch filtering needed for message-level alternatives)
     this.conversation.messages.forEach((message) => {
+      if (message.metadata?.hidden) {
+        return;
+      }
+
+      // Insert compaction divider before boundary messages (persisted across reload)
+      const boundaryRecord = boundaryIds.get(message.id);
+      if (boundaryRecord) {
+        const divider = this.createCompactionDividerElement(boundaryRecord.messagesRemoved);
+        messagesContainer.appendChild(divider);
+      }
+
       const messageEl = this.createMessageBubble(message);
       messagesContainer.appendChild(messageEl);
     });
@@ -264,6 +284,80 @@ export class MessageDisplay {
       this.transientEventRow.remove();
       this.transientEventRow = null;
     }
+  }
+
+  /**
+   * Insert a visual compaction divider into the message list.
+   * The divider is a non-message DOM element that survives incremental
+   * reconciliation (reconcile only touches messageBubbles) but is
+   * cleared on full re-render (conversation switch).
+   */
+  showCompactionDivider(messagesRemoved: number): void {
+    const messagesContainer = this.container.querySelector('.messages-container');
+    if (!messagesContainer) {
+      return;
+    }
+
+    const divider = this.createCompactionDividerElement(messagesRemoved);
+
+    // Insert before the transient event row if present, otherwise append
+    if (this.transientEventRow && this.transientEventRow.parentElement === messagesContainer) {
+      messagesContainer.insertBefore(divider, this.transientEventRow);
+    } else {
+      messagesContainer.appendChild(divider);
+    }
+
+    this.scrollToBottom();
+  }
+
+  /**
+   * Create a compaction divider DOM element.
+   * Reused by showCompactionDivider (live) and render (persisted from metadata).
+   */
+  private createCompactionDividerElement(messagesRemoved: number): HTMLElement {
+    const divider = document.createElement('div');
+    divider.className = 'compaction-divider';
+    divider.setAttribute('role', 'separator');
+    divider.setAttribute('aria-label', `${messagesRemoved} messages compacted`);
+
+    const rule1 = document.createElement('span');
+    rule1.className = 'compaction-divider-rule';
+    divider.appendChild(rule1);
+
+    const label = document.createElement('span');
+    label.className = 'compaction-divider-label';
+    label.textContent = 'Compacted';
+    divider.appendChild(label);
+
+    const rule2 = document.createElement('span');
+    rule2.className = 'compaction-divider-rule';
+    divider.appendChild(rule2);
+
+    return divider;
+  }
+
+  /**
+   * Extract compaction boundary message IDs from conversation metadata.
+   * Returns a Map of boundaryMessageId → { messagesRemoved } for divider insertion.
+   */
+  private getCompactionBoundaryIds(): Map<string, { messagesRemoved: number }> {
+    const boundaries = new Map<string, { messagesRemoved: number }>();
+    const metadata = this.conversation?.metadata;
+    if (!metadata) return boundaries;
+
+    const compaction = metadata.compaction as { frontier?: Array<{ boundaryMessageId?: string; messagesRemoved?: number }> } | undefined;
+    const frontier = compaction?.frontier;
+    if (!Array.isArray(frontier)) return boundaries;
+
+    for (const record of frontier) {
+      if (record.boundaryMessageId) {
+        boundaries.set(record.boundaryMessageId, {
+          messagesRemoved: record.messagesRemoved ?? 0
+        });
+      }
+    }
+
+    return boundaries;
   }
 
   private createTransientEventRow(message: string): HTMLElement {

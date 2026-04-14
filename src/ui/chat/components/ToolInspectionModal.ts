@@ -1,4 +1,4 @@
-import { App, Component, Modal } from 'obsidian';
+import { App, Modal } from 'obsidian';
 import type { ChatMessage, ToolCall } from '../../../types/chat/ChatTypes';
 import type { PaginatedResult } from '../../../types/pagination/PaginationTypes';
 import { formatToolStepLabel } from '../utils/toolDisplayFormatter';
@@ -43,6 +43,7 @@ export class ToolInspectionModal extends Modal {
   private nextCursor: string | undefined;
   private isLoading = false;
   private isDisposed = false;
+  private scrollHandler: (() => void) | null = null;
 
   constructor(app: App, options: ToolInspectionModalOptions) {
     super(app);
@@ -65,13 +66,12 @@ export class ToolInspectionModal extends Modal {
     this.emptyEl = shellEl.createDiv({ cls: 'tool-inspection-empty' });
     this.loadingEl = shellEl.createDiv({ cls: 'tool-inspection-loading' });
 
-    // Modal extends Component at runtime but Obsidian's type declarations
-    // don't expose Component methods through Modal — the cast is load-bearing.
-    (this as unknown as Component).registerDomEvent(this.scrollEl, 'scroll', () => {
+    this.scrollHandler = () => {
       if (this.scrollEl.scrollTop <= SCROLL_THRESHOLD_PX) {
         void this.loadPreviousPage();
       }
-    });
+    };
+    this.scrollEl.addEventListener('scroll', this.scrollHandler);
 
     this.setLoadingState(true, 'Loading tool history...');
     void this.loadInitialPages();
@@ -79,6 +79,10 @@ export class ToolInspectionModal extends Modal {
 
   onClose(): void {
     this.isDisposed = true;
+    if (this.scrollHandler && this.scrollEl) {
+      this.scrollEl.removeEventListener('scroll', this.scrollHandler);
+      this.scrollHandler = null;
+    }
     this.modalEl.removeClass('tool-inspection-modal');
     this.contentEl.empty();
   }
