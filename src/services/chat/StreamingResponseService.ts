@@ -411,15 +411,47 @@ export class StreamingResponseService {
       return messages;
     }
 
-    // For other providers, use ConversationContextBuilder
+    // For other providers, use ConversationContextBuilder.
+    // CRITICAL: We must preserve tool_calls (on assistant messages) and
+    // tool_call_id (on tool messages). Stripping them caused Azure-via-
+    // OpenRouter to reject continuations with "Missing required parameter:
+    // 'input[N].call_id'" because tool result messages arrived without
+    // the id linking them to the assistant's tool calls.
+    //
+    // Also preserve reasoning_details / thought_signature / name — latent
+    // risks for Gemini-via-OpenRouter (loses chain-of-thought between tool
+    // turns), Gemini direct (thought signature echo required), and legacy
+    // OpenAI function-role messages. See the canonical-message-pipeline plan.
     return ConversationContextBuilder.buildContextForProvider(
       filteredConversation,
       currentProvider,
       systemPrompt
-    ).map((message) => ({
-      role: message.role,
-      content: 'content' in message && typeof message.content === 'string' ? message.content : ''
-    }));
+    ).map((message) => {
+      const m = message as {
+        role: string;
+        content?: unknown;
+        tool_calls?: unknown;
+        tool_call_id?: string;
+        reasoning_details?: unknown[];
+        thought_signature?: string;
+        name?: string;
+      };
+      const out: Record<string, unknown> = {
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : '',
+      };
+      if (Array.isArray(m.tool_calls)) out.tool_calls = m.tool_calls;
+      // Use `!== undefined` so an empty-string tool_call_id is preserved.
+      // Downstream synthesis sites (e.g. OpenAIContextBuilder, BaseAdapter)
+      // own the policy for what to do with an empty id; stripping here
+      // causes Azure-via-OpenRouter to reject the continuation with
+      // "Missing required parameter: 'input[N].call_id'".
+      if (m.tool_call_id !== undefined) out.tool_call_id = m.tool_call_id;
+      if (Array.isArray(m.reasoning_details)) out.reasoning_details = m.reasoning_details;
+      if (m.thought_signature) out.thought_signature = m.thought_signature;
+      if (m.name) out.name = m.name;
+      return out as { role: string; content: string };
+    });
   }
 
   /**

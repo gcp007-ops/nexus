@@ -15,6 +15,7 @@ import { ConversationContextBuilder } from '../../chat/ConversationContextBuilde
 import { ToolResult } from '../adapters/shared/ToolExecutionUtils';
 import { Tool, ToolCall as AdapterToolCall } from '../adapters/types';
 import { shouldPassToolSchemasToProvider } from '../utils/ToolSchemaSupport';
+import { synthesizeToolCallId } from '../utils/toolCallId';
 import { ToolCall as ChatToolCall } from '../../../types/chat/ChatTypes';
 
 // Union type for tool calls from different sources
@@ -25,6 +26,25 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   tool_calls?: ToolCallUnion[];
+  /** Required on `role: 'tool'` messages — must match an assistant's tool_calls[i].id */
+  tool_call_id?: string;
+  /**
+   * OpenRouter reasoning detail entries (opaque provider payload).
+   * Must be preserved on tool-continuation turns for Gemini-via-OpenRouter
+   * or the model loses its chain-of-thought between turns.
+   */
+  reasoning_details?: unknown[];
+  /**
+   * Google Gemini thought signature. Must be echoed back on continuation
+   * requests after a tool call; dropping it degrades reasoning silently.
+   */
+  thought_signature?: string;
+  /**
+   * Legacy OpenAI `function` role name field. Some older stored conversations
+   * and some OpenAI-compatible providers still attach this to tool/function
+   * messages; stripping it can break strict schema validation.
+   */
+  name?: string;
 }
 
 // Google-specific message format
@@ -255,25 +275,31 @@ export class ProviderMessageBuilder {
         inputItems.push({ role: 'user', content: userPrompt });
       }
 
+      // Synthesize ids for any tool calls missing them. Codex/Responses API
+      // strictly requires call_id on every function_call and function_call_output.
+      const synthesizedIds = toolCalls.map((tc) =>
+        tc.id || synthesizeToolCallId('codex')
+      );
+
       // Add function_call items (what the model called)
-      for (const tc of toolCalls) {
+      for (let i = 0; i < toolCalls.length; i++) {
+        const tc = toolCalls[i];
         const name = ('name' in tc && tc.name) ? tc.name : tc.function?.name || '';
         const args = tc.function?.arguments || '{}';
         inputItems.push({
           type: 'function_call',
-          call_id: tc.id,
+          call_id: synthesizedIds[i],
           name,
           arguments: args
         });
       }
 
-      // Add function_call_output items (what the tools returned)
+      // Add function_call_output items (what the tools returned) with matching call_id
       for (let i = 0; i < toolResults.length; i++) {
         const result = toolResults[i];
-        const tc = toolCalls[i];
         inputItems.push({
           type: 'function_call_output',
-          call_id: tc?.id || result.id,
+          call_id: synthesizedIds[i] || result.id || `call_synth_codex_result_${Date.now()}_${i}`,
           output: result.success
             ? JSON.stringify(result.result || {})
             : JSON.stringify({ error: result.error || 'Tool execution failed' })

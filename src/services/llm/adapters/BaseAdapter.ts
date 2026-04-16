@@ -26,6 +26,7 @@ import { BaseCache, CacheManager } from '../utils/CacheManager';
 import { LLMCostCalculator } from '../utils/LLMCostCalculator';
 import { TokenUsageExtractor } from '../utils/TokenUsageExtractor';
 import { SchemaValidator } from '../utils/SchemaValidator';
+import { synthesizeToolCallId } from '../utils/toolCallId';
 import { SSEStreamProcessor } from '../streaming/SSEStreamProcessor';
 import { BufferedSSEStreamProcessor } from '../streaming/BufferedSSEStreamProcessor';
 import { StreamChunkProcessor } from '../streaming/StreamChunkProcessor';
@@ -232,8 +233,12 @@ export abstract class BaseAdapter {
           for (const toolCall of toolCalls) {
             const index = toolCall.index || 0;
             if (!toolCallsAccumulator.has(index)) {
+              // Generate a synthetic id if the provider didn't supply one.
+              // Empty/undefined ids cause downstream failures (e.g., Azure
+              // Responses API rejects function_call_output with missing call_id).
+              const synthesizedId = toolCall.id || synthesizeToolCallId();
               const accumulated: ToolCall = {
-                id: toolCall.id || '',
+                id: synthesizedId,
                 type: 'function',
                 function: {
                   name: toolCall.function?.name || '',
