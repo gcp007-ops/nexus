@@ -5679,7 +5679,7 @@ body.is-mobile .message-container.message-user .message-action-btn {
 body.is-mobile .message-container.message-assistant .message-actions-external {
     top: 0.25rem;
     right: 0.25rem;
-    padding: 0 0.78rem;
+    padding: 0 1.1rem;
     justify-content: flex-start;
     width: fit-content;
 }
@@ -5884,7 +5884,7 @@ body.is-mobile .message-container.message-assistant .message-bubble {
 }
 
 body.is-mobile .message-container.message-assistant {
-    margin-top: 0.35rem;
+    margin-top: 1.7rem;
 }
 
 body.is-mobile .tool-status-bar {
