@@ -132,10 +132,11 @@ Full guidelines: `docs/obsidian-plugin-guidelines.md`
 
 ## Recent Changes
 
-**Current Version**: 5.7.4
+**Current Version**: 5.8.0
 Full changelog: `docs/changelog.md`
 
 **Latest features** (Apr 2026):
+- v5.8.0 — Glass-chrome chat UI redesign (ToolStatusBar, ContextBadge, ThinkingLoader, ToolInspectionModal), CLI-first MCP tool-calling contract (PR #157), Claude Opus 4.7 added, LLM pipeline fixes (Azure call_id + latent field preservation), new OpenRouter models (GPT 5.4/5.4-pro, Gemini 3 family, GLM 5.1, MiMo v2, Qwen 3.5, MiniMax M2.7), SQLite-from-JSONL sync trigger, branch management fixes, chat media model persistence
 - v5.7.1 — Claude Code desktop auth status/login fix for Electron renderer imports (issue #120)
 - v5.7.0 — Plugin-scoped storage migration, mobile support (experimental), major refactors (PRs #102–#119)
 - v5.6.9 (PR #99) — Conversation list pagination ("Load More") + FTS title search in sidebar
