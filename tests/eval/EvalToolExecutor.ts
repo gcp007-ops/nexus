@@ -252,12 +252,10 @@ export class EvalToolExecutor implements IToolExecutor {
    * Handle getTools calls by returning domain tool schemas.
    *
    * Production getTools returns { success: true, data: { tools: [...] } }
-   * where each tool has { agent, tool, description, inputSchema }.
-   *
-   * parseAndMergeTools in ToolContinuationService checks for the name
-   * 'get_tools' (underscore) so it won't auto-merge these. That's fine —
-   * in both production and eval, the LLM uses the schemas from the
-   * getTools response to construct its useTools call parameters.
+   * where each tool has { agent, tool, description, inputSchema }. In both
+   * production and eval, the LLM uses those schemas to construct its
+   * useTools call parameters — the 2-tool surface never exposes them as
+   * individually-callable functions.
    *
    * The mock handler is checked first (for scenario-specific responses),
    * then falls back to generating schemas from domainTools.
