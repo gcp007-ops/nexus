@@ -1023,18 +1023,15 @@ body.theme-light .message-content {
     padding: 0 1.08rem;
     justify-content: flex-end;
     gap: 0.11rem;
-    margin-top: -3px;
+    margin-top: 10px;
     margin-left: 0;
     overflow: visible;
 }
 
 /* User-message action buttons (edit, retry) get a plugin-unique class from
-   MessageBubble.ts so we can drop the transform without fighting any other
-   cascade (Obsidian's .clickable-icon or equivalent). Clean (0,0,1,0) —
-   nothing else targets this class. */
-.nexus-user-msg-action {
-    transform: translateY(16px);
-}
+   MessageBubble.ts — reserved for future styling that might need to bypass
+   cascade fighting. Currently no declarations; layout spacing lives on the
+   parent .message-actions-external via margin-top. */
 
 /* Assistant row: full width, padded to match content inset, left-aligned.
    Mockup line 2292-2297. */
@@ -5670,7 +5667,7 @@ body.is-mobile .message-container.message-user .message-actions-external {
     gap: 0;
     height: 24px;
     min-height: 24px;
-    margin-top: -7px;
+    margin-top: 10px;
     padding: 0 0.72rem;
 }
 
