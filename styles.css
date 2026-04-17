@@ -1065,20 +1065,29 @@ body.theme-light .message-content {
     stroke-width: 1.9;
 }
 
-.message-action-btn:hover {
+/* Beat Obsidian's .clickable-icon defaults with a compound selector
+   (specificity (0,0,3,0) beats Obsidian's (0,0,2,0)) so no background
+   is ever painted on hover/active/focus — only the icon color changes. */
+.message-action-btn.message-action-btn:hover,
+.message-action-btn.clickable-icon:hover {
+    background: transparent !important;
     color: var(--text-normal);
 }
 
-.message-action-btn:active,
-.message-action-btn:focus-visible {
-    background: transparent;
+.message-action-btn.message-action-btn:active,
+.message-action-btn.message-action-btn:focus-visible,
+.message-action-btn.clickable-icon:active,
+.message-action-btn.clickable-icon:focus-visible {
+    background: transparent !important;
 }
 
-.message-action-btn:active {
+.message-action-btn.message-action-btn:active,
+.message-action-btn.clickable-icon:active {
     color: var(--interactive-accent);
 }
 
-.message-action-btn:focus-visible {
+.message-action-btn.message-action-btn:focus-visible,
+.message-action-btn.clickable-icon:focus-visible {
     outline: 2px solid var(--interactive-accent);
     outline-offset: 1px;
 }
@@ -3337,11 +3346,13 @@ a:hover {
   width: 24px;
   height: 24px;
 }
-.message-action-btn.message-branch-prev {
-  justify-content: flex-end;
+/* !important + extra class repeat to outweigh Obsidian's .clickable-icon
+   justify-content: center default (which otherwise re-centers the chevron). */
+.message-action-btn.message-action-btn.message-branch-prev {
+  justify-content: flex-end !important;
 }
-.message-action-btn.message-branch-next {
-  justify-content: flex-start;
+.message-action-btn.message-action-btn.message-branch-next {
+  justify-content: flex-start !important;
 }
 /* Mobile touch-target override — restore comfortable tap size but keep the
    edge-align so the chevrons still cluster tightly to the indicator. */
