@@ -69,7 +69,7 @@ function getSchemaType(schema: Record<string, unknown>): string {
   return 'unknown';
 }
 
-function splitTopLevelSegments(input: string): string[] {
+export function splitTopLevelSegments(input: string): string[] {
   const segments: string[] = [];
   let current = '';
   let quote: '"' | '\'' | null = null;
@@ -124,7 +124,7 @@ function unescapeQuotedContent(value: string): string {
     .replace(/\\\\/g, '\\');
 }
 
-function tokenize(input: string): string[] {
+export function tokenize(input: string): string[] {
   const tokens: string[] = [];
   let current = '';
   let quote: '"' | '\'' | null = null;

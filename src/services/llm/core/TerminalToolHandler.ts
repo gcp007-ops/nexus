@@ -7,6 +7,7 @@
  */
 
 import { ToolCall as ChatToolCall } from '../../../types/chat/ChatTypes';
+import { splitTopLevelSegments, tokenize } from '../../../agents/toolManager/services/ToolCliNormalizer';
 
 export interface TerminalToolResult {
   message: string;
@@ -52,21 +53,41 @@ function isWrappedToolCallParams(value: unknown): value is { calls?: WrappedTool
   return typeof value === 'object' && value !== null;
 }
 
-function isCliWrappedSubagent(toolValue: unknown): boolean {
+const PROMPT_AGENT_ALIASES = new Set(['prompt', 'prompt-manager', 'promptmanager']);
+
+/**
+ * Locate the subagent command inside a CLI `tool` string.
+ * Returns the zero-based segment index matching `results[i]` from the
+ * executor, or -1 if no subagent segment is present. Uses the shared
+ * `splitTopLevelSegments` + `tokenize` helpers so quoted commas inside
+ * flag values don't break segmentation.
+ */
+function findCliSubagentSegmentIndex(toolValue: unknown): number {
   if (typeof toolValue !== 'string') {
-    return false;
+    return -1;
   }
 
-  return /(^|,)\s*(prompt|prompt-manager|promptmanager)\s+subagent(\s|,|$)/i.test(toolValue);
+  const segments = splitTopLevelSegments(toolValue);
+  for (let i = 0; i < segments.length; i += 1) {
+    const tokens = tokenize(segments[i]);
+    if (tokens.length < 2) continue;
+    const agentAlias = tokens[0].toLowerCase();
+    const toolName = tokens[1].toLowerCase();
+    if (PROMPT_AGENT_ALIASES.has(agentAlias) && toolName === 'subagent') {
+      return i;
+    }
+  }
+
+  return -1;
 }
 
-function extractCliTask(toolValue: unknown): string | undefined {
-  if (typeof toolValue !== 'string') {
+function extractCliTask(segment: string): string | undefined {
+  const tokens = tokenize(segment);
+  const taskIndex = tokens.findIndex(token => token === '--task');
+  if (taskIndex === -1 || taskIndex + 1 >= tokens.length) {
     return undefined;
   }
-
-  const taskMatch = toolValue.match(/--task\s+("([^"]*)"|'([^']*)'|([^-,][^,]*))/i);
-  return taskMatch?.[2] || taskMatch?.[3] || taskMatch?.[4]?.trim();
+  return tokens[taskIndex + 1];
 }
 
 /**
@@ -126,11 +147,16 @@ export function checkForTerminalTool(toolCalls: ChatToolCall[]): TerminalToolRes
             break;
           }
         }
-      } else if (isCliWrappedSubagent(params?.tool)) {
-        isWrappedSubagent = true;
-        wrappedParams = { task: extractCliTask(params?.tool), tool: params?.tool };
-        const useToolResult = toolCall.result as UseToolResult | undefined;
-        wrappedResult = useToolResult?.data?.results?.[0] || null;
+      } else if (typeof params?.tool === 'string') {
+        const cliSubagentIndex = findCliSubagentSegmentIndex(params.tool);
+        if (cliSubagentIndex !== -1) {
+          isWrappedSubagent = true;
+          const segments = splitTopLevelSegments(params.tool);
+          const subagentSegment = segments[cliSubagentIndex] || '';
+          wrappedParams = { task: extractCliTask(subagentSegment), tool: params.tool };
+          const useToolResult = toolCall.result as UseToolResult | undefined;
+          wrappedResult = useToolResult?.data?.results?.[cliSubagentIndex] || null;
+        }
       }
     }
 
