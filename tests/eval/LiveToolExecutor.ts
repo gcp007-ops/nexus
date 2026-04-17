@@ -163,8 +163,22 @@ export class LiveToolExecutor implements IToolExecutor {
                   id: `${toolId}_inner_${innerName}`,
                 });
               }
-            } catch {
-              // Leave only the wrapper call captured if parsing fails.
+            } catch (parseError) {
+              // Surface the parse error instead of swallowing it: a failed
+              // mirror-parse used to leave the scenario with "tool not
+              // called" noise, hiding the real cause. We now (a) warn to
+              // the test log and (b) push a synthetic captured call so
+              // assertion dumps point at the parser error, not a missing
+              // domain call. See Test M2 in
+              // docs/review/toolmanager-cli-test-review.md.
+              const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
+              // eslint-disable-next-line no-console
+              console.warn(`[LiveToolExecutor] CLI mirror-parse failed for tool="${args.tool}": ${errorMessage}`);
+              this.capturedCalls.push({
+                name: '__cli_parse_error__',
+                args: { error: errorMessage, tool: args.tool },
+                id: `${toolId}_inner_cli_parse_error`,
+              });
             }
           }
 
