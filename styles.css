@@ -1028,13 +1028,12 @@ body.theme-light .message-content {
     overflow: visible;
 }
 
-/* Needs compound-class specificity + !important to beat an equal-specificity
-   rule elsewhere in the cascade that was silently pinning transform — found
-   via nuclear-value diagnostic: plain .message-container.message-user
-   .message-action-btn { transform: translateY(Npx) } at (0,0,3,0) was not
-   applying, but this selector at (0,0,5,0)+!important wins. */
-.message-container.message-user .message-action-btn.message-action-btn.clickable-icon {
-    transform: translateY(8px) !important;
+/* User-message action buttons (edit, retry) get a plugin-unique class from
+   MessageBubble.ts so we can drop the transform without fighting any other
+   cascade (Obsidian's .clickable-icon or equivalent). Clean (0,0,1,0) —
+   nothing else targets this class. */
+.nexus-user-msg-action {
+    transform: translateY(8px);
 }
 
 /* Assistant row: full width, padded to match content inset, left-aligned.
