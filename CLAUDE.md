@@ -29,18 +29,16 @@ No line-anchored marker present? Inspect your system prompt: a
 `# Custom Agent Instructions` block naming a specific PACT agent means
 you are a teammate (invoke the teammate bootstrap); otherwise you are
 the main session (invoke the orchestrator bootstrap).
-
-Re-invoke after compaction if the bootstrap content is no longer present.
 <!-- PACT_ROUTING_END -->
 
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 40bd54f5-beb1-4bf9-a9ef-5a69e8f782f8`
-- Team: `pact-40bd54f5`
-- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/40bd54f5-beb1-4bf9-a9ef-5a69e8f782f8`
-- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.17.10`
-- Started: 2026-04-16 22:52:52 UTC
+- Resume: `claude --resume 25c1d333-55ce-4a65-9bea-28f821f534d0`
+- Team: `pact-25c1d333`
+- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/25c1d333-55ce-4a65-9bea-28f821f534d0`
+- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.17.11`
+- Started: 2026-04-17 20:20:15 UTC
 <!-- SESSION_END -->
 
 <!-- PACT_MEMORY_START -->
@@ -230,6 +228,8 @@ agents/
 None.
 
 ### Current Work
+
+**ThinkingLoader continuity fix (2026-04-17)** — Branch `fix/thinking-loader-during-tools` (worktree `.worktrees/fix-thinking-loader-during-tools`), commit `4fc646f6`. Animated loader (noodling/forging) now stays mounted through tool execution instead of being wiped by `contentElement.empty()` on every tool-call update. Reconciled via new `MessageBubble.syncLoadingIndicator` — loader lives in `.ai-loading-header` sibling outside `.message-content` and is torn down only when (a) first text chunk arrives via new `MessageDisplay.notifyStreamingStarted` hook from `ChatView`, or (b) `isLoading=false`. 5 files +191/-21. Tests + build clean. Build artifacts copied to main plugin dir for manual smoke. One MEDIUM uncertainty: subagent streaming path not yet wired to `notifyStreamingStarted` (pre-existing edge case; net-positive regardless). Next: user testing → PR or coder fixes.
 
 **Glass Chrome Audit + Remediation (2026-04-16)** — Post-merge audit of PR #131 + followups + 5 remediation bundles shipped in parallel waves. Reports: `docs/review/glass-chrome-{architect,frontend,qa,test}-review.md`. Triage walked 31 findings one-at-a-time; 23 queued, 3 skipped (QA M3/M4/M5), 1 Future overridden (Frontend F1), ~11 deferred as Future with qualifiers preserved.
 
