@@ -78,6 +78,7 @@ interface UseToolResultLike {
     results?: Array<{
       agent?: string;
       tool?: string;
+      params?: Record<string, unknown>;
       success?: boolean;
       error?: string;
       data?: unknown;
@@ -165,7 +166,7 @@ function normalizeUseToolParams(toolCall: ToolCallLike): Record<string, unknown>
   return isRecord(parsed) ? parsed : {};
 }
 
-function normalizeUseToolResults(result: UseToolResultLike | undefined): Array<{ agent?: string; tool?: string; success?: boolean; error?: string; data?: unknown }> {
+function normalizeUseToolResults(result: UseToolResultLike | undefined): Array<{ agent?: string; tool?: string; params?: Record<string, unknown>; success?: boolean; error?: string; data?: unknown }> {
   return result?.data?.results || [];
 }
 
@@ -558,15 +559,18 @@ function buildUseToolGroup(toolCall: ToolCallLike): ToolDisplayGroup {
       const fallbackCall = Array.isArray(params.calls) ? params.calls[index] as UseToolCallLike | undefined : undefined;
       const fullTechnicalName = getInnerCallTechnicalName(fallbackCall, result) || technicalName;
       const metadata = getToolNameMetadata(fullTechnicalName);
+      const parameters = result.params;
       const status: ToolDisplayStatus = result.success === false ? 'failed' : 'completed';
       steps.push({
         id: `${toolCall.id || technicalName}_${index}`,
         displayName: formatToolDisplayLabel({
           technicalName: fullTechnicalName,
+          parameters,
           status,
           result: result.data
         }),
         technicalName: fullTechnicalName,
+        parameters,
         result: result.data,
         error: result.error,
         status,

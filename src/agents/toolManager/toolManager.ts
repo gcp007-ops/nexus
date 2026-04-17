@@ -11,6 +11,7 @@ import { BaseAgent } from '../baseAgent';
 import { IAgent } from '../interfaces/IAgent';
 import { GetToolsTool, UseToolTool } from './tools';
 import { ToolBatchExecutionService } from './services/ToolBatchExecutionService';
+import { ToolCliNormalizer } from './services/ToolCliNormalizer';
 
 /**
  * Schema data injected at startup for dynamic tool descriptions
@@ -41,6 +42,7 @@ export class ToolManagerAgent extends BaseAgent {
   private app: App;
   private allAgents: Map<string, IAgent>;
   private toolBatchExecutionService: ToolBatchExecutionService;
+  private toolCliNormalizer: ToolCliNormalizer;
 
   /**
    * Create a new ToolManagerAgent
@@ -61,10 +63,11 @@ export class ToolManagerAgent extends BaseAgent {
     // Default schema data if not provided
     const data: SchemaData = schemaData || { workspaces: [], customAgents: [], vaultRoot: [] };
     this.toolBatchExecutionService = new ToolBatchExecutionService(app, agentRegistry, data.workspaces);
+    this.toolCliNormalizer = new ToolCliNormalizer(agentRegistry);
 
     // Register the two tools with schema data
     this.registerTool(new GetToolsTool(agentRegistry, data));
-    this.registerTool(new UseToolTool(this.toolBatchExecutionService));
+    this.registerTool(new UseToolTool(this.toolBatchExecutionService, this.toolCliNormalizer));
   }
 
   /**

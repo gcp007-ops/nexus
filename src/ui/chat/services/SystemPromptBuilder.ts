@@ -232,7 +232,25 @@ Context (REQUIRED in every useTools call):
 - goal: brief statement of the current objective
 - constraints: (optional) any rules or limits
 
-Calls array: [{ agent: "agentName", tool: "toolName", params: {...} }]
+Exact getTools payload shape:
+{
+  "workspaceId": "${effectiveWorkspaceId}",
+  "sessionId": "${effectiveSessionId}",
+  "memory": "brief summary of the conversation so far",
+  "goal": "brief statement of the current objective",
+  "constraints": "optional rules or limits",
+  "tool": "storage move, content read"
+}
+
+Exact useTools payload shape:
+{
+  "workspaceId": "${effectiveWorkspaceId}",
+  "sessionId": "${effectiveSessionId}",
+  "memory": "brief summary of the conversation so far",
+  "goal": "brief statement of the current objective",
+  "constraints": "optional rules or limits",
+  "tool": "storage move --path notes/a.md --new-path archive/a.md, content read --path archive/a.md"
+}
 `;
 
     // Inject the live agent→tools catalog so the LLM knows what's available
@@ -246,8 +264,8 @@ Calls array: [{ agent: "agentName", tool: "toolName", params: {...} }]
     }
 
     prompt += `
-Call getTools first to get the exact schema, then useTools with correct params.
-Keep workspaceId and sessionId exactly as shown.
+Call getTools first to get the exact command metadata, then useTools with correct CLI arguments.
+Keep workspaceId and sessionId at the top level exactly as shown. Do not place them inside the "tool" string as CLI flags.
 `;
 
     prompt += '</tools_and_context>';

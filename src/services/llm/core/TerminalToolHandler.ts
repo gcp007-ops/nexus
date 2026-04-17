@@ -22,6 +22,7 @@ const TERMINAL_TOOLS = ['subagent', 'promptManager_subagent', 'promptManager.sub
 interface WrappedToolCallParams {
   task?: string;
   tools?: Record<string, string[]>;
+  tool?: string;
 }
 
 interface WrappedToolCall {
@@ -47,8 +48,25 @@ interface UseToolResult {
   };
 }
 
-function isWrappedToolCallParams(value: unknown): value is { calls?: WrappedToolCall[] } {
-  return typeof value === 'object' && value !== null && 'calls' in value;
+function isWrappedToolCallParams(value: unknown): value is { calls?: WrappedToolCall[]; tool?: string } {
+  return typeof value === 'object' && value !== null;
+}
+
+function isCliWrappedSubagent(toolValue: unknown): boolean {
+  if (typeof toolValue !== 'string') {
+    return false;
+  }
+
+  return /(^|,)\s*(prompt|prompt-manager|promptmanager)\s+subagent(\s|,|$)/i.test(toolValue);
+}
+
+function extractCliTask(toolValue: unknown): string | undefined {
+  if (typeof toolValue !== 'string') {
+    return undefined;
+  }
+
+  const taskMatch = toolValue.match(/--task\s+("([^"]*)"|'([^']*)'|([^-,][^,]*))/i);
+  return taskMatch?.[2] || taskMatch?.[3] || taskMatch?.[4]?.trim();
 }
 
 /**
@@ -66,11 +84,11 @@ export function checkForTerminalTool(toolCalls: ChatToolCall[]): TerminalToolRes
     // Check for subagent wrapped in toolManager_useTool
     let isWrappedSubagent = false;
     let wrappedResult: TerminalSubagentResult | null = null;
-      let wrappedParams: WrappedToolCallParams | undefined;
+    let wrappedParams: WrappedToolCallParams | undefined;
 
-    if (toolName === 'toolManager_useTool' || toolName.endsWith('useTool')) {
+    if (toolName === 'toolManager_useTool' || toolName === 'toolManager_useTools' || toolName.endsWith('useTool') || toolName.endsWith('useTools')) {
       // Try to get params from multiple sources
-      let params = toolCall.parameters as { calls?: WrappedToolCall[] } | undefined;
+      let params = toolCall.parameters as { calls?: WrappedToolCall[]; tool?: string } | undefined;
 
       // If parameters is empty, try parsing from function.arguments
       if (!params?.calls && toolCall.function?.arguments) {
@@ -86,26 +104,33 @@ export function checkForTerminalTool(toolCalls: ChatToolCall[]): TerminalToolRes
 
       const calls = params?.calls || [];
 
-      for (const call of calls) {
-        if (call.tool === 'subagent' || (call.agent === 'promptManager' && call.tool === 'subagent')) {
-          isWrappedSubagent = true;
-          wrappedParams = call.params;
+      if (calls.length > 0) {
+        for (const call of calls) {
+          if (call.tool === 'subagent' || (call.agent === 'promptManager' && call.tool === 'subagent')) {
+            isWrappedSubagent = true;
+            wrappedParams = call.params;
 
-          // Extract result from useTool's results array
-          // Structure is: { success, data: { results: [...] } }
-          const useToolResult = toolCall.result as UseToolResult | undefined;
-          const resultsArray = useToolResult?.data?.results;
+            // Extract result from useTool's results array
+            // Structure is: { success, data: { results: [...] } }
+            const useToolResult = toolCall.result as UseToolResult | undefined;
+            const resultsArray = useToolResult?.data?.results;
 
-          // Find the subagent result by index (matching position in calls array)
-          const callIndex = calls.indexOf(call);
-          if (resultsArray?.[callIndex]) {
-            wrappedResult = resultsArray[callIndex];
-          } else if (resultsArray?.[0]) {
-            // Fallback to first result
-            wrappedResult = resultsArray[0];
+            // Find the subagent result by index (matching position in calls array)
+            const callIndex = calls.indexOf(call);
+            if (resultsArray?.[callIndex]) {
+              wrappedResult = resultsArray[callIndex];
+            } else if (resultsArray?.[0]) {
+              // Fallback to first result
+              wrappedResult = resultsArray[0];
+            }
+            break;
           }
-          break;
         }
+      } else if (isCliWrappedSubagent(params?.tool)) {
+        isWrappedSubagent = true;
+        wrappedParams = { task: extractCliTask(params?.tool), tool: params?.tool };
+        const useToolResult = toolCall.result as UseToolResult | undefined;
+        wrappedResult = useToolResult?.data?.results?.[0] || null;
       }
     }
 

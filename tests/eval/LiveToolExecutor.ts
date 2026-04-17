@@ -22,6 +22,7 @@ import {
 } from './headless/HeadlessAgentStack';
 import { TestVaultManager } from './headless/TestVaultManager';
 import type { CapturedToolCall } from './types';
+import { ToolCliNormalizer } from '../../src/agents/toolManager/services/ToolCliNormalizer';
 
 export interface LiveToolExecutorOptions {
   /** Absolute path to the test vault directory on disk. */
@@ -149,6 +150,21 @@ export class LiveToolExecutor implements IToolExecutor {
                 args: (call.params ?? {}) as Record<string, unknown>,
                 id: `${toolId}_inner_${innerName}`,
               });
+            }
+          } else if (typeof args.tool === 'string') {
+            const cliNormalizer = new ToolCliNormalizer(this.stack.agentRegistry);
+            try {
+              const parsedCalls = cliNormalizer.normalizeExecutionCalls(args as never);
+              for (const call of parsedCalls) {
+                const innerName = `${call.agent}_${call.tool}`;
+                this.capturedCalls.push({
+                  name: innerName,
+                  args: call.params,
+                  id: `${toolId}_inner_${innerName}`,
+                });
+              }
+            } catch {
+              // Leave only the wrapper call captured if parsing fails.
             }
           }
 
