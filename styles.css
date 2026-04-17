@@ -3360,17 +3360,10 @@ body.is-mobile .message-action-btn.message-branch-next {
   height: 32px;
 }
 
-/* Dark mode adjustments */
-.theme-dark .message-branch-navigator {
-  border-right-color: var(--background-modifier-border-hover);
-}
-
 /* Mobile responsive */
 @media (max-width: 768px) {
   .message-branch-navigator {
     gap: 2px;
-    padding-right: 6px;
-    margin-right: 6px;
   }
 
   .message-branch-indicator {
