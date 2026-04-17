@@ -1028,8 +1028,13 @@ body.theme-light .message-content {
     overflow: visible;
 }
 
-.message-container.message-user .message-action-btn {
-    transform: translateY(8px);
+/* Needs compound-class specificity + !important to beat an equal-specificity
+   rule elsewhere in the cascade that was silently pinning transform — found
+   via nuclear-value diagnostic: plain .message-container.message-user
+   .message-action-btn { transform: translateY(Npx) } at (0,0,3,0) was not
+   applying, but this selector at (0,0,5,0)+!important wins. */
+.message-container.message-user .message-action-btn.message-action-btn.clickable-icon {
+    transform: translateY(8px) !important;
 }
 
 /* Assistant row: full width, padded to match content inset, left-aligned.
@@ -3289,8 +3294,8 @@ a:hover {
 .message-branch-navigator {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: -6px;
+  gap: 2px;
+  margin-left: -4px;
 }
 
 .message-branch-navigator-hidden {
@@ -3335,14 +3340,13 @@ a:hover {
   color: var(--text-faint);
 }
 
-/* Branch nav buttons keep a usable click target (24px) but the chevron is
-   aligned to the edge nearest the indicator so there's no visible free space
-   between chevron and "x/y". Prev's chevron hugs the button's right edge;
-   next's chevron hugs the button's left edge. */
+/* Branch nav buttons: sized close to the 12px chevron so there's no phantom
+   padding inside. Chevron edge-aligned toward the indicator (flex-end/start)
+   eliminates the remaining ~2px wasted space. Mobile bumps to 24 for tap. */
 .message-action-btn.message-branch-prev,
 .message-action-btn.message-branch-next {
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
 }
 /* !important + extra class repeat to outweigh Obsidian's .clickable-icon
    justify-content: center default (which otherwise re-centers the chevron). */
@@ -3356,8 +3360,8 @@ a:hover {
    edge-align so the chevrons still cluster tightly to the indicator. */
 body.is-mobile .message-action-btn.message-branch-prev,
 body.is-mobile .message-action-btn.message-branch-next {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
 }
 
 /* Mobile responsive */
