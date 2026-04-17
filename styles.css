@@ -965,7 +965,7 @@ body.theme-light .message-content {
 }
 
 .message-container.message-assistant {
-    margin-top: 0.28rem;
+    margin-top: 1.4rem;
 }
 
 .message-header {
@@ -999,7 +999,7 @@ body.theme-light .message-content {
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    gap: 0.36rem;
+    gap: 0.18rem;
     margin-top: 0.14rem;
     padding: 0;
     line-height: 1;
@@ -1009,7 +1009,6 @@ body.theme-light .message-content {
     box-shadow: none;
     opacity: 1;
     pointer-events: auto;
-    width: fit-content;
 }
 
 /* User row: align self left, full width, padded to match bubble inset,
@@ -1023,22 +1022,24 @@ body.theme-light .message-content {
     box-sizing: border-box;
     padding: 0 1.08rem;
     justify-content: flex-end;
-    gap: 0.22rem;
-    margin-top: -3px;
+    gap: 0.11rem;
+    margin-top: 10px;
     margin-left: 0;
     overflow: visible;
 }
 
-.message-container.message-user .message-action-btn {
-    transform: translateY(-1px);
-}
+/* User-message action buttons (edit, retry) get a plugin-unique class from
+   MessageBubble.ts — reserved for future styling that might need to bypass
+   cascade fighting. Currently no declarations; layout spacing lives on the
+   parent .message-actions-external via margin-top. */
 
 /* Assistant row: full width, padded to match content inset, left-aligned.
    Mockup line 2292-2297. */
 .message-container.message-assistant .message-actions-external {
     width: 100%;
     box-sizing: border-box;
-    padding: 0 1.08rem;
+    padding: 0 1.2rem;
+    margin-top: 4px;
 }
 
 /* Action button — ported from .mock-device--glass .minimal-action-btn
@@ -1066,64 +1067,61 @@ body.theme-light .message-content {
     stroke-width: 1.9;
 }
 
-.message-action-btn:hover {
-    background: var(--background-modifier-hover);
+/* Beat Obsidian's .clickable-icon defaults with a compound selector
+   (specificity (0,0,3,0) beats Obsidian's (0,0,2,0)) so no background
+   is ever painted on hover/active/focus — only the icon color changes. */
+.message-action-btn.message-action-btn:hover,
+.message-action-btn.clickable-icon:hover {
+    background: transparent !important;
     color: var(--text-normal);
 }
 
+.message-action-btn.message-action-btn:active,
+.message-action-btn.message-action-btn:focus-visible,
+.message-action-btn.clickable-icon:active,
+.message-action-btn.clickable-icon:focus-visible {
+    background: transparent !important;
+}
+
+.message-action-btn.message-action-btn:active,
+.message-action-btn.clickable-icon:active {
+    color: var(--interactive-accent);
+}
+
+.message-action-btn.message-action-btn:focus-visible,
+.message-action-btn.clickable-icon:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 1px;
+}
+
 .message-action-btn.copy-success {
-    background: var(--text-success);
-    color: white;
-    transform: scale(1.1);
+    color: var(--text-success);
+}
+
+.message-action-btn.message-edit-confirm:not(:hover):not(:active) {
+    color: var(--interactive-accent);
+}
+
+.message-action-btn.is-hidden {
+    display: none;
 }
 
 .message-edit-textarea {
     width: 100%;
     min-height: 60px;
-    padding: 0.5rem;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    background: var(--background-primary);
-    color: var(--text-normal);
+    padding: 0.5rem 0.75rem;
+    background: transparent;
+    border: none;
+    color: inherit;
     font-family: inherit;
     font-size: inherit;
     resize: vertical;
 }
 
-.message-edit-controls {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
-    justify-content: flex-end;
-}
-
-.message-edit-save,
-.message-edit-cancel {
-    padding: 0.4rem 0.8rem;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    transition: background-color 0.2s;
-}
-
-.message-edit-save {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent);
-    border: none;
-}
-
-.message-edit-save:hover {
-    background: var(--interactive-accent-hover);
-}
-
-.message-edit-cancel {
-    background: var(--background-secondary);
-    color: var(--text-normal);
-    border: 1px solid var(--background-modifier-border);
-}
-
-.message-edit-cancel:hover {
-    background: var(--background-modifier-hover);
+.message-edit-textarea:focus {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+    border-radius: 1.15rem;
 }
 
 /* Message content typography — ported from .mock-device--glass
@@ -3293,10 +3291,8 @@ a:hover {
 .message-branch-navigator {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding-right: 8px;
-  margin-right: 8px;
-  border-right: 1px solid var(--background-modifier-border);
+  gap: 2px;
+  margin-left: -4px;
 }
 
 .message-branch-navigator-hidden {
@@ -3330,7 +3326,6 @@ a:hover {
 /* Subtle hover effect for branch buttons */
 .message-action-btn.message-branch-prev:hover:not(:disabled),
 .message-action-btn.message-branch-next:hover:not(:disabled) {
-  background: var(--background-modifier-hover);
   color: var(--text-accent);
 }
 
@@ -3342,17 +3337,34 @@ a:hover {
   color: var(--text-faint);
 }
 
-/* Dark mode adjustments */
-.theme-dark .message-branch-navigator {
-  border-right-color: var(--background-modifier-border-hover);
+/* Branch nav buttons: sized close to the 12px chevron so there's no phantom
+   padding inside. Chevron edge-aligned toward the indicator (flex-end/start)
+   eliminates the remaining ~2px wasted space. Mobile bumps to 24 for tap. */
+.message-action-btn.message-branch-prev,
+.message-action-btn.message-branch-next {
+  width: 16px;
+  height: 16px;
+}
+/* !important + extra class repeat to outweigh Obsidian's .clickable-icon
+   justify-content: center default (which otherwise re-centers the chevron). */
+.message-action-btn.message-action-btn.message-branch-prev {
+  justify-content: flex-end !important;
+}
+.message-action-btn.message-action-btn.message-branch-next {
+  justify-content: flex-start !important;
+}
+/* Mobile touch-target override — restore comfortable tap size but keep the
+   edge-align so the chevrons still cluster tightly to the indicator. */
+body.is-mobile .message-action-btn.message-branch-prev,
+body.is-mobile .message-action-btn.message-branch-next {
+  width: 24px;
+  height: 24px;
 }
 
 /* Mobile responsive */
 @media (max-width: 768px) {
   .message-branch-navigator {
     gap: 2px;
-    padding-right: 6px;
-    margin-right: 6px;
   }
 
   .message-branch-indicator {
@@ -5631,8 +5643,8 @@ body.is-mobile .chat-send-button {
 
 /* Message action buttons - 44px touch targets for phones */
 body.is-mobile .message-action-btn {
-    width: 44px;
-    height: 44px;
+    width: 32px;
+    height: 32px;
     padding: 0;
     --icon-size: 16px;
 }
@@ -5656,19 +5668,22 @@ body.is-mobile .message-container.message-user .message-actions-external {
     gap: 0;
     height: 24px;
     min-height: 24px;
-    margin-top: -7px;
+    margin-top: 10px;
     padding: 0 0.72rem;
 }
 
 body.is-mobile .message-container.message-user .message-action-btn {
-    transform: translateY(-3px);
+    transform: translateY(2px);
 }
 
 /* Assistant messages: keep in corner but smaller on mobile */
 body.is-mobile .message-container.message-assistant .message-actions-external {
     top: 0.25rem;
     right: 0.25rem;
-    padding: 0 0.78rem;
+    padding: 0 0.95rem;
+    justify-content: flex-start;
+    width: fit-content;
+    margin-top: 4px;
 }
 
 body.is-mobile .message-container.message-assistant .message-action-btn {
@@ -5871,7 +5886,7 @@ body.is-mobile .message-container.message-assistant .message-bubble {
 }
 
 body.is-mobile .message-container.message-assistant {
-    margin-top: 0.35rem;
+    margin-top: 1.4rem;
 }
 
 body.is-mobile .tool-status-bar {
@@ -6966,16 +6981,6 @@ body.is-mobile .nexus-branch-task {
     display: none;
     width: 0;
     height: 0;
-}
-
-/* ------------------------------ */
-/* MESSAGE EDIT TEXTAREA          */
-/* ------------------------------ */
-
-.message-edit-textarea {
-    width: 100%;
-    min-height: 60px;
-    resize: vertical;
 }
 
 /* ------------------------------ */

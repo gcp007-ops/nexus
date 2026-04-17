@@ -135,21 +135,21 @@ export class MessageBubble extends Component {
       // Edit button for user messages
       if (this.onEdit) {
         const editBtn = actions.createEl('button', {
-          cls: 'message-action-btn clickable-icon',
+          cls: 'message-action-btn clickable-icon nexus-user-msg-action',
           attr: { title: 'Edit message', 'aria-label': 'Edit message' }
         });
         setIcon(editBtn, 'edit');
         const onEdit = this.onEdit;
         this.registerDomEvent(editBtn, 'click', () => {
           if (onEdit) {
-            MessageEditController.handleEdit(this.message, this.element, onEdit, this);
+            MessageEditController.handleEdit(this.message, this.element, onEdit, this.onRetry.bind(this), this);
           }
         });
       }
 
       // Retry button for user messages
       const retryBtn = actions.createEl('button', {
-        cls: 'message-action-btn clickable-icon',
+        cls: 'message-action-btn clickable-icon nexus-user-msg-action',
         attr: { title: 'Retry message', 'aria-label': 'Retry message' }
       });
       setIcon(retryBtn, 'rotate-ccw');
@@ -457,13 +457,11 @@ export class MessageBubble extends Component {
     }
 
     const originalTitle = button.getAttribute('title') || '';
-    setIcon(button, 'check');
     button.setAttribute('title', 'Copied!');
     button.classList.add('copy-success');
 
     this.copyFeedbackTimeout = setTimeout(() => {
       this.copyFeedbackTimeout = null;
-      setIcon(button, 'copy');
       button.setAttribute('title', originalTitle);
       button.classList.remove('copy-success');
     }, 1500);
