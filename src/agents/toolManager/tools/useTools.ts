@@ -54,7 +54,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
         },
         tool: {
           type: 'string',
-          description: 'CLI-style tool command string. Supports one or more commands separated by commas. Example: "storage move --path notes/a.md --new-path archive/a.md, content read --path archive/a.md".'
+          description: 'CLI-style tool command string. Supports one or more commands separated by commas. Example: \'content read "notes/today.md"\'. For payloads containing literal quotes, newlines, commas, leading "--", or YAML frontmatter "---" markers (anything shell-fragile), use heredoc syntax — content between <<< and >>> is preserved verbatim with no escape required: \'content write "notes/post.md" <<<---\\ntitle: My Post\\n---\\n\\nBody with "literal quotes" and newlines.\\n>>>\'. If the payload itself contains >>> use named heredoc instead: \'content write "x.md" <<BODY ... BODY\' (BODY = uppercase 1-32 chars). Multiple commands separated by commas are safe even when a heredoc body contains commas — the raw block is opaque to the comma splitter.'
         }
       },
       required: ['memory', 'goal', 'tool']

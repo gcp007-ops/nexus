@@ -426,6 +426,231 @@ export function parseCliForDisplay(toolString: string): CliDisplaySegment[] {
   });
 }
 
+// ===========================================================================
+// Heredoc-style raw content blocks
+// ===========================================================================
+//
+// Anonymous: `<<<...>>>` — content captured verbatim until the next `>>>`.
+// Named:     `<<NAME...NAME` — content captured until matching uppercase NAME.
+//
+// Pre-processed BEFORE tokenization so that the literal payload never reaches
+// the shell tokenizer. The block is replaced by a placeholder token (a plain
+// identifier) that flows through tokenize/parse as a normal positional value;
+// the placeholder is then swapped back for the verbatim content after the
+// command parameters are resolved.
+//
+// This is the explicit escape hatch for payloads with shell-fragile characters
+// (literal quotes, newlines, commas, leading `--`, frontmatter `---`). A
+// silent recovery path (`tryGreedyLastPositional`, see ToolCliNormalizer) acts
+// as a safety net when the LLM emits unescaped quotes inside a regular CLI
+// string.
+
+export interface RawBlock {
+  placeholder: string;
+  content: string;
+}
+
+const HEREDOC_PLACEHOLDER_PREFIX = '__NEXUS_RAW_BLOCK_';
+const HEREDOC_PLACEHOLDER_SUFFIX = '__';
+
+/**
+ * Pre-process a CLI input string to extract heredoc raw blocks. Returns the
+ * input with blocks replaced by stable identifier placeholders, plus the
+ * blocks for later restoration. Throws on unclosed blocks.
+ *
+ * Order matters: named heredocs (`<<NAME...NAME`) are matched before anonymous
+ * (`<<<...>>>`) so that `<<NAME...NAME` is not partially consumed by the
+ * anonymous matcher.
+ */
+export function extractRawBlocks(input: string): { processed: string; blocks: RawBlock[] } {
+  const blocks: RawBlock[] = [];
+  let processed = input;
+  let blockIdx = 0;
+
+  // Named heredoc: <<NAME ... NAME (NAME = 1–32 uppercase letters/digits/underscore)
+  // We scan opens left-to-right and pair each with the next standalone NAME boundary.
+  while (true) {
+    const openMatch = /<<([A-Z][A-Z0-9_]{0,31})\b/.exec(processed);
+    if (!openMatch) break;
+
+    const name = openMatch[1];
+    const openIdx = openMatch.index;
+    const contentStart = openIdx + openMatch[0].length;
+    const closeRegex = new RegExp(`\\b${name}\\b`, 'g');
+    closeRegex.lastIndex = contentStart;
+    const closeMatch = closeRegex.exec(processed);
+
+    if (!closeMatch) {
+      throw new Error(
+        `Unclosed heredoc block "<<${name}" at position ${openIdx}. Expected "${name}" to close.`
+      );
+    }
+
+    const content = processed.substring(contentStart, closeMatch.index);
+    const placeholder = `${HEREDOC_PLACEHOLDER_PREFIX}${blockIdx++}${HEREDOC_PLACEHOLDER_SUFFIX}`;
+    blocks.push({ placeholder, content });
+    processed =
+      processed.substring(0, openIdx) +
+      placeholder +
+      processed.substring(closeMatch.index + name.length);
+  }
+
+  // Anonymous heredoc: <<<...>>> (lazy match, stops at first `>>>`).
+  processed = processed.replace(/<<<([\s\S]*?)>>>/g, (_full: string, content: string) => {
+    const placeholder = `${HEREDOC_PLACEHOLDER_PREFIX}${blockIdx++}${HEREDOC_PLACEHOLDER_SUFFIX}`;
+    blocks.push({ placeholder, content });
+    return placeholder;
+  });
+
+  // Detect orphan `<<<` (open without close).
+  const orphanIdx = processed.indexOf('<<<');
+  if (orphanIdx !== -1) {
+    throw new Error(
+      `Unclosed heredoc block "<<<" at position ${orphanIdx}. Expected ">>>" to close.`
+    );
+  }
+
+  return { processed, blocks };
+}
+
+/**
+ * Restore raw block placeholders to their verbatim content. Used after the
+ * parse to swap placeholders inside string param values for the original
+ * heredoc payload.
+ */
+export function restoreRawBlocks(value: string, blocks: RawBlock[]): string {
+  if (blocks.length === 0) return value;
+  let restored = value;
+  for (const block of blocks) {
+    if (restored === block.placeholder) {
+      // Exact match — return content directly to preserve identity.
+      return block.content;
+    }
+    if (restored.includes(block.placeholder)) {
+      restored = restored.split(block.placeholder).join(block.content);
+    }
+  }
+  return restored;
+}
+
+function restoreRawBlocksInParams(
+  params: Record<string, unknown>,
+  blocks: RawBlock[]
+): Record<string, unknown> {
+  if (blocks.length === 0) return params;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'string') {
+      out[key] = restoreRawBlocks(value, blocks);
+    } else if (Array.isArray(value)) {
+      out[key] = (value as unknown[]).map((item: unknown): unknown =>
+        typeof item === 'string' ? restoreRawBlocks(item, blocks) : item
+      );
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+// ===========================================================================
+// Greedy fallback for last string positional
+// ===========================================================================
+//
+// When the LLM emits a CLI string with literal `"` inside the last positional
+// (no backslash escape), the tokenizer closes the outer quote at the first
+// internal `"` and the rest of the payload spills into orphan tokens, which
+// raises "Too many positional arguments". This recovery scans the original
+// segment for non-escaped `"` positions and rebuilds the last string
+// positional greedily from the (N-th) open quote to the very last quote in the
+// segment, where N is the count of string positionals declared by the schema.
+//
+// Preconditions for greedy mode:
+//   - schema declares ≥ 1 string positional
+//   - segment contains ≥ 2 * N non-escaped quotes
+//   - segment contains no flags (`--foo`) — flags would shift quote ownership
+//     in ways the greedy heuristic cannot disambiguate; fall back to error.
+
+function findUnescapedQuotePositions(segment: string): number[] {
+  const positions: number[] = [];
+  let escaped = false;
+  for (let i = 0; i < segment.length; i += 1) {
+    const c = segment[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (c === '"') positions.push(i);
+  }
+  return positions;
+}
+
+function segmentContainsUnquotedFlag(segment: string, quotePositions: number[]): boolean {
+  // Build a quoted-region predicate.
+  const inQuote = (idx: number): boolean => {
+    let count = 0;
+    for (const p of quotePositions) {
+      if (p < idx) count += 1;
+      else break;
+    }
+    return count % 2 === 1;
+  };
+  // Look for `--` preceded by whitespace and outside any quoted region.
+  for (let i = 0; i < segment.length - 1; i += 1) {
+    if (segment[i] === '-' && segment[i + 1] === '-') {
+      const prev = i === 0 ? ' ' : segment[i - 1];
+      if (/\s/.test(prev) && !inQuote(i)) return true;
+    }
+  }
+  return false;
+}
+
+function tryGreedyLastStringPositional(
+  segment: string,
+  cliSchema: CliToolSchema
+): Record<string, unknown> | null {
+  const stringPositionals = cliSchema.arguments.filter(
+    a => a.positional && a.type === 'string'
+  );
+  if (stringPositionals.length === 0) return null;
+
+  const quotes = findUnescapedQuotePositions(segment);
+  // Need at least 2 quotes per string positional, and the last positional's
+  // open is at index 2*(N-1).
+  if (quotes.length < 2 * stringPositionals.length) return null;
+
+  // If the segment carries flags, skip greedy — flag/value pairing can shift
+  // which quote pair belongs to which positional, and silent recovery would
+  // mask user intent. The user should escape quotes or use heredoc.
+  if (segmentContainsUnquotedFlag(segment, quotes)) return null;
+
+  // Validate: all non-string positionals must already be reachable from the
+  // unquoted prefix (they would not be wrapped in quotes). Skipped here for
+  // simplicity — most write-style tools have only string positionals.
+  const params: Record<string, unknown> = {};
+  for (let i = 0; i < stringPositionals.length; i += 1) {
+    const arg = stringPositionals[i];
+    const openIdx = quotes[2 * i];
+    const closeIdx =
+      i === stringPositionals.length - 1
+        ? quotes[quotes.length - 1] // greedy: last positional consumes through final quote
+        : quotes[2 * i + 1];
+    if (openIdx >= closeIdx) return null;
+    params[arg.name] = unescapeQuotedContent(segment.substring(openIdx + 1, closeIdx));
+  }
+
+  // Validate required args were filled.
+  for (const arg of cliSchema.arguments) {
+    if (arg.required && params[arg.name] === undefined) return null;
+  }
+
+  return params;
+}
+
 export class ToolCliNormalizer {
   constructor(private agentRegistry: Map<string, IAgent>) {}
 
@@ -488,7 +713,17 @@ export class ToolCliNormalizer {
       throw new Error('tool is required. Use a CLI command string such as "content read --path notes/today.md".');
     }
 
-    return splitTopLevelSegments(command).map(segment => this.parseCommandSegment(segment));
+    // Pre-process heredoc raw blocks BEFORE tokenization, so that literal
+    // payload (with quotes, newlines, commas, frontmatter `---`, etc.) never
+    // reaches the shell tokenizer. Blocks travel as identifier placeholders
+    // and are restored after the parse resolves the parameters.
+    const { processed, blocks } = extractRawBlocks(command);
+
+    return splitTopLevelSegments(processed).map(segment => {
+      const parsed = this.parseCommandSegment(segment);
+      parsed.params = restoreRawBlocksInParams(parsed.params, blocks);
+      return parsed;
+    });
   }
 
   buildCliSchema(agentName: string, tool: ToolLike): CliToolSchema {
@@ -716,6 +951,22 @@ export class ToolCliNormalizer {
 
       const positional = positionalArgs[positionalIndex];
       if (!positional) {
+        // Greedy fallback: when the LLM emits a quoted positional payload that
+        // contains literal `"` (no backslash escape), the tokenizer closes the
+        // outer quote at the first internal `"` and the rest of the payload
+        // becomes orphan tokens. If the schema's last positional is type
+        // `string`, recover by re-reading the segment and capturing everything
+        // between the last positional's open `"` and the last `"` in the
+        // segment. This is silent recovery — for explicit raw payloads, prefer
+        // heredoc syntax (<<<...>>>).
+        const greedy = tryGreedyLastStringPositional(segment, cliSchema);
+        if (greedy !== null) {
+          return {
+            agent: resolved.agentName,
+            tool: resolved.toolSlug,
+            params: greedy,
+          };
+        }
         throw new Error(`Too many positional arguments for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
       }
 

@@ -696,6 +696,135 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       expect(call.params.paths).toEqual(['a', 'b']);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Heredoc raw content blocks — explicit escape hatch (LOCAL FORK ONLY)
+  // -------------------------------------------------------------------------
+  //
+  // Anonymous (<<<...>>>) and named (<<NAME...NAME) blocks are pre-extracted
+  // before tokenization, so payload contents (literal quotes, newlines,
+  // commas, --prefixes, frontmatter ---) reach the parameter unchanged.
+  //
+  // Maintainer ProfSynapse intentionally NOT included this in upstream PR #165
+  // ("warrants a separate design discussion"). Kept local in our fork as a
+  // conscious divergence — useful for the daily ThinkBox vault workflow.
+
+  describe('normalizeExecutionCalls — heredoc raw blocks', () => {
+    it('anonymous heredoc preserves literal newlines and quotes', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "notes/post.md" <<<---\nnoteType: nota\n---\n\nBody with "literal quotes" and a comma, here.\n>>>',
+      });
+      expect(call.params.path).toBe('notes/post.md');
+      expect(call.params.content).toBe(
+        '---\nnoteType: nota\n---\n\nBody with "literal quotes" and a comma, here.\n'
+      );
+    });
+
+    it('anonymous heredoc with leading dashes does not get classified as flag', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "f.md" <<<--leading-dashes-content>>>',
+      });
+      expect(call.params.content).toBe('--leading-dashes-content');
+    });
+
+    it('named heredoc allows >>> inside body', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<BODY contains >>> safely BODY',
+      });
+      expect(call.params.content).toBe(' contains >>> safely ');
+    });
+
+    it('comma inside heredoc body does NOT split commands', () => {
+      const calls = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content read "a.md", content write "b.md" <<<has, commas, inside>>>',
+      });
+      expect(calls).toHaveLength(2);
+      expect(calls[0].params.path).toBe('a.md');
+      expect(calls[1].params.path).toBe('b.md');
+      expect(calls[1].params.content).toBe('has, commas, inside');
+    });
+
+    it('multiple heredocs in different commands are restored independently', () => {
+      const calls = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "a.md" <<<one>>>, content write "b.md" <<<two>>>',
+      });
+      expect(calls[0].params.content).toBe('one');
+      expect(calls[1].params.content).toBe('two');
+    });
+
+    it('unclosed anonymous heredoc throws with position', () => {
+      expect(() =>
+        makeNormalizer().normalizeExecutionCalls({
+          tool: 'content write "x.md" <<<missing close',
+        })
+      ).toThrow(/Unclosed heredoc block "<<<" at position/);
+    });
+
+    it('unclosed named heredoc throws naming the block', () => {
+      expect(() =>
+        makeNormalizer().normalizeExecutionCalls({
+          tool: 'content write "x.md" <<BODY no closing tag here',
+        })
+      ).toThrow(/Unclosed heredoc block "<<BODY".*Expected "BODY"/);
+    });
+
+    it('heredoc empty body produces empty string', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<<>>>',
+      });
+      expect(call.params.content).toBe('');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Greedy fallback for last string positional — silent recovery (LOCAL FORK)
+  // -------------------------------------------------------------------------
+  //
+  // When the LLM emits a CLI string with literal `"` inside the last positional
+  // (no backslash escape), the tokenizer closes the outer quote at the first
+  // internal `"` and the rest spills into orphan tokens. The greedy fallback
+  // re-reads the segment and rebuilds the last string positional from the open
+  // quote to the very last quote in the segment.
+  //
+  // Maintainer ProfSynapse: same status as heredoc — local divergence only.
+
+  describe('normalizeExecutionCalls — greedy fallback for last string positional', () => {
+    it('recovers content with unescaped literal quotes inside', () => {
+      // Repro of the PERFIL-Lucas pattern: literal `"` before/after whitespace
+      // makes the tokenizer close the outer quote at the first internal `"`
+      // and spawn orphan tokens. Greedy fallback rebuilds the last positional
+      // by scanning the original segment for non-escaped quotes.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "lucas.md" "frontmatter body ("É a") more text"',
+      });
+      expect(call.params.path).toBe('lucas.md');
+      expect(call.params.content).toBe('frontmatter body ("É a") more text');
+    });
+
+    it('recovers content with frontmatter and unescaped quotes', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "post.md" "---\ntitle: ok\n---\n\nQuote: "É a aplicação." done."',
+      });
+      expect(call.params.path).toBe('post.md');
+      expect(call.params.content).toBe('---\ntitle: ok\n---\n\nQuote: "É a aplicação." done.');
+    });
+
+    it('does NOT trigger when escapes are correct (no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" "say \\"hi\\""',
+      });
+      expect(call.params.content).toBe('say "hi"');
+    });
+
+    it('does NOT trigger when segment has unquoted flags (refuse silent recovery)', () => {
+      // Flags would shift quote ownership; greedy heuristic refuses to guess.
+      expect(() =>
+        makeNormalizer().normalizeExecutionCalls({
+          tool: 'content write --path "x.md" "body" "extra "literal" here"',
+        })
+      ).toThrow(/Too many positional arguments/);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
