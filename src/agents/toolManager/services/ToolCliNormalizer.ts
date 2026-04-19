@@ -144,6 +144,11 @@ export function tokenize(input: string): string[] {
   let current = '';
   let quote: '"' | '\'' | null = null;
   let escaped = false;
+  // Tracks whether we have started a token during the current run — needed so
+  // that a bare `""` emits an empty-string token rather than being silently
+  // dropped (which would let downstream flag/positional parsing consume the
+  // wrong next token).
+  let hasToken = false;
 
   for (const char of input) {
     if (escaped) {
@@ -169,21 +174,24 @@ export function tokenize(input: string): string[] {
 
     if (char === '"' || char === '\'') {
       quote = char;
+      hasToken = true;
       continue;
     }
 
     if (/\s/.test(char)) {
-      if (current.length > 0) {
+      if (hasToken || current.length > 0) {
         tokens.push(unescapeQuotedContent(current));
         current = '';
+        hasToken = false;
       }
       continue;
     }
 
     current += char;
+    hasToken = true;
   }
 
-  if (current.length > 0) {
+  if (hasToken || current.length > 0) {
     tokens.push(unescapeQuotedContent(current));
   }
 
