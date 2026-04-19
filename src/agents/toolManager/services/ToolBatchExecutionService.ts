@@ -368,9 +368,14 @@ export class ToolBatchExecutionService {
     toolSlug: string | undefined,
     params: Record<string, unknown>
   ): Record<string, unknown> {
+    const defaulted: Record<string, unknown> = {
+      ...params,
+      workspaceId: params.workspaceId || context.workspaceId
+    };
+
     if (agentName === 'promptManager' && toolSlug === 'generateImage') {
       return {
-        ...params,
+        ...defaulted,
         provider: params.provider || context.imageProvider,
         model: params.model || context.imageModel
       };
@@ -378,13 +383,13 @@ export class ToolBatchExecutionService {
 
     if (agentName === 'ingestManager' && toolSlug === 'ingest') {
       return {
-        ...params,
+        ...defaulted,
         transcriptionProvider: params.transcriptionProvider || context.transcriptionProvider,
         transcriptionModel: params.transcriptionModel || context.transcriptionModel
       };
     }
 
-    return params;
+    return defaulted;
   }
 
   private formatUseToolResult(results: ToolCallResult[]): UseToolResult {
