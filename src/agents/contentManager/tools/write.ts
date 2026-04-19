@@ -54,8 +54,17 @@ export class WriteTool extends BaseTool<WriteParams, WriteResult> {
       const { content, overwrite = false } = params;
       let { path } = params;
 
-      // Normalize empty/root paths - generate a filename if only directory is specified
-      if (!path || path === '/' || path === '.') {
+      // Reject empty/whitespace path explicitly. Silently rewriting '' to
+      // untitled-<timestamp>.md in the vault root hid callers that had
+      // dropped the path by mistake and left orphan files behind.
+      if (typeof path !== 'string' || path.trim() === '') {
+        return this.prepareResult(false, undefined,
+          'path must be a non-empty string. Pass "/" or "." to let Obsidian pick a filename in the vault root.'
+        );
+      }
+
+      // Normalize root/dot paths - generate a filename if only directory is specified
+      if (path === '/' || path === '.') {
         const timestamp = Date.now();
         path = `untitled-${timestamp}.md`;
       } else if (path.endsWith('/') || path.endsWith('.')) {
