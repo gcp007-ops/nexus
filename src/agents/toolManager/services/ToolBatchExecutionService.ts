@@ -368,9 +368,20 @@ export class ToolBatchExecutionService {
     toolSlug: string | undefined,
     params: Record<string, unknown>
   ): Record<string, unknown> {
+    // Propagate envelope workspaceId into tool params by default. Handlers that
+    // read params.workspaceId directly (e.g. taskManager.createProject /
+    // listProjects, memoryManager.runWorkflow) previously hard-failed with
+    // "workspaceId is required" because the CLI parser strips workspaceId from
+    // tool schemas (it lives at envelope level) and no layer was merging it
+    // back in. Tools that ignore params.workspaceId are unaffected.
+    const defaulted: Record<string, unknown> = {
+      ...params,
+      workspaceId: params.workspaceId || context.workspaceId
+    };
+
     if (agentName === 'promptManager' && toolSlug === 'generateImage') {
       return {
-        ...params,
+        ...defaulted,
         provider: params.provider || context.imageProvider,
         model: params.model || context.imageModel
       };
@@ -378,13 +389,13 @@ export class ToolBatchExecutionService {
 
     if (agentName === 'ingestManager' && toolSlug === 'ingest') {
       return {
-        ...params,
+        ...defaulted,
         transcriptionProvider: params.transcriptionProvider || context.transcriptionProvider,
         transcriptionModel: params.transcriptionModel || context.transcriptionModel
       };
     }
 
-    return params;
+    return defaulted;
   }
 
   private formatUseToolResult(results: ToolCallResult[]): UseToolResult {
