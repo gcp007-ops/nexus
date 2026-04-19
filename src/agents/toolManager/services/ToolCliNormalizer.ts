@@ -201,6 +201,14 @@ export function tokenizeWithMeta(input: string): QuotedToken[] {
     hasToken = true;
   }
 
+  // EC-2: an unclosed quote that swallows everything to end-of-input is
+  // silent data corruption — in a multi-segment call it would absorb later
+  // commands. Throw loud so the caller sees the malformed input.
+  if (quote !== null) {
+    const quoteName = quote === '"' ? 'double' : 'single';
+    throw new Error(`Unclosed ${quoteName} quote in segment "${input}".`);
+  }
+
   if (hasToken || current.length > 0) {
     tokens.push({ value: unescapeQuotedContent(current), wasQuoted });
   }
@@ -214,6 +222,11 @@ export function tokenize(input: string): string[] {
 
 function coerceValue(raw: string, type: string): unknown {
   if (type === 'number' || type === 'integer') {
+    // EC-4: `Number("")` is 0 in JS, which silently turns an empty-string flag
+    // value into a valid 0 instead of letting schema validation reject it.
+    // Same for whitespace-only. Keep the raw string so the schema layer sees
+    // a type mismatch (or "missing required" for required slots).
+    if (raw.trim() === '') return raw;
     const parsed = Number(raw);
     return Number.isNaN(parsed) ? raw : parsed;
   }
@@ -224,18 +237,23 @@ function coerceValue(raw: string, type: string): unknown {
   }
 
   if (type.startsWith('array<')) {
+    // EC-3: `array<X>` must produce `X[]`, not `string[]`. Per-item coerce
+    // every element so `array<number>` of "1,2,3" yields [1,2,3] etc. The
+    // previous JSON-path early-return only honored the all-strings case;
+    // dropped here so JSON-typed items (numbers, objects) flow through.
+    const itemType = type.slice('array<'.length, -1);
     const trimmed = raw.trim();
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       try {
         const parsed: unknown = JSON.parse(trimmed);
-        if (Array.isArray(parsed) && parsed.every((item: unknown) => typeof item === 'string')) {
-          return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: unknown) => coerceArrayItem(item, itemType));
         }
       } catch {
         // Fall through to CSV split for malformed JSON.
       }
     }
-    return splitCsvRespectingQuotes(raw);
+    return splitCsvRespectingQuotes(raw).map(item => coerceValue(item, itemType));
   }
 
   if (type === 'object') {
@@ -247,6 +265,13 @@ function coerceValue(raw: string, type: string): unknown {
   }
 
   return raw;
+}
+
+function coerceArrayItem(item: unknown, itemType: string): unknown {
+  // JSON-parsed items already have their target type (number, boolean, object).
+  // Only string items need to be passed through coerceValue for parsing.
+  if (typeof item === 'string') return coerceValue(item, itemType);
+  return item;
 }
 
 /**
@@ -537,12 +562,26 @@ export class ToolCliNormalizer {
       const token = tokens[index];
       const isFlag = !token.wasQuoted && token.value.startsWith('--');
       if (isFlag) {
-        const normalizedFlag = token.value.slice(2);
+        // EC-5: GNU long-option syntax `--flag=value`. Split before the
+        // context/no-/lookup checks so they all see the bare flag name.
+        // Multiple `=` characters keep the first as the separator so
+        // `--label=foo=bar` yields flag="label", value="foo=bar".
+        let normalizedFlag = token.value.slice(2);
+        let inlineValue: string | undefined;
+        const equalsIdx = normalizedFlag.indexOf('=');
+        if (equalsIdx >= 0) {
+          inlineValue = normalizedFlag.slice(equalsIdx + 1);
+          normalizedFlag = normalizedFlag.slice(0, equalsIdx);
+        }
+
         if (CONTEXT_FLAG_NAMES.has(normalizedFlag)) {
           throw new Error(`Do not include --${normalizedFlag} inside "tool". Keep context fields at the top level of useTools/getTools.`);
         }
 
         if (normalizedFlag.startsWith('no-')) {
+          if (inlineValue !== undefined) {
+            throw new Error(`Negation flag "--${normalizedFlag}" cannot be combined with =value.`);
+          }
           const boolArg = cliSchema.arguments.find(arg => arg.flag === `--${normalizedFlag.slice(3)}` && arg.type === 'boolean');
           if (!boolArg) {
             throw new Error(`Unknown flag "${token.value}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
@@ -551,12 +590,21 @@ export class ToolCliNormalizer {
           continue;
         }
 
-        const arg = cliSchema.arguments.find(item => item.flag === token.value);
+        const flagSpec = `--${normalizedFlag}`;
+        const arg = cliSchema.arguments.find(item => item.flag === flagSpec);
         if (!arg) {
           throw new Error(`Unknown flag "${token.value}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
         }
 
         if (arg.type === 'boolean') {
+          if (inlineValue !== undefined) {
+            // EC-5: inline value for boolean must be the canonical literal.
+            if (inlineValue !== 'true' && inlineValue !== 'false') {
+              throw new Error(`Boolean flag "${flagSpec}" only accepts =true or =false, got "${inlineValue}".`);
+            }
+            params[arg.name] = inlineValue === 'true';
+            continue;
+          }
           // §C.2/§C.3: accept an unquoted `true`/`false` literal as the flag
           // value if it follows the flag. Quoted literals stay as positional
           // values (so `--bool "true"` means bool=true + positional "true",
@@ -571,13 +619,25 @@ export class ToolCliNormalizer {
           continue;
         }
 
-        const next = tokens[index + 1];
-        if (next === undefined) {
-          throw new Error(`Flag "${token.value}" requires a value.`);
+        let value: string;
+        if (inlineValue !== undefined) {
+          value = inlineValue;
+        } else {
+          const next = tokens[index + 1];
+          if (next === undefined) {
+            throw new Error(`Flag "${flagSpec}" requires a value.`);
+          }
+          // EC-1: reject a flag value that is itself a flag. Quoted positional
+          // flag-likes (e.g., `--label "--important"`) stay legal because
+          // wasQuoted=true is the explicit "this is data, not a flag" signal.
+          if (!next.wasQuoted && next.value.startsWith('--')) {
+            throw new Error(`Flag "${flagSpec}" requires a value, got flag "${next.value}".`);
+          }
+          value = next.value;
+          index += 1;
         }
 
-        params[arg.name] = coerceValue(next.value, arg.type);
-        index += 1;
+        params[arg.name] = coerceValue(value, arg.type);
         continue;
       }
 

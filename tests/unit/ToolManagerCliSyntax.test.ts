@@ -19,7 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHeadlessAgentStack, HeadlessAgentStackResult } from '../eval/headless/HeadlessAgentStack';
 import { TestVaultManager } from '../eval/headless/TestVaultManager';
-import { ToolCliNormalizer, parseCliForDisplay } from '../../src/agents/toolManager/services/ToolCliNormalizer';
+import { ToolCliNormalizer, parseCliForDisplay, tokenizeWithMeta } from '../../src/agents/toolManager/services/ToolCliNormalizer';
 import type { IAgent } from '../../src/agents/interfaces/IAgent';
 import type { ITool } from '../../src/agents/interfaces/ITool';
 
@@ -180,7 +180,10 @@ function buildStubRegistry(): Map<string, IAgent> {
   ]);
 
   // numericAgent → convert(count: integer/number, factor: number, enabled: boolean, tags: array<string>, config: object)
-  // Used to cover every coerceValue branch.
+  // Used to cover every coerceValue branch. `pages: array<integer>`,
+  // `weights: array<number>`, and `objects: array<object>` were added for the
+  // EC-3 typed-array coverage; they are optional so they only bind when the
+  // test explicitly passes the flag.
   const coerceAgent = makeStubAgent('numericAgent', [
     makeStubTool('convert', {
       type: 'object',
@@ -189,6 +192,9 @@ function buildStubRegistry(): Map<string, IAgent> {
         factor: { type: 'number' },
         enabled: { type: 'boolean' },
         tags: { type: 'array', items: { type: 'string' } },
+        pages: { type: 'array', items: { type: 'integer' } },
+        weights: { type: 'array', items: { type: 'number' } },
+        objects: { type: 'array', items: { type: 'object' } },
         config: { type: 'object' },
         label: { type: 'string' },
       },
@@ -961,5 +967,250 @@ describe('parseCliForDisplay — display-path inheritance of parser fixes', () =
   it('flag without value displays as boolean true', () => {
     const [segment] = parseCliForDisplay('storage list --recursive');
     expect(segment.parameters.recursive).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-audit edge cases (EC-1..EC-5) — see docs/plans/cli-parser-edge-cases-plan.md
+// ---------------------------------------------------------------------------
+
+describe('EC-1: non-bool flag rejects a flag-like value as its argument', () => {
+  // Symmetric to the boolean peek (§C.2/§C.3) that landed in PR #165: the
+  // bool branch checks for true/false before consuming `next`, but the
+  // non-bool branch used to trust `tokens[index + 1]` blindly. So
+  // `content write --path --content "body"` silently set path="--content"
+  // and then dropped "body" into the content slot. EC-1 throws instead.
+
+  it('throws when next token is an unquoted flag', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write --path --content "body"',
+      })
+    );
+    expect(err.message).toMatch(/Flag "--path" requires a value, got flag "--content"/);
+  });
+
+  it('still allows a quoted positional whose text starts with -- as a flag value', () => {
+    // wasQuoted=true is the explicit "this is data, not a flag" signal, so
+    // a deliberate quoted `--important` literal stays legal.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label "--important"',
+    });
+    expect(call.params.label).toBe('--important');
+  });
+
+  it('does not falsely reject a value that happens to contain --', () => {
+    // Unquoted `--` later in the string is fine as long as the *whole token*
+    // is not flag-like (i.e., starts with --).
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label foo--bar',
+    });
+    expect(call.params.label).toBe('foo--bar');
+  });
+});
+
+describe('EC-2: tokenizer throws on unclosed quote at end of input', () => {
+  // tokenizeWithMeta enters quote mode and never re-emits if the closing
+  // quote never arrives. The end-of-input fallback used to push whatever
+  // accumulated; in a multi-segment call the unclosed quote silently
+  // swallowed subsequent commands. EC-2 throws loud instead.
+
+  it('throws on a single double-quote with no close', () => {
+    expect(() => tokenizeWithMeta('content write "x.md" "unclosed'))
+      .toThrow(/Unclosed double quote in segment/);
+  });
+
+  it('throws on a single single-quote with no close', () => {
+    expect(() => tokenizeWithMeta("storage list 'unclosed"))
+      .toThrow(/Unclosed single quote in segment/);
+  });
+
+  it('propagates the throw through the execution path', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" "unclosed',
+      })
+    );
+    expect(err.message).toMatch(/Unclosed double quote in segment/);
+  });
+
+  it('matched quotes still tokenize cleanly (regression guard)', () => {
+    expect(() => tokenizeWithMeta('content write "x.md" "body"')).not.toThrow();
+  });
+});
+
+describe('EC-3: array<X> coerces every element to X', () => {
+  // Previously coerceValue's array<...> branch returned string[] for every
+  // item type except the all-strings JSON case. So array<integer>/array<number>
+  // tools would receive ["1","2","3"] and trip a downstream type error. EC-3
+  // per-item coerces using the items.type extracted from the schema.
+
+  it('array<integer> via CSV yields integers', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --pages "1,2,3"',
+    });
+    expect(call.params.pages).toEqual([1, 2, 3]);
+  });
+
+  it('array<number> via CSV yields floats', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --weights "1.5,2.5,3.5"',
+    });
+    expect(call.params.weights).toEqual([1.5, 2.5, 3.5]);
+  });
+
+  it('array<integer> via JSON yields integers (was already correct, regression guard)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --pages "[1,2,3]"',
+    });
+    expect(call.params.pages).toEqual([1, 2, 3]);
+  });
+
+  it('array<object> via JSON yields parsed objects', () => {
+    // Pre-EC-3 the all-strings precondition rejected this and CSV-fell-through
+    // to a string[] of broken JSON fragments. Now JSON path accepts any item
+    // type, with per-item passthrough for already-typed items.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --objects \'[{"a":1},{"b":2}]\'',
+    });
+    expect(call.params.objects).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+
+  it('array<string> via CSV is unchanged (per-item coerce of string is a no-op)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --tags "alpha,beta,gamma"',
+    });
+    expect(call.params.tags).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('array<string> via JSON is unchanged (regression guard)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --tags \'["alpha","beta","gamma"]\'',
+    });
+    expect(call.params.tags).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('array<integer> with an unparseable item leaves that item as raw string', () => {
+    // Per-item coerceValue falls through to raw on NaN. Schema validation
+    // downstream is the appropriate place to reject — parser does not.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --pages "1,not-a-number,3"',
+    });
+    expect(call.params.pages).toEqual([1, 'not-a-number', 3]);
+  });
+});
+
+describe('EC-4: empty/whitespace number value is preserved as raw, not coerced to 0', () => {
+  // Number("") === 0 and Number("   ") === 0 in JS, which sneaks past the
+  // NaN guard. After D.2's empty-token emission landed in PR #165 these
+  // empty values reach the coercer. Preserving the raw empty string lets
+  // schema validation reject it as "expected number, got string" instead
+  // of silently turning into 0.
+
+  it('--count "" is preserved as the empty string', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count ""',
+    });
+    expect(call.params.count).toBe('');
+  });
+
+  it('--factor "   " (whitespace only) is preserved as the raw whitespace', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --factor "   "',
+    });
+    expect(call.params.factor).toBe('   ');
+  });
+
+  it('valid numbers still coerce (regression guard)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count 0',
+    });
+    // "0" → 0 is the legitimate zero, not the empty-string-shaped silent zero.
+    expect(call.params.count).toBe(0);
+  });
+});
+
+describe('EC-5: --flag=value GNU long-option syntax', () => {
+  // LLMs frequently emit `--flag=value` instead of `--flag value`. The previous
+  // tokenizer treated `=` as a regular character, so `--path=x.md` became one
+  // token and the lookup failed. EC-5 splits on the first `=` before the
+  // context/no-/lookup checks.
+
+  it('accepts --flag=value for a non-bool flag', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write --path=notes/x.md --content=body',
+    });
+    expect(call.params.path).toBe('notes/x.md');
+    expect(call.params.content).toBe('body');
+  });
+
+  it('accepts --bool=true / --bool=false for boolean flags', () => {
+    const [a] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled=true',
+    });
+    expect(a.params.enabled).toBe(true);
+
+    const [b] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled=false',
+    });
+    expect(b.params.enabled).toBe(false);
+  });
+
+  it('rejects non-canonical literals for boolean inline values', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --enabled=yes',
+      })
+    );
+    expect(err.message).toMatch(/Boolean flag "--enabled" only accepts =true or =false, got "yes"/);
+  });
+
+  it('keeps the first = as the separator so values may contain =', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label=key=value',
+    });
+    expect(call.params.label).toBe('key=value');
+  });
+
+  it('coerces typed numeric values via the inline path', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count=42 --factor=1.5',
+    });
+    expect(call.params.count).toBe(42);
+    expect(call.params.factor).toBe(1.5);
+  });
+
+  // Note: CSV/JSON-array values cannot be expressed via the inline form
+  // unquoted — they need quoting for the segment splitter (top-level commas)
+  // and tokenizer (top-level brackets aren't a quote pair). And quoted
+  // (`--tags="a,b"`) hits a separate pre-existing tokenizer limitation
+  // (mid-token `"` flips the whole token to wasQuoted=true). Out of scope
+  // for EC-5; use the space-separated form for those values.
+
+  it('still rejects context flags via the inline form', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content read --workspace-id=abc --path=foo.md',
+      })
+    );
+    expect(err.message).toMatch(/Do not include --workspace-id inside "tool"/);
+  });
+
+  it('rejects --no-<flag>=value combination', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --no-enabled=true',
+      })
+    );
+    expect(err.message).toMatch(/Negation flag "--no-enabled" cannot be combined with =value/);
+  });
+
+  it('--flag= (empty inline value) still coerces through the type', () => {
+    // Empty inline string → for number flag, EC-4 preserves it as the raw
+    // empty string. End-to-end this exercises the EC-4 + EC-5 interaction.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count=',
+    });
+    expect(call.params.count).toBe('');
   });
 });
