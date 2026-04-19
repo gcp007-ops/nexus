@@ -19,7 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHeadlessAgentStack, HeadlessAgentStackResult } from '../eval/headless/HeadlessAgentStack';
 import { TestVaultManager } from '../eval/headless/TestVaultManager';
-import { ToolCliNormalizer } from '../../src/agents/toolManager/services/ToolCliNormalizer';
+import { ToolCliNormalizer, parseCliForDisplay } from '../../src/agents/toolManager/services/ToolCliNormalizer';
 import type { IAgent } from '../../src/agents/interfaces/IAgent';
 import type { ITool } from '../../src/agents/interfaces/ITool';
 
@@ -919,5 +919,47 @@ describe('parser characterization — CLI migration audit', () => {
       makeNormalizer().normalizeExecutionCalls({ tool: 'content write --path "a.md"' })
     );
     expect(err.message).toMatch(/Missing required argument "content"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCliForDisplay — streaming-phase preview path
+// ---------------------------------------------------------------------------
+//
+// `parseCliForDisplay` is the registry-free classifier used by the chat UI
+// (accordion bubbles, status bar) to render in-flight tool calls before the
+// executor resolves them. It shares `tokenizeWithMeta` + `unescapeQuotedContent`
+// with `parseCommandSegment`, so the wasQuoted / A.4 / D.2 fixes need to
+// surface here too. These tests pin that the display path inherits the
+// upstream fixes correctly.
+describe('parseCliForDisplay — display-path inheritance of parser fixes', () => {
+  it('#160: quoted positional starting with -- is not surfaced as a flag', () => {
+    const [segment] = parseCliForDisplay('content write "f.md" "---\nfront: matter\n---\nbody"');
+    expect(segment.agent).toBe('content');
+    expect(segment.tool).toBe('write');
+    // The display-path classifier only collects flags into `parameters`. The
+    // positional should not appear as a flag named `---\n...`.
+    expect(Object.keys(segment.parameters)).toEqual([]);
+  });
+
+  it('#160: literal "--content" string in a quoted positional is not surfaced as a flag', () => {
+    const [segment] = parseCliForDisplay('content write "f.md" "--content"');
+    expect(Object.keys(segment.parameters)).toEqual([]);
+  });
+
+  it('A.4: literal backslash-n in a quoted flag value displays unescaped to a real newline', () => {
+    const [segment] = parseCliForDisplay('content write --content "line1\\nline2"');
+    expect(segment.parameters.content).toBe('line1\nline2');
+  });
+
+  it('D.2: empty quoted flag value displays as empty string (not consuming next token)', () => {
+    const [segment] = parseCliForDisplay('content write --path "" --content "body"');
+    expect(segment.parameters.path).toBe('');
+    expect(segment.parameters.content).toBe('body');
+  });
+
+  it('flag without value displays as boolean true', () => {
+    const [segment] = parseCliForDisplay('storage list --recursive');
+    expect(segment.parameters.recursive).toBe(true);
   });
 });
