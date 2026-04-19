@@ -699,24 +699,43 @@ describe('parser characterization — CLI migration audit', () => {
     expect(call.params.enabled).toBe(true);
   });
 
-  // DOCUMENTED BUG — §C.2: bool flag with explicit value is positional drift.
-  // Parser consumes `--enabled` as bare → true, then sees `true` as a positional
-  // but numericAgent_convert has no positional slots → "Too many positional"
-  // throw. Users expect CLI-parity with `--flag value` form. Defer: needs a
-  // parseBooleanValue helper on boolean flags (2–3 sites touched).
-  it.skip('C.2: --enabled followed by literal "true" — value should be accepted', () => {
+  // §C.2: bool flag followed by unquoted `true` literal — accepts as value.
+  it('C.2: --enabled followed by literal "true" — value accepted', () => {
     const [call] = makeNormalizer().normalizeExecutionCalls({
       tool: 'numeric convert --enabled true',
     });
     expect(call.params.enabled).toBe(true);
   });
 
-  // DOCUMENTED BUG — §C.3: same root cause as C.2, for `false` literal.
-  it.skip('C.3: --enabled followed by literal "false" — value should be accepted', () => {
+  // §C.3: same logic, `false` literal.
+  it('C.3: --enabled followed by literal "false" — value accepted', () => {
     const [call] = makeNormalizer().normalizeExecutionCalls({
       tool: 'numeric convert --enabled false',
     });
     expect(call.params.enabled).toBe(false);
+  });
+
+  // §C.2/§C.3 guardrail: a *quoted* `"true"` after a bool flag stays as a
+  // positional (matching shell semantics). Since numericAgent_convert has no
+  // positional slots, this must raise "Too many positional arguments" — the
+  // quoting signals user intent of literal string, not boolean value.
+  it('C.2 quoted: --enabled "true" keeps bool=true and treats "true" as positional', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --enabled "true"',
+      })
+    );
+    expect(err.message).toMatch(/Too many positional arguments/);
+  });
+
+  // §C.2 edge: next token that is neither `true` nor `false` stays positional.
+  it('C.2 non-bool next: --enabled followed by non-bool literal leaves bool=true', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled --count 3',
+    });
+    // --enabled = true (next token is another flag), --count = 3
+    expect(call.params.enabled).toBe(true);
+    expect(call.params.count).toBe(3);
   });
 
   it('C.4: negative number coerced as negative integer', () => {
@@ -803,12 +822,9 @@ describe('parser characterization — CLI migration audit', () => {
   });
 
   // G — positionals
-  // DOCUMENTED BUG — §G.1: flag sets path via --path, but positional "body"
-  // overwrites path (slot 0) instead of filling the remaining required slot
-  // (content, slot 1). Root cause: positionalIndex advances independently of
-  // which slots are already filled by flags. Fix requires cross-referencing
-  // flag-set args with positional slots in parseCommandSegment.
-  it.skip('G.1: flag set first, then positional fills remaining required slot', () => {
+  // §G.1: flag fills a slot first; positionals skip flag-filled slots and land
+  // on the next unfilled one. No silent overwrite.
+  it('G.1: flag set first, then positional fills remaining required slot', () => {
     const [call] = makeNormalizer().normalizeExecutionCalls({
       tool: 'content write --path "x.md" "body"',
     });
@@ -816,15 +832,26 @@ describe('parser characterization — CLI migration audit', () => {
     expect(call.params.content).toBe('body');
   });
 
-  // DOCUMENTED BUG — §G.2: same root cause as G.1. An extra positional after
-  // a flag-set arg silently overwrites the flag value instead of erroring.
-  it.skip('G.2: extra positional should not silently overwrite flag-set arg', () => {
+  // §G.2: extra positional beyond remaining unfilled slots raises "Too many
+  // positional" instead of silently overwriting a flag-set value.
+  it('G.2: extra positional after flag+content raises Too many positional', () => {
     const err = captureError(() =>
       makeNormalizer().normalizeExecutionCalls({
-        tool: 'content write --path "a.md" "b.md" "body"',
+        tool: 'content write --path "a.md" "body" "extra"',
       })
     );
-    expect(err.message).toMatch(/Too many positional|already set|overwrite/);
+    expect(err.message).toMatch(/Too many positional arguments/);
+  });
+
+  // §G.1/§G.2 guardrail: flag after positional also respects slot state.
+  // First positional fills path (slot 0), then --content sets content, then
+  // no more positionals — all required slots filled via legal routes.
+  it('G.1 reverse: positional first then --flag fills content slot', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" --content "body"',
+    });
+    expect(call.params.path).toBe('x.md');
+    expect(call.params.content).toBe('body');
   });
 
   it('G.3: positional omitted raises missing-required-arg for that slot', () => {

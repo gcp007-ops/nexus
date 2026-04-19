@@ -501,7 +501,17 @@ export class ToolCliNormalizer {
         }
 
         if (arg.type === 'boolean') {
-          params[arg.name] = true;
+          // §C.2/§C.3: accept an unquoted `true`/`false` literal as the flag
+          // value if it follows the flag. Quoted literals stay as positional
+          // values (so `--bool "true"` means bool=true + positional "true",
+          // matching typical shell semantics).
+          const peek = tokens[index + 1];
+          if (peek && !peek.wasQuoted && (peek.value === 'true' || peek.value === 'false')) {
+            params[arg.name] = peek.value === 'true';
+            index += 1;
+          } else {
+            params[arg.name] = true;
+          }
           continue;
         }
 
@@ -513,6 +523,18 @@ export class ToolCliNormalizer {
         params[arg.name] = coerceValue(next.value, arg.type);
         index += 1;
         continue;
+      }
+
+      // §G.1/§G.2: skip positional slots already filled by named flags, so a
+      // mixed call like `content write --path "x.md" "body"` fills `content`
+      // with "body" instead of overwriting `path`. If every slot is filled,
+      // the fall-through below raises "Too many positional arguments" (which
+      // replaces the previous silent overwrite bug).
+      while (
+        positionalIndex < positionalArgs.length &&
+        params[positionalArgs[positionalIndex].name] !== undefined
+      ) {
+        positionalIndex += 1;
       }
 
       const positional = positionalArgs[positionalIndex];
