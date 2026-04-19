@@ -19,7 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHeadlessAgentStack, HeadlessAgentStackResult } from '../eval/headless/HeadlessAgentStack';
 import { TestVaultManager } from '../eval/headless/TestVaultManager';
-import { ToolCliNormalizer } from '../../src/agents/toolManager/services/ToolCliNormalizer';
+import { ToolCliNormalizer, parseCliForDisplay, tokenizeWithMeta } from '../../src/agents/toolManager/services/ToolCliNormalizer';
 import type { IAgent } from '../../src/agents/interfaces/IAgent';
 import type { ITool } from '../../src/agents/interfaces/ITool';
 
@@ -180,7 +180,10 @@ function buildStubRegistry(): Map<string, IAgent> {
   ]);
 
   // numericAgent → convert(count: integer/number, factor: number, enabled: boolean, tags: array<string>, config: object)
-  // Used to cover every coerceValue branch.
+  // Used to cover every coerceValue branch. `pages: array<integer>`,
+  // `weights: array<number>`, and `objects: array<object>` were added for the
+  // EC-3 typed-array coverage; they are optional so they only bind when the
+  // test explicitly passes the flag.
   const coerceAgent = makeStubAgent('numericAgent', [
     makeStubTool('convert', {
       type: 'object',
@@ -189,6 +192,9 @@ function buildStubRegistry(): Map<string, IAgent> {
         factor: { type: 'number' },
         enabled: { type: 'boolean' },
         tags: { type: 'array', items: { type: 'string' } },
+        pages: { type: 'array', items: { type: 'integer' } },
+        weights: { type: 'array', items: { type: 'number' } },
+        objects: { type: 'array', items: { type: 'object' } },
         config: { type: 'object' },
         label: { type: 'string' },
       },
@@ -443,20 +449,65 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
   });
 
   // -------------------------------------------------------------------------
+  // array<string> JSON syntax — Bug #2 fix
+  // -------------------------------------------------------------------------
+  // Previous behavior: `array<string>` values were always split on `,`, so
+  // items containing literal commas could not be expressed. Fix accepts a
+  // JSON-array prefix (`[...]`) of strings and falls back to CSV split
+  // otherwise — strictly additive, zero breakage for the old syntax.
+
+  describe('normalizeExecutionCalls — array<string> JSON syntax (Bug #2)', () => {
+    it('parses JSON array and preserves literal commas inside items', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --tags \'["alpha, with comma","beta"]\'',
+      });
+      expect(call.params.tags).toEqual(['alpha, with comma', 'beta']);
+    });
+
+    it('falls back to CSV split when JSON parse fails', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --tags "[broken"',
+      });
+      expect(call.params.tags).toEqual(['[broken']);
+    });
+
+    it('preserves existing CSV syntax (no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --tags "a,b,c"',
+      });
+      expect(call.params.tags).toEqual(['a', 'b', 'c']);
+    });
+
+    it('empty JSON array yields empty array', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --tags "[]"',
+      });
+      expect(call.params.tags).toEqual([]);
+    });
+
+    it('single-item JSON array with unicode is preserved', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --tags \'["só um"]\'',
+      });
+      expect(call.params.tags).toEqual(['só um']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Edge cases — quoting, escapes, multi-command
   // -------------------------------------------------------------------------
 
   describe('normalizeExecutionCalls — edge cases', () => {
-    it('drops empty quoted tokens — tokenizer does not emit "" as a value', () => {
-      // Characterization (see review M1): the tokenizer only pushes a token
-      // when `current.length > 0`. A bare `""` produces no token, so an
-      // empty-string positional slot is silently skipped. Here
-      // `content write "" "body"` becomes tokens `['content','write','body']`
-      // — only `path` gets the value and `content` is missing.
-      const err = captureError(() =>
-        makeNormalizer().normalizeExecutionCalls({ tool: 'content write "" "body"' })
-      );
-      expect(err.message).toMatch(/Missing required argument "content" for contentManager\.write/);
+    it('preserves empty quoted tokens — bare "" emits empty string', () => {
+      // After the D.2 fix in tokenize(), a bare `""` emits an empty-string
+      // token instead of being silently dropped. `content write "" "body"`
+      // becomes tokens `['content','write','','body']` — path='' fills slot 0,
+      // content='body' fills slot 1, both required args set.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "" "body"',
+      });
+      expect(call.params.path).toBe('');
+      expect(call.params.content).toBe('body');
     });
 
     it('accepts single-quoted tokens equivalently to double-quoted tokens', () => {
@@ -505,5 +556,661 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       const result = makeNormalizer().normalizeExecutionCalls({ calls });
       expect(result).toEqual(calls);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Quoted positional values that look like flags — Bug #1 regression pins
+  // -------------------------------------------------------------------------
+  //
+  // Parser must not misclassify a *quoted* positional token whose text starts
+  // with `--` (or `---`, `----`, etc.) as a CLI flag. Quoting carries intent:
+  // quoted tokens stay positional regardless of leading characters. Regression
+  // was accidentally reintroduced during the tokenize refactor that added
+  // `hasToken` (D.2 fix) without preserving `wasQuoted` metadata.
+
+  describe('normalizeExecutionCalls — positional values that look like flags', () => {
+    it('accepts quoted positional starting with --- (YAML frontmatter)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "notes/fm.md" "---\\nkey: value\\n---\\nbody"',
+      });
+      expect(call.params.path).toBe('notes/fm.md');
+      expect(call.params.content).toBe('---\nkey: value\n---\nbody');
+    });
+
+    it('accepts quoted positional equal to --content (literal flag-looking text)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "notes/weird.md" "--content"',
+      });
+      expect(call.params.path).toBe('notes/weird.md');
+      expect(call.params.content).toBe('--content');
+    });
+
+    it('accepts quoted positional starting with -- that does not match any flag', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "notes/dash.md" "--no-such-flag"',
+      });
+      expect(call.params.content).toBe('--no-such-flag');
+    });
+
+    it('explicit named flags still work when value starts with --- (no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write --path "notes/named.md" --content "---\\nheader"',
+      });
+      expect(call.params.path).toBe('notes/named.md');
+      expect(call.params.content).toBe('---\nheader');
+    });
+
+    it('unquoted -- prefix still classifies as a flag (no regression)', () => {
+      const err = captureError(() =>
+        makeNormalizer().normalizeExecutionCalls({ tool: 'content read --bogus 1 --path foo.md' })
+      );
+      expect(err.message).toMatch(/Unknown flag "--bogus" for contentManager\.read/);
+    });
+
+    it('plain-content positional without -- prefix still succeeds (baseline)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "notes/plain.md" "normal content"',
+      });
+      expect(call.params.content).toBe('normal content');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // array<string> CSV split — quote-aware (issue #163)
+  // -------------------------------------------------------------------------
+  //
+  // CSV fallback for array<string> values respects outer quote pairs as
+  // item-internal literals. A comma inside "..." or '...' is preserved; only
+  // commas outside any quoted region act as separators. Backward compatible
+  // with bare CSV.
+
+  describe('coerceValue — array<string> quote-aware CSV split', () => {
+    it('bare CSV without quotes still splits on every comma (no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "a,b,c"',
+      });
+      expect(call.params.paths).toEqual(['a', 'b', 'c']);
+    });
+
+    it('inner double quotes protect commas — issue #163 main repro', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'"a, b",c\'',
+      });
+      expect(call.params.paths).toEqual(['a, b', 'c']);
+    });
+
+    it('multiple quoted items each preserve their internal commas', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'"a,b","c,d"\'',
+      });
+      expect(call.params.paths).toEqual(['a,b', 'c,d']);
+    });
+
+    it('inner single quotes also protect commas', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: "storage archive --paths \"'one, two',three\"",
+      });
+      expect(call.params.paths).toEqual(['one, two', 'three']);
+    });
+
+    it('JSON array path still works (existing behavior, no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'["a, b","c"]\'',
+      });
+      expect(call.params.paths).toEqual(['a, b', 'c']);
+    });
+
+    it('mixed quoted + unquoted items', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'plain,"with, comma",last\'',
+      });
+      expect(call.params.paths).toEqual(['plain', 'with, comma', 'last']);
+    });
+
+    it('empty items are filtered (preserves existing filter(Boolean) behavior)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "a,,b,"',
+      });
+      expect(call.params.paths).toEqual(['a', 'b']);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI migration audit — 25 characterization cases (A.1–G.3).
+// Each `it` asserts what the parser SHOULD do. Initial audit state:
+//   CHAR (passing, current behavior is correct):
+//     A.1, A.2, A.3, B.1–B.5, C.1, C.4, C.5, C.6, D.1, D.3, E.1, E.2, E.3, F.1, G.3
+//   Fixed in this PR (originally failing, now passing):
+//     A.4 (unescape ordering), D.2 (empty-quote token emission)
+//   DOCUMENTED BUG (failing, intentionally not fixed — see PR description):
+//     C.2, C.3 (bool flag explicit value), G.1, G.2 (flag/positional conflict)
+// ---------------------------------------------------------------------------
+
+describe('parser characterization — CLI migration audit', () => {
+  // A — quoting & escapes
+  it('A.1: nested double quotes preserve inner quotes', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "say \\"hi\\""',
+    });
+    expect(call.params.content).toBe('say "hi"');
+  });
+
+  it('A.2: single-quoted tokens work equivalently to double-quoted', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: "content write 'a.md' 'hello'",
+    });
+    expect(call.params.path).toBe('a.md');
+    expect(call.params.content).toBe('hello');
+  });
+
+  it('A.3: mixed quotes preserve literal apostrophes inside double quotes', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: `content write 'a.md' "body has 'inner'"`,
+    });
+    expect(call.params.content).toBe("body has 'inner'");
+  });
+
+  it('A.4: literal backslash+n in content stays as two chars (not newline)', () => {
+    // CLI input: content write "a.md" "foo\\nbar"  (token content = foo\\nbar, 9 chars)
+    // Correct parse: foo\nbar (8 chars: f,o,o,\,n,b,a,r) — the double-backslash
+    // consumes the single-backslash first, then `n` stays literal.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "foo\\\\nbar"',
+    });
+    expect(call.params.content).toBe('foo\\nbar');
+  });
+
+  // B — whitespace & unicode
+  it('B.1: leading/trailing whitespace in command is tolerated', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: '   content read "a.md"   ',
+    });
+    expect(call.params.path).toBe('a.md');
+  });
+
+  it('B.2: multiple spaces between tokens collapse to delimiters', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content     read    "a.md"',
+    });
+    expect(call.params.path).toBe('a.md');
+  });
+
+  it('B.3: tab whitespace separates tokens', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content\tread\t"a.md"',
+    });
+    expect(call.params.path).toBe('a.md');
+  });
+
+  it('B.4: unicode text passes through unchanged', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "café ☕ ñoño"',
+    });
+    expect(call.params.content).toBe('café ☕ ñoño');
+  });
+
+  it('B.5: emoji passes through unchanged', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "hello 🎉 world 👋"',
+    });
+    expect(call.params.content).toBe('hello 🎉 world 👋');
+  });
+
+  // C — numbers & booleans
+  it('C.1: boolean bare flag yields true', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled',
+    });
+    expect(call.params.enabled).toBe(true);
+  });
+
+  // §C.2: bool flag followed by unquoted `true` literal — accepts as value.
+  it('C.2: --enabled followed by literal "true" — value accepted', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled true',
+    });
+    expect(call.params.enabled).toBe(true);
+  });
+
+  // §C.3: same logic, `false` literal.
+  it('C.3: --enabled followed by literal "false" — value accepted', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled false',
+    });
+    expect(call.params.enabled).toBe(false);
+  });
+
+  // §C.2/§C.3 guardrail: a *quoted* `"true"` after a bool flag stays as a
+  // positional (matching shell semantics). Since numericAgent_convert has no
+  // positional slots, this must raise "Too many positional arguments" — the
+  // quoting signals user intent of literal string, not boolean value.
+  it('C.2 quoted: --enabled "true" keeps bool=true and treats "true" as positional', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --enabled "true"',
+      })
+    );
+    expect(err.message).toMatch(/Too many positional arguments/);
+  });
+
+  // §C.2 edge: next token that is neither `true` nor `false` stays positional.
+  it('C.2 non-bool next: --enabled followed by non-bool literal leaves bool=true', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled --count 3',
+    });
+    // --enabled = true (next token is another flag), --count = 3
+    expect(call.params.enabled).toBe(true);
+    expect(call.params.count).toBe(3);
+  });
+
+  it('C.4: negative number coerced as negative integer', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count -5',
+    });
+    expect(call.params.count).toBe(-5);
+  });
+
+  it('C.5: large integer within Number precision is preserved', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count 9999999999',
+    });
+    expect(call.params.count).toBe(9999999999);
+  });
+
+  it('C.6: float with fractional part coerced to number', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --factor 3.14159',
+    });
+    expect(call.params.factor).toBeCloseTo(3.14159);
+  });
+
+  // D — empties
+  it('D.1: empty quoted positional fills slot with empty string', () => {
+    // After D.2 fix: bare "" emits an empty-string token, so path='' and the
+    // following "body" fills content. Parser has no domain knowledge of path
+    // validity — domain validation belongs to the tool, not the parser.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "" "body"',
+    });
+    expect(call.params.path).toBe('');
+    expect(call.params.content).toBe('body');
+  });
+
+  it('D.2: empty quoted flag value does not silently consume next token', () => {
+    // Correct: --label "" → label=''; --tags "a" → tags=['a'].
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label "" --tags "a"',
+    });
+    expect(call.params.label).toBe('');
+    expect(call.params.tags).toEqual(['a']);
+  });
+
+  it('D.3: omitted optional flag stays undefined', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --factor 1.5',
+    });
+    expect(call.params.factor).toBe(1.5);
+    expect(call.params.count).toBeUndefined();
+    expect(call.params.enabled).toBeUndefined();
+  });
+
+  // E — multi-command
+  it('E.1: comma inside quoted content does not split segments', () => {
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "alpha, beta, gamma"',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.content).toBe('alpha, beta, gamma');
+  });
+
+  it('E.2: comma inside JSON array-flag value does not split segments', () => {
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --tags \'["a, with comma","b"]\'',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.tags).toEqual(['a, with comma', 'b']);
+  });
+
+  it('E.3: command-like tokens inside quoted content stay literal', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "content read fake"',
+    });
+    expect(call.params.content).toBe('content read fake');
+  });
+
+  // F — objects
+  it('F.1: JSON object flag value is parsed via JSON.parse', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --config \'{"nested":{"a":1}}\'',
+    });
+    expect(call.params.config).toEqual({ nested: { a: 1 } });
+  });
+
+  // G — positionals
+  // §G.1: flag fills a slot first; positionals skip flag-filled slots and land
+  // on the next unfilled one. No silent overwrite.
+  it('G.1: flag set first, then positional fills remaining required slot', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write --path "x.md" "body"',
+    });
+    expect(call.params.path).toBe('x.md');
+    expect(call.params.content).toBe('body');
+  });
+
+  // §G.2: extra positional beyond remaining unfilled slots raises "Too many
+  // positional" instead of silently overwriting a flag-set value.
+  it('G.2: extra positional after flag+content raises Too many positional', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write --path "a.md" "body" "extra"',
+      })
+    );
+    expect(err.message).toMatch(/Too many positional arguments/);
+  });
+
+  // §G.1/§G.2 guardrail: flag after positional also respects slot state.
+  // First positional fills path (slot 0), then --content sets content, then
+  // no more positionals — all required slots filled via legal routes.
+  it('G.1 reverse: positional first then --flag fills content slot', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" --content "body"',
+    });
+    expect(call.params.path).toBe('x.md');
+    expect(call.params.content).toBe('body');
+  });
+
+  it('G.3: positional omitted raises missing-required-arg for that slot', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({ tool: 'content write --path "a.md"' })
+    );
+    expect(err.message).toMatch(/Missing required argument "content"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCliForDisplay — streaming-phase preview path
+// ---------------------------------------------------------------------------
+//
+// `parseCliForDisplay` is the registry-free classifier used by the chat UI
+// (accordion bubbles, status bar) to render in-flight tool calls before the
+// executor resolves them. It shares `tokenizeWithMeta` + `unescapeQuotedContent`
+// with `parseCommandSegment`, so the wasQuoted / A.4 / D.2 fixes need to
+// surface here too. These tests pin that the display path inherits the
+// upstream fixes correctly.
+describe('parseCliForDisplay — display-path inheritance of parser fixes', () => {
+  it('#160: quoted positional starting with -- is not surfaced as a flag', () => {
+    const [segment] = parseCliForDisplay('content write "f.md" "---\nfront: matter\n---\nbody"');
+    expect(segment.agent).toBe('content');
+    expect(segment.tool).toBe('write');
+    // The display-path classifier only collects flags into `parameters`. The
+    // positional should not appear as a flag named `---\n...`.
+    expect(Object.keys(segment.parameters)).toEqual([]);
+  });
+
+  it('#160: literal "--content" string in a quoted positional is not surfaced as a flag', () => {
+    const [segment] = parseCliForDisplay('content write "f.md" "--content"');
+    expect(Object.keys(segment.parameters)).toEqual([]);
+  });
+
+  it('A.4: literal backslash-n in a quoted flag value displays unescaped to a real newline', () => {
+    const [segment] = parseCliForDisplay('content write --content "line1\\nline2"');
+    expect(segment.parameters.content).toBe('line1\nline2');
+  });
+
+  it('D.2: empty quoted flag value displays as empty string (not consuming next token)', () => {
+    const [segment] = parseCliForDisplay('content write --path "" --content "body"');
+    expect(segment.parameters.path).toBe('');
+    expect(segment.parameters.content).toBe('body');
+  });
+
+  it('flag without value displays as boolean true', () => {
+    const [segment] = parseCliForDisplay('storage list --recursive');
+    expect(segment.parameters.recursive).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-audit edge cases (EC-1..EC-5) — see docs/plans/cli-parser-edge-cases-plan.md
+// ---------------------------------------------------------------------------
+
+describe('EC-1: non-bool flag rejects a flag-like value as its argument', () => {
+  // Symmetric to the boolean peek (§C.2/§C.3) that landed in PR #165: the
+  // bool branch checks for true/false before consuming `next`, but the
+  // non-bool branch used to trust `tokens[index + 1]` blindly. So
+  // `content write --path --content "body"` silently set path="--content"
+  // and then dropped "body" into the content slot. EC-1 throws instead.
+
+  it('throws when next token is an unquoted flag', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write --path --content "body"',
+      })
+    );
+    expect(err.message).toMatch(/Flag "--path" requires a value, got flag "--content"/);
+  });
+
+  it('still allows a quoted positional whose text starts with -- as a flag value', () => {
+    // wasQuoted=true is the explicit "this is data, not a flag" signal, so
+    // a deliberate quoted `--important` literal stays legal.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label "--important"',
+    });
+    expect(call.params.label).toBe('--important');
+  });
+
+  it('does not falsely reject a value that happens to contain --', () => {
+    // Unquoted `--` later in the string is fine as long as the *whole token*
+    // is not flag-like (i.e., starts with --).
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label foo--bar',
+    });
+    expect(call.params.label).toBe('foo--bar');
+  });
+});
+
+describe('EC-2: tokenizer throws on unclosed quote at end of input', () => {
+  // tokenizeWithMeta enters quote mode and never re-emits if the closing
+  // quote never arrives. The end-of-input fallback used to push whatever
+  // accumulated; in a multi-segment call the unclosed quote silently
+  // swallowed subsequent commands. EC-2 throws loud instead.
+
+  it('throws on a single double-quote with no close', () => {
+    expect(() => tokenizeWithMeta('content write "x.md" "unclosed'))
+      .toThrow(/Unclosed double quote in segment/);
+  });
+
+  it('throws on a single single-quote with no close', () => {
+    expect(() => tokenizeWithMeta("storage list 'unclosed"))
+      .toThrow(/Unclosed single quote in segment/);
+  });
+
+  it('propagates the throw through the execution path', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" "unclosed',
+      })
+    );
+    expect(err.message).toMatch(/Unclosed double quote in segment/);
+  });
+
+  it('matched quotes still tokenize cleanly (regression guard)', () => {
+    expect(() => tokenizeWithMeta('content write "x.md" "body"')).not.toThrow();
+  });
+});
+
+describe('EC-3: array<X> coerces every element to X', () => {
+  // Previously coerceValue's array<...> branch returned string[] for every
+  // item type except the all-strings JSON case. So array<integer>/array<number>
+  // tools would receive ["1","2","3"] and trip a downstream type error. EC-3
+  // per-item coerces using the items.type extracted from the schema.
+
+  it('array<integer> via CSV yields integers', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --pages "1,2,3"',
+    });
+    expect(call.params.pages).toEqual([1, 2, 3]);
+  });
+
+  it('array<number> via CSV yields floats', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --weights "1.5,2.5,3.5"',
+    });
+    expect(call.params.weights).toEqual([1.5, 2.5, 3.5]);
+  });
+
+  it('array<integer> via JSON yields integers (was already correct, regression guard)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --pages "[1,2,3]"',
+    });
+    expect(call.params.pages).toEqual([1, 2, 3]);
+  });
+
+  it('array<object> via JSON yields parsed objects', () => {
+    // Pre-EC-3 the all-strings precondition rejected this and CSV-fell-through
+    // to a string[] of broken JSON fragments. Now JSON path accepts any item
+    // type, with per-item passthrough for already-typed items.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --objects \'[{"a":1},{"b":2}]\'',
+    });
+    expect(call.params.objects).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+
+  it('array<string> via CSV is unchanged (per-item coerce of string is a no-op)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --tags "alpha,beta,gamma"',
+    });
+    expect(call.params.tags).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('array<string> via JSON is unchanged (regression guard)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --tags \'["alpha","beta","gamma"]\'',
+    });
+    expect(call.params.tags).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('array<integer> with an unparseable item leaves that item as raw string', () => {
+    // Per-item coerceValue falls through to raw on NaN. Schema validation
+    // downstream is the appropriate place to reject — parser does not.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --pages "1,not-a-number,3"',
+    });
+    expect(call.params.pages).toEqual([1, 'not-a-number', 3]);
+  });
+});
+
+describe('EC-4: empty/whitespace number value is preserved as raw, not coerced to 0', () => {
+  // Number("") === 0 and Number("   ") === 0 in JS, which sneaks past the
+  // NaN guard. After D.2's empty-token emission landed in PR #165 these
+  // empty values reach the coercer. Preserving the raw empty string lets
+  // schema validation reject it as "expected number, got string" instead
+  // of silently turning into 0.
+
+  it('--count "" is preserved as the empty string', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count ""',
+    });
+    expect(call.params.count).toBe('');
+  });
+
+  it('--factor "   " (whitespace only) is preserved as the raw whitespace', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --factor "   "',
+    });
+    expect(call.params.factor).toBe('   ');
+  });
+
+  it('valid numbers still coerce (regression guard)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count 0',
+    });
+    // "0" → 0 is the legitimate zero, not the empty-string-shaped silent zero.
+    expect(call.params.count).toBe(0);
+  });
+});
+
+describe('EC-5: --flag=value GNU long-option syntax', () => {
+  // LLMs frequently emit `--flag=value` instead of `--flag value`. The previous
+  // tokenizer treated `=` as a regular character, so `--path=x.md` became one
+  // token and the lookup failed. EC-5 splits on the first `=` before the
+  // context/no-/lookup checks.
+
+  it('accepts --flag=value for a non-bool flag', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write --path=notes/x.md --content=body',
+    });
+    expect(call.params.path).toBe('notes/x.md');
+    expect(call.params.content).toBe('body');
+  });
+
+  it('accepts --bool=true / --bool=false for boolean flags', () => {
+    const [a] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled=true',
+    });
+    expect(a.params.enabled).toBe(true);
+
+    const [b] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --enabled=false',
+    });
+    expect(b.params.enabled).toBe(false);
+  });
+
+  it('rejects non-canonical literals for boolean inline values', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --enabled=yes',
+      })
+    );
+    expect(err.message).toMatch(/Boolean flag "--enabled" only accepts =true or =false, got "yes"/);
+  });
+
+  it('keeps the first = as the separator so values may contain =', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --label=key=value',
+    });
+    expect(call.params.label).toBe('key=value');
+  });
+
+  it('coerces typed numeric values via the inline path', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count=42 --factor=1.5',
+    });
+    expect(call.params.count).toBe(42);
+    expect(call.params.factor).toBe(1.5);
+  });
+
+  // Note: CSV/JSON-array values cannot be expressed via the inline form
+  // unquoted — they need quoting for the segment splitter (top-level commas)
+  // and tokenizer (top-level brackets aren't a quote pair). And quoted
+  // (`--tags="a,b"`) hits a separate pre-existing tokenizer limitation
+  // (mid-token `"` flips the whole token to wasQuoted=true). Out of scope
+  // for EC-5; use the space-separated form for those values.
+
+  it('still rejects context flags via the inline form', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'content read --workspace-id=abc --path=foo.md',
+      })
+    );
+    expect(err.message).toMatch(/Do not include --workspace-id inside "tool"/);
+  });
+
+  it('rejects --no-<flag>=value combination', () => {
+    const err = captureError(() =>
+      makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --no-enabled=true',
+      })
+    );
+    expect(err.message).toMatch(/Negation flag "--no-enabled" cannot be combined with =value/);
+  });
+
+  it('--flag= (empty inline value) still coerces through the type', () => {
+    // Empty inline string → for number flag, EC-4 preserves it as the raw
+    // empty string. End-to-end this exercises the EC-4 + EC-5 interaction.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'numeric convert --count=',
+    });
+    expect(call.params.count).toBe('');
   });
 });

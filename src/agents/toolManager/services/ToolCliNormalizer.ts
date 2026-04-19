@@ -115,20 +115,48 @@ export function splitTopLevelSegments(input: string): string[] {
 }
 
 function unescapeQuotedContent(value: string): string {
-  return value
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t')
-    .replace(/\\"/g, '"')
-    .replace(/\\'/g, '\'')
-    .replace(/\\\\/g, '\\');
+  // Single-pass scan so `\\` consumes the backslash first. A sequential
+  // .replace() chain would let `\\n` collide with `\n` when the double
+  // backslash ran last.
+  let out = '';
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] !== '\\' || i + 1 >= value.length) {
+      out += value[i];
+      continue;
+    }
+    const next = value[i + 1];
+    switch (next) {
+      case 'n': out += '\n'; break;
+      case 'r': out += '\r'; break;
+      case 't': out += '\t'; break;
+      case '"': out += '"'; break;
+      case '\'': out += '\''; break;
+      case '\\': out += '\\'; break;
+      default: out += '\\' + next;
+    }
+    i += 1;
+  }
+  return out;
 }
 
-export function tokenize(input: string): string[] {
-  const tokens: string[] = [];
+export interface QuotedToken {
+  value: string;
+  wasQuoted: boolean;
+}
+
+export function tokenizeWithMeta(input: string): QuotedToken[] {
+  const tokens: QuotedToken[] = [];
   let current = '';
   let quote: '"' | '\'' | null = null;
   let escaped = false;
+  // `hasToken` tracks whether we have started a token during the current run
+  // so a bare `""` emits an empty-string token rather than being silently
+  // dropped (which would let downstream flag/positional parsing consume the
+  // wrong next token). `wasQuoted` tracks whether any quote opened in the
+  // current token — used downstream to distinguish a positional value whose
+  // text happens to start with `--` from a real flag.
+  let hasToken = false;
+  let wasQuoted = false;
 
   for (const char of input) {
     if (escaped) {
@@ -154,29 +182,51 @@ export function tokenize(input: string): string[] {
 
     if (char === '"' || char === '\'') {
       quote = char;
+      hasToken = true;
+      wasQuoted = true;
       continue;
     }
 
     if (/\s/.test(char)) {
-      if (current.length > 0) {
-        tokens.push(unescapeQuotedContent(current));
+      if (hasToken || current.length > 0) {
+        tokens.push({ value: unescapeQuotedContent(current), wasQuoted });
         current = '';
+        hasToken = false;
+        wasQuoted = false;
       }
       continue;
     }
 
     current += char;
+    hasToken = true;
   }
 
-  if (current.length > 0) {
-    tokens.push(unescapeQuotedContent(current));
+  // EC-2: an unclosed quote that swallows everything to end-of-input is
+  // silent data corruption — in a multi-segment call it would absorb later
+  // commands. Throw loud so the caller sees the malformed input.
+  if (quote !== null) {
+    const quoteName = quote === '"' ? 'double' : 'single';
+    throw new Error(`Unclosed ${quoteName} quote in segment "${input}".`);
+  }
+
+  if (hasToken || current.length > 0) {
+    tokens.push({ value: unescapeQuotedContent(current), wasQuoted });
   }
 
   return tokens;
 }
 
+export function tokenize(input: string): string[] {
+  return tokenizeWithMeta(input).map(token => token.value);
+}
+
 function coerceValue(raw: string, type: string): unknown {
   if (type === 'number' || type === 'integer') {
+    // EC-4: `Number("")` is 0 in JS, which silently turns an empty-string flag
+    // value into a valid 0 instead of letting schema validation reject it.
+    // Same for whitespace-only. Keep the raw string so the schema layer sees
+    // a type mismatch (or "missing required" for required slots).
+    if (raw.trim() === '') return raw;
     const parsed = Number(raw);
     return Number.isNaN(parsed) ? raw : parsed;
   }
@@ -187,7 +237,23 @@ function coerceValue(raw: string, type: string): unknown {
   }
 
   if (type.startsWith('array<')) {
-    return raw.split(',').map(part => part.trim()).filter(Boolean);
+    // EC-3: `array<X>` must produce `X[]`, not `string[]`. Per-item coerce
+    // every element so `array<number>` of "1,2,3" yields [1,2,3] etc. The
+    // previous JSON-path early-return only honored the all-strings case;
+    // dropped here so JSON-typed items (numbers, objects) flow through.
+    const itemType = type.slice('array<'.length, -1);
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: unknown) => coerceArrayItem(item, itemType));
+        }
+      } catch {
+        // Fall through to CSV split for malformed JSON.
+      }
+    }
+    return splitCsvRespectingQuotes(raw).map(item => coerceValue(item, itemType));
   }
 
   if (type === 'object') {
@@ -199,6 +265,69 @@ function coerceValue(raw: string, type: string): unknown {
   }
 
   return raw;
+}
+
+function coerceArrayItem(item: unknown, itemType: string): unknown {
+  // JSON-parsed items already have their target type (number, boolean, object).
+  // Only string items need to be passed through coerceValue for parsing.
+  if (typeof item === 'string') return coerceValue(item, itemType);
+  return item;
+}
+
+/**
+ * Split a CSV-style string into items, respecting quote pairs as item-internal
+ * literals. A `,` inside a `"..."` or `'...'` region is preserved; a `,` outside
+ * any quote acts as the separator. Outer quotes wrapping an item are stripped.
+ *
+ * Backward compatible with bare CSV: `"a,b,c"` (no internal quoting) still
+ * yields `["a", "b", "c"]`. Issue: ProfSynapse/nexus#163.
+ *
+ * Examples:
+ *   `a,b,c`           → ["a", "b", "c"]
+ *   `"a, b",c`        → ["a, b", "c"]
+ *   `"a,b","c,d"`     → ["a,b", "c,d"]
+ *   `'one, two',three`→ ["one, two", "three"]
+ */
+export function splitCsvRespectingQuotes(input: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let quote: '"' | '\'' | null = null;
+  let escaped = false;
+
+  for (const char of input) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === '\'') {
+      quote = char;
+      continue;
+    }
+    if (char === ',') {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) items.push(trimmed);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  const trimmed = current.trim();
+  if (trimmed.length > 0) items.push(trimmed);
+  return items;
 }
 
 /**
@@ -222,26 +351,28 @@ export interface CliDisplaySegment {
  */
 export function parseCliForDisplay(toolString: string): CliDisplaySegment[] {
   return splitTopLevelSegments(toolString).flatMap(segment => {
-    const tokens = tokenize(segment);
+    const tokens = tokenizeWithMeta(segment);
     if (tokens.length < 2) {
       return [];
     }
-    const [agent, tool, ...rest] = tokens;
+    const [agentToken, toolToken, ...rest] = tokens;
     const parameters: Record<string, unknown> = {};
+    const looksLikeFlag = (token: QuotedToken): boolean =>
+      !token.wasQuoted && token.value.startsWith('--');
     for (let i = 0; i < rest.length; i += 1) {
       const token = rest[i];
-      if (token.startsWith('--')) {
-        const key = token.slice(2);
+      if (looksLikeFlag(token)) {
+        const key = token.value.slice(2);
         const next = rest[i + 1];
-        if (next === undefined || next.startsWith('--')) {
+        if (next === undefined || looksLikeFlag(next)) {
           parameters[key] = true;
         } else {
-          parameters[key] = next;
+          parameters[key] = next.value;
           i += 1;
         }
       }
     }
-    return [{ agent, tool, parameters }];
+    return [{ agent: agentToken.value, tool: toolToken.value, parameters }];
   });
 }
 
@@ -401,14 +532,14 @@ export class ToolCliNormalizer {
   }
 
   private parseCommandSegment(segment: string): ToolCallParams {
-    const tokens = tokenize(segment);
+    const tokens = tokenizeWithMeta(segment);
     if (tokens.length < 2) {
       throw new Error(`Invalid command "${segment}". Expected "agent tool-name [flags...]"`);
     }
 
-    const resolved = this.resolveTarget(tokens[0], tokens[1]);
+    const resolved = this.resolveTarget(tokens[0].value, tokens[1].value);
     if (!resolved.toolSlug) {
-      throw new Error(`Command "${segment}" is missing a tool name after "${tokens[0]}".`);
+      throw new Error(`Command "${segment}" is missing a tool name after "${tokens[0].value}".`);
     }
 
     const agent = this.agentRegistry.get(resolved.agentName);
@@ -429,39 +560,97 @@ export class ToolCliNormalizer {
 
     for (let index = 2; index < tokens.length; index += 1) {
       const token = tokens[index];
-      if (token.startsWith('--')) {
-        const normalizedFlag = token.slice(2);
+      const isFlag = !token.wasQuoted && token.value.startsWith('--');
+      if (isFlag) {
+        // EC-5: GNU long-option syntax `--flag=value`. Split before the
+        // context/no-/lookup checks so they all see the bare flag name.
+        // Multiple `=` characters keep the first as the separator so
+        // `--label=foo=bar` yields flag="label", value="foo=bar".
+        let normalizedFlag = token.value.slice(2);
+        let inlineValue: string | undefined;
+        const equalsIdx = normalizedFlag.indexOf('=');
+        if (equalsIdx >= 0) {
+          inlineValue = normalizedFlag.slice(equalsIdx + 1);
+          normalizedFlag = normalizedFlag.slice(0, equalsIdx);
+        }
+
         if (CONTEXT_FLAG_NAMES.has(normalizedFlag)) {
           throw new Error(`Do not include --${normalizedFlag} inside "tool". Keep context fields at the top level of useTools/getTools.`);
         }
 
         if (normalizedFlag.startsWith('no-')) {
+          if (inlineValue !== undefined) {
+            throw new Error(`Negation flag "--${normalizedFlag}" cannot be combined with =value.`);
+          }
           const boolArg = cliSchema.arguments.find(arg => arg.flag === `--${normalizedFlag.slice(3)}` && arg.type === 'boolean');
           if (!boolArg) {
-            throw new Error(`Unknown flag "${token}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
+            throw new Error(`Unknown flag "${token.value}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
           }
           params[boolArg.name] = false;
           continue;
         }
 
-        const arg = cliSchema.arguments.find(item => item.flag === token);
+        const flagSpec = `--${normalizedFlag}`;
+        const arg = cliSchema.arguments.find(item => item.flag === flagSpec);
         if (!arg) {
-          throw new Error(`Unknown flag "${token}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
+          throw new Error(`Unknown flag "${token.value}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
         }
 
         if (arg.type === 'boolean') {
-          params[arg.name] = true;
+          if (inlineValue !== undefined) {
+            // EC-5: inline value for boolean must be the canonical literal.
+            if (inlineValue !== 'true' && inlineValue !== 'false') {
+              throw new Error(`Boolean flag "${flagSpec}" only accepts =true or =false, got "${inlineValue}".`);
+            }
+            params[arg.name] = inlineValue === 'true';
+            continue;
+          }
+          // §C.2/§C.3: accept an unquoted `true`/`false` literal as the flag
+          // value if it follows the flag. Quoted literals stay as positional
+          // values (so `--bool "true"` means bool=true + positional "true",
+          // matching typical shell semantics).
+          const peek = tokens[index + 1];
+          if (peek && !peek.wasQuoted && (peek.value === 'true' || peek.value === 'false')) {
+            params[arg.name] = peek.value === 'true';
+            index += 1;
+          } else {
+            params[arg.name] = true;
+          }
           continue;
         }
 
-        const next = tokens[index + 1];
-        if (next === undefined) {
-          throw new Error(`Flag "${token}" requires a value.`);
+        let value: string;
+        if (inlineValue !== undefined) {
+          value = inlineValue;
+        } else {
+          const next = tokens[index + 1];
+          if (next === undefined) {
+            throw new Error(`Flag "${flagSpec}" requires a value.`);
+          }
+          // EC-1: reject a flag value that is itself a flag. Quoted positional
+          // flag-likes (e.g., `--label "--important"`) stay legal because
+          // wasQuoted=true is the explicit "this is data, not a flag" signal.
+          if (!next.wasQuoted && next.value.startsWith('--')) {
+            throw new Error(`Flag "${flagSpec}" requires a value, got flag "${next.value}".`);
+          }
+          value = next.value;
+          index += 1;
         }
 
-        params[arg.name] = coerceValue(next, arg.type);
-        index += 1;
+        params[arg.name] = coerceValue(value, arg.type);
         continue;
+      }
+
+      // §G.1/§G.2: skip positional slots already filled by named flags, so a
+      // mixed call like `content write --path "x.md" "body"` fills `content`
+      // with "body" instead of overwriting `path`. If every slot is filled,
+      // the fall-through below raises "Too many positional arguments" (which
+      // replaces the previous silent overwrite bug).
+      while (
+        positionalIndex < positionalArgs.length &&
+        params[positionalArgs[positionalIndex].name] !== undefined
+      ) {
+        positionalIndex += 1;
       }
 
       const positional = positionalArgs[positionalIndex];
@@ -469,7 +658,7 @@ export class ToolCliNormalizer {
         throw new Error(`Too many positional arguments for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
       }
 
-      params[positional.name] = coerceValue(token, positional.type);
+      params[positional.name] = coerceValue(token.value, positional.type);
       positionalIndex += 1;
     }
 
