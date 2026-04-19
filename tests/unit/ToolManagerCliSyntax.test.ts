@@ -608,6 +608,66 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       expect(call.params.content).toBe('normal content');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // array<string> CSV split — quote-aware (issue #163)
+  // -------------------------------------------------------------------------
+  //
+  // CSV fallback for array<string> values respects outer quote pairs as
+  // item-internal literals. A comma inside "..." or '...' is preserved; only
+  // commas outside any quoted region act as separators. Backward compatible
+  // with bare CSV.
+
+  describe('coerceValue — array<string> quote-aware CSV split', () => {
+    it('bare CSV without quotes still splits on every comma (no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "a,b,c"',
+      });
+      expect(call.params.paths).toEqual(['a', 'b', 'c']);
+    });
+
+    it('inner double quotes protect commas — issue #163 main repro', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'"a, b",c\'',
+      });
+      expect(call.params.paths).toEqual(['a, b', 'c']);
+    });
+
+    it('multiple quoted items each preserve their internal commas', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'"a,b","c,d"\'',
+      });
+      expect(call.params.paths).toEqual(['a,b', 'c,d']);
+    });
+
+    it('inner single quotes also protect commas', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: "storage archive --paths \"'one, two',three\"",
+      });
+      expect(call.params.paths).toEqual(['one, two', 'three']);
+    });
+
+    it('JSON array path still works (existing behavior, no regression)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'["a, b","c"]\'',
+      });
+      expect(call.params.paths).toEqual(['a, b', 'c']);
+    });
+
+    it('mixed quoted + unquoted items', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths \'plain,"with, comma",last\'',
+      });
+      expect(call.params.paths).toEqual(['plain', 'with, comma', 'last']);
+    });
+
+    it('empty items are filtered (preserves existing filter(Boolean) behavior)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "a,,b,"',
+      });
+      expect(call.params.paths).toEqual(['a', 'b']);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

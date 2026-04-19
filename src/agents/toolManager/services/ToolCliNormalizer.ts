@@ -235,7 +235,7 @@ function coerceValue(raw: string, type: string): unknown {
         // Fall through to CSV split for malformed JSON.
       }
     }
-    return raw.split(',').map(part => part.trim()).filter(Boolean);
+    return splitCsvRespectingQuotes(raw);
   }
 
   if (type === 'object') {
@@ -247,6 +247,62 @@ function coerceValue(raw: string, type: string): unknown {
   }
 
   return raw;
+}
+
+/**
+ * Split a CSV-style string into items, respecting quote pairs as item-internal
+ * literals. A `,` inside a `"..."` or `'...'` region is preserved; a `,` outside
+ * any quote acts as the separator. Outer quotes wrapping an item are stripped.
+ *
+ * Backward compatible with bare CSV: `"a,b,c"` (no internal quoting) still
+ * yields `["a", "b", "c"]`. Issue: ProfSynapse/nexus#163.
+ *
+ * Examples:
+ *   `a,b,c`           → ["a", "b", "c"]
+ *   `"a, b",c`        → ["a, b", "c"]
+ *   `"a,b","c,d"`     → ["a,b", "c,d"]
+ *   `'one, two',three`→ ["one, two", "three"]
+ */
+export function splitCsvRespectingQuotes(input: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let quote: '"' | '\'' | null = null;
+  let escaped = false;
+
+  for (const char of input) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === '\'') {
+      quote = char;
+      continue;
+    }
+    if (char === ',') {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) items.push(trimmed);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  const trimmed = current.trim();
+  if (trimmed.length > 0) items.push(trimmed);
+  return items;
 }
 
 /**
