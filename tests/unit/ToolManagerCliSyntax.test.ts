@@ -492,16 +492,16 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
   // -------------------------------------------------------------------------
 
   describe('normalizeExecutionCalls — edge cases', () => {
-    it('drops empty quoted tokens — tokenizer does not emit "" as a value', () => {
-      // Characterization (see review M1): the tokenizer only pushes a token
-      // when `current.length > 0`. A bare `""` produces no token, so an
-      // empty-string positional slot is silently skipped. Here
-      // `content write "" "body"` becomes tokens `['content','write','body']`
-      // — only `path` gets the value and `content` is missing.
-      const err = captureError(() =>
-        makeNormalizer().normalizeExecutionCalls({ tool: 'content write "" "body"' })
-      );
-      expect(err.message).toMatch(/Missing required argument "content" for contentManager\.write/);
+    it('preserves empty quoted tokens — bare "" emits empty string', () => {
+      // After the D.2 fix in tokenize(), a bare `""` emits an empty-string
+      // token instead of being silently dropped. `content write "" "body"`
+      // becomes tokens `['content','write','','body']` — path='' fills slot 0,
+      // content='body' fills slot 1, both required args set.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "" "body"',
+      });
+      expect(call.params.path).toBe('');
+      expect(call.params.content).toBe('body');
     });
 
     it('accepts single-quoted tokens equivalently to double-quoted tokens', () => {
@@ -679,12 +679,15 @@ describe('parser characterization — CLI migration audit', () => {
   });
 
   // D — empties
-  it('D.1: empty quoted positional raises missing-required-arg', () => {
-    // Duplicates existing L450 characterization; pinned here for migration completeness.
-    const err = captureError(() =>
-      makeNormalizer().normalizeExecutionCalls({ tool: 'content write "" "body"' })
-    );
-    expect(err.message).toMatch(/Missing required argument "content" for contentManager\.write/);
+  it('D.1: empty quoted positional fills slot with empty string', () => {
+    // After D.2 fix: bare "" emits an empty-string token, so path='' and the
+    // following "body" fills content. Parser has no domain knowledge of path
+    // validity — domain validation belongs to the tool, not the parser.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "" "body"',
+    });
+    expect(call.params.path).toBe('');
+    expect(call.params.content).toBe('body');
   });
 
   it('D.2: empty quoted flag value does not silently consume next token', () => {
