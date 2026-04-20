@@ -46,6 +46,14 @@ the main session (invoke the orchestrator bootstrap).
 
 ## Pinned Context
 
+<!-- pinned: 2026-04-20 -->
+### Line endings: LF canonical via `.gitattributes` (as of v5.8.2 / PR #169)
+Repo has `.gitattributes` declaring LF canonical across `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`/`.json`/`.md`/`.css`/`.html`/`.yml`/`.sh` + binary markers for images/audio/fonts/pdfs. If you see CRLF in the tree, it's a local-editor bug — fix the editor, don't chase it with tool normalization. Never reintroduce CRLF. If 500+ files show modified with tiny `--ignore-cr-at-eol` delta, someone's editor wrote CRLF — re-run `git add --renormalize .` on that subset, don't let it land.
+
+<!-- pinned: 2026-04-20 -->
+### ToolManager MCP contract: CLI-first only (as of v5.8.2 / PR #170)
+`useTools`/`getTools` accept ONLY top-level CLI shape: `tool` string + context fields (`workspaceId`, `sessionId`, `memory`, `goal`, `constraints?`) at top level. Legacy nested `{context: {...}, calls: [...]}` and `{request: [...]}` throw `Deprecated payload shape` at `src/agents/toolManager/services/ToolCliNormalizer.ts:444/462/495`. `UseToolParams` has no `calls`/`request` fields. `executePrompts` actions: `replace` uses `oldContent` + `startLine` + `endLine`; `position` deprecated (still accepted, normalized); `append`/`prepend` route to `insert`; `position < 1` rejected. CLI parser decodes `\uXXXX` in quoted strings.
+
 <!-- pinned: 2026-03-29 -->
 ### pdfjs-dist in Obsidian/Electron (legacy build + shared loader)
 PDF.js 5 expects a configured `workerSrc` in the Electron renderer. Use the legacy build with a shared loader that seeds `globalThis.pdfjsWorker`:
