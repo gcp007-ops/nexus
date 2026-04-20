@@ -774,6 +774,81 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       });
       expect(call.params.content).toBe('');
     });
+
+    // -----------------------------------------------------------------------
+    // Multiline named heredoc: close must be on its own line
+    // -----------------------------------------------------------------------
+    //
+    // Pins the fix for a latent footgun where `\bNAME\b` in the body closed
+    // prematurely — e.g., a DSGN design doc titled `## DSGN considerations`
+    // tripped the close on the heading instead of the real delimiter line.
+    // Symptom was a cryptic "Too many positional arguments" on contentManager.write
+    // because the remaining body leaked into positional slots.
+    //
+    // Inline heredoc still uses word-boundary matching (preserves the
+    // single-line ergonomic form).
+
+    it('multiline named heredoc: NAME inside body as a word does NOT close early', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<DSGN\n# DSGN parcial\nBody mentions DSGN multiple times.\n## DSGN considerations\nMore text.\nDSGN',
+      });
+      expect(call.params.content).toBe(
+        '\n# DSGN parcial\nBody mentions DSGN multiple times.\n## DSGN considerations\nMore text.'
+      );
+    });
+
+    it('multiline named heredoc: indented close is accepted', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<BODY\nline one\nline two\n  BODY',
+      });
+      expect(call.params.content).toBe('\nline one\nline two');
+    });
+
+    it('multiline named heredoc: close at end-of-input without trailing newline', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<BODY\nline\nBODY',
+      });
+      expect(call.params.content).toBe('\nline');
+    });
+
+    it('multiline named heredoc: bare NAME token on line with trailing text does NOT close', () => {
+      // `NAME more` on the same line as the would-be close is NOT a close —
+      // the line must be the delimiter only (whitespace optional). The body
+      // is consumed until a real standalone close line appears.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<TAG\nTAG more text on same line\nreal tail\nTAG',
+      });
+      expect(call.params.content).toBe('\nTAG more text on same line\nreal tail');
+    });
+
+    it('multiline named heredoc: unclosed reports the multiline hint', () => {
+      expect(() =>
+        makeNormalizer().normalizeExecutionCalls({
+          tool: 'content write "x.md" <<BODY\nline one\nline two without close',
+        })
+      ).toThrow(/Unclosed heredoc block "<<BODY".*own line/);
+    });
+
+    it('inline named heredoc still accepts word-boundary close (backward compat)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "x.md" <<BODY inline BODY',
+      });
+      expect(call.params.content).toBe(' inline ');
+    });
+
+    it('multiline named heredoc composes with a following command (comma terminator)', () => {
+      // Regression: before the comma lookahead was added to the multiline
+      // close, `<<TAG\nbody\nTAG, content write ...` failed as "unclosed"
+      // because the close line was followed by `,` instead of `\n`.
+      const calls = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "a.md" <<TAG\nbody of a\nTAG, content write "b.md" <<TAG\nbody of b\nTAG',
+      });
+      expect(calls).toHaveLength(2);
+      expect(calls[0].params.path).toBe('a.md');
+      expect(calls[0].params.content).toBe('\nbody of a');
+      expect(calls[1].params.path).toBe('b.md');
+      expect(calls[1].params.content).toBe('\nbody of b');
+    });
   });
 
   // -------------------------------------------------------------------------

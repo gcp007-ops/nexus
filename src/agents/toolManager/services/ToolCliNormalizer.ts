@@ -468,7 +468,24 @@ export function extractRawBlocks(input: string): { processed: string; blocks: Ra
   let blockIdx = 0;
 
   // Named heredoc: <<NAME ... NAME (NAME = 1–32 uppercase letters/digits/underscore)
-  // We scan opens left-to-right and pair each with the next standalone NAME boundary.
+  //
+  // Two modes, disambiguated by the first non-whitespace character after the
+  // open delimiter:
+  //
+  //   - Inline (no newline between <<NAME and the body): close matches the
+  //     next standalone `\bNAME\b` anywhere. Convenient for short single-line
+  //     payloads — e.g., `content write "x.md" <<BODY literal "quotes" BODY`.
+  //
+  //   - Multiline (newline appears before any body content): close must be on
+  //     its own line (optionally indented with spaces/tabs), matching the
+  //     bash heredoc contract. This prevents premature close when the body
+  //     legitimately mentions NAME as a word (section headings, references,
+  //     code identifiers named after the delimiter, etc.).
+  //
+  // Mode detection avoids a footgun: choosing a NAME that happens to appear
+  // inside a multiline payload no longer silently truncates the content and
+  // spills the remainder as orphan positional tokens — which surfaces as a
+  // cryptic "Too many positional arguments" far from the real cause.
   while (true) {
     const openMatch = /<<([A-Z][A-Z0-9_]{0,31})\b/.exec(processed);
     if (!openMatch) break;
@@ -476,23 +493,41 @@ export function extractRawBlocks(input: string): { processed: string; blocks: Ra
     const name = openMatch[1];
     const openIdx = openMatch.index;
     const contentStart = openIdx + openMatch[0].length;
-    const closeRegex = new RegExp(`\\b${name}\\b`, 'g');
+
+    let isMultiline = false;
+    for (let i = contentStart; i < processed.length; i += 1) {
+      const c = processed[i];
+      if (c === '\n') { isMultiline = true; break; }
+      if (c !== ' ' && c !== '\t') break;
+    }
+
+    // Multiline close terminates on newline, top-level comma (command
+    // separator inside `useTools`), or end of input. The comma lookahead
+    // keeps multi-command batches composable — otherwise a multiline
+    // heredoc could only appear as the last command in the string.
+    const closeRegex = isMultiline
+      ? new RegExp(`\\n[ \\t]*${name}[ \\t]*(?=\\n|,|$)`, 'g')
+      : new RegExp(`\\b${name}\\b`, 'g');
     closeRegex.lastIndex = contentStart;
     const closeMatch = closeRegex.exec(processed);
 
     if (!closeMatch) {
+      const hint = isMultiline
+        ? `Expected "${name}" on its own line (optionally indented) to close.`
+        : `Expected "${name}" to close.`;
       throw new Error(
-        `Unclosed heredoc block "<<${name}" at position ${openIdx}. Expected "${name}" to close.`
+        `Unclosed heredoc block "<<${name}" at position ${openIdx}. ${hint}`
       );
     }
 
     const content = processed.substring(contentStart, closeMatch.index);
+    const closeEnd = closeMatch.index + closeMatch[0].length;
     const placeholder = `${HEREDOC_PLACEHOLDER_PREFIX}${blockIdx++}${HEREDOC_PLACEHOLDER_SUFFIX}`;
     blocks.push({ placeholder, content });
     processed =
       processed.substring(0, openIdx) +
       placeholder +
-      processed.substring(closeMatch.index + name.length);
+      processed.substring(closeEnd);
   }
 
   // Anonymous heredoc: <<<...>>> (lazy match, stops at first `>>>`).
