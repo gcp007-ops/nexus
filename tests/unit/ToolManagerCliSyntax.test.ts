@@ -835,6 +835,20 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       });
       expect(call.params.content).toBe(' inline ');
     });
+
+    it('multiline named heredoc composes with a following command (comma terminator)', () => {
+      // Regression: before the comma lookahead was added to the multiline
+      // close, `<<TAG\nbody\nTAG, content write ...` failed as "unclosed"
+      // because the close line was followed by `,` instead of `\n`.
+      const calls = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "a.md" <<TAG\nbody of a\nTAG, content write "b.md" <<TAG\nbody of b\nTAG',
+      });
+      expect(calls).toHaveLength(2);
+      expect(calls[0].params.path).toBe('a.md');
+      expect(calls[0].params.content).toBe('\nbody of a');
+      expect(calls[1].params.path).toBe('b.md');
+      expect(calls[1].params.content).toBe('\nbody of b');
+    });
   });
 
   // -------------------------------------------------------------------------

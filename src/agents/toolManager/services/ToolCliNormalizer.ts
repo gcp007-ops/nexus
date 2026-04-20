@@ -501,8 +501,12 @@ export function extractRawBlocks(input: string): { processed: string; blocks: Ra
       if (c !== ' ' && c !== '\t') break;
     }
 
+    // Multiline close terminates on newline, top-level comma (command
+    // separator inside `useTools`), or end of input. The comma lookahead
+    // keeps multi-command batches composable — otherwise a multiline
+    // heredoc could only appear as the last command in the string.
     const closeRegex = isMultiline
-      ? new RegExp(`\\n[ \\t]*${name}[ \\t]*(?=\\n|$)`, 'g')
+      ? new RegExp(`\\n[ \\t]*${name}[ \\t]*(?=\\n|,|$)`, 'g')
       : new RegExp(`\\b${name}\\b`, 'g');
     closeRegex.lastIndex = contentStart;
     const closeMatch = closeRegex.exec(processed);
