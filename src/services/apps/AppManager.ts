@@ -38,7 +38,7 @@ export class AppManager {
    * Load all installed and enabled apps.
    * Called during plugin initialization after core agents are registered.
    */
-  async loadInstalledApps(): Promise<void> {
+  loadInstalledApps(): void {
     for (const [appId, config] of Object.entries(this.appConfigs)) {
       if (!config.enabled) continue;
 
@@ -144,10 +144,12 @@ export class AppManager {
       }
     } else if (!enabled && this.apps.has(appId)) {
       // Unregister but keep config
-      const agent = this.apps.get(appId)!;
-      agent.onunload();
-      this.unregisterCallback(agent.name);
-      this.apps.delete(appId);
+      const agent = this.apps.get(appId);
+      if (agent) {
+        agent.onunload();
+        this.unregisterCallback(agent.name);
+        this.apps.delete(appId);
+      }
     }
 
     return true;

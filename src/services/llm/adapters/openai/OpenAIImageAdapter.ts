@@ -18,13 +18,28 @@ import {
   ProviderConfig,
   ProviderCapabilities,
   ModelInfo,
-  CostDetails
+  CostDetails,
+  GenerateOptions,
+  StreamChunk
 } from '../types';
+
+interface OpenAIResponsesImageOutput {
+  type?: string;
+  result?: string;
+  revised_prompt?: string;
+}
+
+interface OpenAIResponsesImageResponse {
+  id?: string;
+  output: OpenAIResponsesImageOutput[];
+}
 
 export class OpenAIImageAdapter extends BaseImageAdapter {
   
   // Image adapters don't support streaming in the same way as text
-  async* generateStreamAsync(): AsyncGenerator<never, void, unknown> {
+  async* generateStreamAsync(_prompt: string, _options?: GenerateOptions): AsyncGenerator<StreamChunk, void, unknown> {
+    await Promise.resolve();
+    yield* [] as StreamChunk[];
     // Image generation is not streamable - it's a single result
     // This method should not be called for image adapters
     throw new Error('Image generation does not support streaming');
@@ -64,7 +79,7 @@ export class OpenAIImageAdapter extends BaseImageAdapter {
           }]
         };
 
-        const result = await this.request<any>({
+        const result = await this.request<OpenAIResponsesImageResponse>({
           url: `${this.baseUrl}/responses`,
           operation: 'image generation',
           method: 'POST',
@@ -80,7 +95,11 @@ export class OpenAIImageAdapter extends BaseImageAdapter {
         return result.json;
       }, 2); // Reduced retry count for faster failure detection
 
-      return await this.buildImageResponse(response, params);
+      if (!response) {
+        throw new Error('No response returned from OpenAI image generation');
+      }
+
+      return this.buildImageResponse(response, params);
     } catch (error) {
       this.handleImageError(error, 'image generation', params);
     }
@@ -160,25 +179,25 @@ export class OpenAIImageAdapter extends BaseImageAdapter {
   /**
    * Get pricing for gpt-image-1 image generation
    */
-  async getImageModelPricing(model: string = 'gpt-image-1'): Promise<CostDetails> {
+  getImageModelPricing(_model = 'gpt-image-1'): Promise<CostDetails> {
     // gpt-image-1 pricing is token-based, approximate base price
     const basePrice = 0.015; // Approximate cost per image
 
-    return {
+    return Promise.resolve({
       inputCost: 0,
       outputCost: basePrice,
       totalCost: basePrice,
       currency: 'USD',
       rateInputPerMillion: 0,
       rateOutputPerMillion: basePrice * 1_000_000
-    };
+    });
   }
 
   /**
    * List available OpenAI image models
    */
-  async listModels(): Promise<ModelInfo[]> {
-    return [{
+  listModels(): Promise<ModelInfo[]> {
+    return Promise.resolve([{
       id: this.imageModel,
       name: 'GPT Image 1',
       contextWindow: 32000,
@@ -196,19 +215,21 @@ export class OpenAIImageAdapter extends BaseImageAdapter {
         currency: 'USD',
         lastUpdated: '2025-01-01'
       }
-    }];
+    }]);
   }
 
   // Private helper methods
 
-  private async buildImageResponse(
-    response: any, // Responses API response format
+  private buildImageResponse(
+    response: OpenAIResponsesImageResponse, // Responses API response format
     params: ImageGenerationParams
-  ): Promise<ImageGenerationResponse> {
+  ): ImageGenerationResponse {
     // Extract image data from Responses API format
     const imageData = response.output
-      .filter((output: { type: string; result?: string }) => output.type === "image_generation_call")
-      .map((output: { result?: string }) => output.result);
+      .filter((output): output is OpenAIResponsesImageOutput & { result: string } => {
+        return output.type === 'image_generation_call' && typeof output.result === 'string';
+      })
+      .map(output => output.result);
 
     if (!imageData || imageData.length === 0) {
       throw new Error('No image data received from OpenAI Responses API');
@@ -229,7 +250,7 @@ export class OpenAIImageAdapter extends BaseImageAdapter {
     const usage: ImageUsage = this.buildImageUsage(1, size, this.imageModel);
 
     // Extract revised prompt from image generation call
-    const imageGenerationCall = response.output.find((output: { type: string; result?: string }) => output.type === "image_generation_call");
+    const imageGenerationCall = response.output.find(output => output.type === 'image_generation_call');
     const revisedPrompt = imageGenerationCall?.revised_prompt;
 
     return {

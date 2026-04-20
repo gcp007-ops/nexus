@@ -31,6 +31,10 @@ interface WorkspaceEnhancementData {
   };
 }
 
+function isEnhancedJSONSchema(value: unknown): value is EnhancedJSONSchema {
+  return typeof value === 'object' && value !== null;
+}
+
 /**
  * Schema provider for workspace-related enhancements
  */
@@ -52,7 +56,7 @@ export class WorkspaceSchemaProvider implements ISchemaProvider {
   constructor(
     workspaceService: WorkspaceService,
     targetModes: string[] = ['loadWorkspace', 'listWorkspaces'],
-    enableCaching: boolean = true
+    enableCaching = true
   ) {
     this.workspaceService = workspaceService;
     this.targetModes = targetModes;
@@ -65,31 +69,31 @@ export class WorkspaceSchemaProvider implements ISchemaProvider {
    * @param baseSchema Base schema to potentially enhance
    * @returns Promise<boolean> true if this provider can enhance the schema
    */
-  async canEnhance(toolName: string, baseSchema: EnhancedJSONSchema): Promise<boolean> {
+  canEnhance(toolName: string, baseSchema: EnhancedJSONSchema): Promise<boolean> {
     try {
       // Extract agent name from tool name (handle both "memoryManager" and "memoryManager_vaultName" formats)
       const agentName = toolName.split('_')[0];
-      
+
       // Only enhance memoryManager agent
       if (agentName !== 'memoryManager') {
-        return false;
+        return Promise.resolve(false);
       }
 
       // Check if the schema has mode property with workspace-related modes
       if (!baseSchema?.properties?.mode?.enum) {
-        return false;
+        return Promise.resolve(false);
       }
 
       // Check if any target modes are present in the schema
       const schemaModes = baseSchema.properties.mode.enum as string[];
       const hasTargetMode = this.targetModes.some(mode => schemaModes.includes(mode));
-      
+
       logger.systemLog(`canEnhance(${toolName}): ${hasTargetMode}`, 'WorkspaceSchemaProvider');
-      return hasTargetMode;
+      return Promise.resolve(hasTargetMode);
 
     } catch (error) {
       logger.systemError(error instanceof Error ? error : new Error(String(error)), 'WorkspaceSchemaProvider canEnhance');
-      return false;
+      return Promise.resolve(false);
     }
   }
 
@@ -135,9 +139,11 @@ export class WorkspaceSchemaProvider implements ISchemaProvider {
     
     // Check cache first
     if (this.enableCaching && this.cache.has(cacheKey)) {
-      const cachedData = this.cache.get(cacheKey)!;
-      logger.systemLog(`Using cached workspace data (${cachedData.stats.totalCount} workspaces)`, 'WorkspaceSchemaProvider');
-      return cachedData;
+      const cachedData = this.cache.get(cacheKey);
+      if (cachedData) {
+        logger.systemLog(`Using cached workspace data (${cachedData.stats.totalCount} workspaces)`, 'WorkspaceSchemaProvider');
+        return cachedData;
+      }
     }
 
     try {
@@ -205,7 +211,11 @@ export class WorkspaceSchemaProvider implements ISchemaProvider {
    */
   private applyEnhancement(originalSchema: EnhancedJSONSchema, enhancementData: WorkspaceEnhancementData): EnhancedJSONSchema {
     // Deep clone the original schema
-    const enhancedSchema = JSON.parse(JSON.stringify(originalSchema));
+    const clonedSchema: unknown = JSON.parse(JSON.stringify(originalSchema));
+    if (!isEnhancedJSONSchema(clonedSchema)) {
+      return originalSchema;
+    }
+    const enhancedSchema = clonedSchema;
 
     // Ensure properties exist
     if (!enhancedSchema.properties) {
@@ -213,7 +223,9 @@ export class WorkspaceSchemaProvider implements ISchemaProvider {
     }
 
     // Check which modes are available in this schema and enhance them
-    const schemaModes = enhancedSchema.properties?.mode?.enum as string[] || [];
+    const schemaModes = Array.isArray(enhancedSchema.properties?.mode?.enum)
+      ? enhancedSchema.properties.mode.enum.filter((mode): mode is string => typeof mode === 'string')
+      : [];
     
     // Enhance loadWorkspace mode if it exists
     if (schemaModes.includes('loadWorkspace') && this.targetModes.includes('loadWorkspace')) {
@@ -238,7 +250,7 @@ export class WorkspaceSchemaProvider implements ISchemaProvider {
       return; // Skip if 'id' parameter doesn't exist
     }
 
-    const idProp = schema.properties.id as EnhancedJSONSchema;
+    const idProp = schema.properties.id;
     // Add enum with available workspace IDs
     idProp.enum = data.workspaceIds;
 

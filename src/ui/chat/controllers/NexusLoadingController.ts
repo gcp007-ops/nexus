@@ -7,15 +7,18 @@
  */
 
 import { Component } from 'obsidian';
+import { ManagedTimeoutTracker } from '../utils/ManagedTimeoutTracker';
 
 /**
  * Controller for Nexus/WebLLM and database loading overlays
  */
 export class NexusLoadingController extends Component {
   private overlayEl: HTMLElement | null = null;
+  private timeouts: ManagedTimeoutTracker;
 
   constructor(private containerEl: HTMLElement) {
     super();
+    this.timeouts = new ManagedTimeoutTracker(this);
     this.findOverlayElement();
   }
 
@@ -37,7 +40,7 @@ export class NexusLoadingController extends Component {
     this.overlayEl.removeClass('chat-loading-overlay-hidden');
     this.overlayEl.addClass('chat-loading-overlay-visible');
     // Trigger reflow for animation
-    this.overlayEl.offsetHeight;
+    void this.overlayEl.offsetHeight;
     this.overlayEl.addClass('is-visible');
   }
 
@@ -54,7 +57,7 @@ export class NexusLoadingController extends Component {
     const percent = Math.round(progress * 100);
 
     if (statusEl) {
-      statusEl.textContent = stage || 'Loading Nexus model...';
+      statusEl.textContent = stage || 'Loading model...';
     }
 
     if (progressBar) {
@@ -74,19 +77,21 @@ export class NexusLoadingController extends Component {
 
     this.overlayEl.removeClass('is-visible');
 
-    // Wait for transition then hide
-    setTimeout(() => {
-      this.overlayEl!.removeClass('chat-loading-overlay-visible');
-      this.overlayEl!.addClass('chat-loading-overlay-hidden');
+    this.timeouts.setTimeout(() => {
+      const overlayEl = this.overlayEl;
+      if (!overlayEl) return;
+
+      overlayEl.removeClass('chat-loading-overlay-visible');
+      overlayEl.addClass('chat-loading-overlay-hidden');
 
       // Reset progress
-      const progressBar = this.overlayEl!.querySelector('[data-progress-el]') as HTMLElement;
-      const progressText = this.overlayEl!.querySelector('[data-progress-text-el]');
-      const statusEl = this.overlayEl!.querySelector('[data-status-el]');
+      const progressBar = overlayEl.querySelector('[data-progress-el]') as HTMLElement;
+      const progressText = overlayEl.querySelector('[data-progress-text-el]');
+      const statusEl = overlayEl.querySelector('[data-status-el]');
 
       if (progressBar) progressBar.addClass('chat-progress-bar-reset');
       if (progressText) progressText.textContent = '0%';
-      if (statusEl) statusEl.textContent = 'Loading Nexus model...';
+      if (statusEl) statusEl.textContent = 'Loading model...';
     }, 300);
   }
 
@@ -103,8 +108,31 @@ export class NexusLoadingController extends Component {
     // Remove hidden class first (it has display:none !important which overrides visible)
     this.overlayEl.removeClass('chat-loading-overlay-hidden');
     this.overlayEl.addClass('chat-loading-overlay-visible');
-    this.overlayEl.offsetHeight; // Trigger reflow
+    void this.overlayEl.offsetHeight; // Trigger reflow
     this.overlayEl.addClass('is-visible');
+  }
+
+  updateDatabaseLoadingProgress(progress: number, stage: string): void {
+    if (!this.overlayEl) return;
+
+    const statusEl = this.overlayEl.querySelector('[data-status-el]');
+    const progressBar = this.overlayEl.querySelector('[data-progress-el]') as HTMLElement;
+    const progressText = this.overlayEl.querySelector('[data-progress-text-el]');
+
+    const percent = Math.round(Math.max(0, Math.min(progress, 1)) * 100);
+
+    if (statusEl) {
+      statusEl.textContent = stage || 'Loading database...';
+    }
+
+    if (progressBar) {
+      progressBar.style.setProperty('width', `${percent}%`);
+      progressBar.removeClass('chat-progress-bar-reset');
+    }
+
+    if (progressText) {
+      progressText.textContent = `${percent}%`;
+    }
   }
 
   /**
@@ -114,12 +142,15 @@ export class NexusLoadingController extends Component {
     if (!this.overlayEl) return;
 
     this.overlayEl.removeClass('is-visible');
-    setTimeout(() => {
-      this.overlayEl!.removeClass('chat-loading-overlay-visible');
-      this.overlayEl!.addClass('chat-loading-overlay-hidden');
+    this.timeouts.setTimeout(() => {
+      const overlayEl = this.overlayEl;
+      if (!overlayEl) return;
+
+      overlayEl.removeClass('chat-loading-overlay-visible');
+      overlayEl.addClass('chat-loading-overlay-hidden');
       // Reset text for potential Nexus loading later
-      const statusEl = this.overlayEl!.querySelector('[data-status-el]');
-      if (statusEl) statusEl.textContent = 'Loading Nexus model...';
+      const statusEl = overlayEl.querySelector('[data-status-el]');
+      if (statusEl) statusEl.textContent = 'Loading model...';
     }, 300);
   }
 
@@ -148,7 +179,7 @@ export class NexusLoadingController extends Component {
 
       // Hide overlay
       this.hideDatabaseLoadingOverlay();
-    } catch (error) {
+    } catch {
       this.hideDatabaseLoadingOverlay();
     }
   }

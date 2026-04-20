@@ -9,6 +9,7 @@ import {
   ConversationEvent,
   ConversationCreatedEvent,
   ConversationUpdatedEvent,
+  ConversationDeletedEvent,
   MessageEvent,
   MessageUpdatedEvent,
   MessageDeletedEvent,
@@ -32,6 +33,9 @@ export class ConversationEventApplier {
         break;
       case 'conversation_updated':
         await this.applyConversationUpdated(event);
+        break;
+      case 'conversation_deleted':
+        await this.applyConversationDeleted(event);
         break;
       case 'message':
         await this.applyMessageAdded(event);
@@ -91,7 +95,7 @@ export class ConversationEventApplier {
 
   private async applyConversationUpdated(event: ConversationUpdatedEvent): Promise<void> {
     const updates: string[] = [];
-    const values: any[] = [];
+    const values: unknown[] = [];
 
     if (event.data.title !== undefined) { updates.push('title = ?'); values.push(event.data.title); }
     if (event.data.updated !== undefined) { updates.push('updated = ?'); values.push(event.data.updated); }
@@ -121,6 +125,18 @@ export class ConversationEventApplier {
         values
       );
     }
+  }
+
+  private async applyConversationDeleted(event: ConversationDeletedEvent): Promise<void> {
+    // Delete messages first (cascade), then conversation
+    await this.sqliteCache.run(
+      `DELETE FROM messages WHERE conversationId = ?`,
+      [event.conversationId]
+    );
+    await this.sqliteCache.run(
+      `DELETE FROM conversations WHERE id = ?`,
+      [event.conversationId]
+    );
   }
 
   private async applyMessageAdded(event: MessageEvent): Promise<void> {
@@ -158,7 +174,7 @@ export class ConversationEventApplier {
 
   private async applyMessageUpdated(event: MessageUpdatedEvent): Promise<void> {
     const updates: string[] = [];
-    const values: any[] = [];
+    const values: unknown[] = [];
 
     if (event.data.content !== undefined) { updates.push('content = ?'); values.push(event.data.content); }
     if (event.data.state !== undefined) { updates.push('state = ?'); values.push(event.data.state); }

@@ -18,7 +18,8 @@ import { SessionContextManager } from '../SessionContextManager';
 import { ToolListService } from '../../handlers/services/ToolListService';
 import { IAgent } from '../../agents/interfaces/IAgent';
 import { ToolManagerAgent } from '../../agents/toolManager/toolManager';
-import type { UseToolParams } from '../../agents/toolManager/types';
+import type { NormalizedUseToolParams } from '../../agents/toolManager/types';
+import { ToolCliNormalizer } from '../../agents/toolManager/services/ToolCliNormalizer';
 import type { JSONSchema } from '../../types/schema/JSONSchemaTypes';
 import type { AgentProvider } from '../agent/LazyAgentProvider';
 
@@ -76,6 +77,15 @@ export interface DirectToolResult {
     result?: unknown;
     error?: string;
     executionTime?: number;
+}
+
+export interface DirectToolExecutionContext {
+    sessionId?: string;
+    workspaceId?: string;
+    imageProvider?: 'google' | 'openrouter';
+    imageModel?: string;
+    transcriptionProvider?: string;
+    transcriptionModel?: string;
 }
 
 export interface DirectToolExecutorConfig {
@@ -274,7 +284,7 @@ export class DirectToolExecutor {
     async executeTool(
         toolName: string,
         params: Record<string, unknown>,
-        context?: { sessionId?: string; workspaceId?: string }
+        context?: DirectToolExecutionContext
     ): Promise<unknown> {
         try {
             // Two-tool architecture: getTools and useTool
@@ -288,8 +298,8 @@ export class DirectToolExecutor {
             }
 
             // Legacy/direct tool calls: "agentName_toolName" format
-            let agentName: string;
-            let modeName: string;
+            let agentName = '';
+            let modeName = '';
             const paramsTyped = params as Record<string, unknown> & { mode?: string; context?: Record<string, unknown> };
 
             if (paramsTyped.mode) {
@@ -302,10 +312,24 @@ export class DirectToolExecutor {
                 agentName = parts[0];
                 modeName = parts.slice(1).join('_');
             } else {
-                // Unknown tool name
-                throw new Error(
-                    `Unknown tool "${toolName}". Expected "getTools", "useTool", or "agentName_toolName" format.`
-                );
+                // Bare tool name (e.g. "createState" from ContextPreservationService).
+                // Scan all agents to find which one owns this tool slug.
+                const agents = this.getAgentsAsArray();
+                let found = false;
+                for (const a of agents) {
+                    const tool = a.getTool(toolName);
+                    if (tool) {
+                        agentName = a.name;
+                        modeName = toolName;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    throw new Error(
+                        `Unknown tool "${toolName}". Expected "getTools", "useTool", or "agentName_toolName" format.`
+                    );
+                }
             }
 
             // Determine sessionId and workspaceId with priority:
@@ -319,12 +343,17 @@ export class DirectToolExecutor {
                 || (paramsTyped.context?.workspaceId as string | undefined)
                 || 'default';
 
+            const paramsWithDefaults = this.applyChatMediaDefaults(agentName, modeName, params, context);
             const paramsWithContext = {
-                ...params,
+                ...paramsWithDefaults,
                 context: {
                     ...paramsTyped.context,
                     sessionId: effectiveSessionId,
-                    workspaceId: effectiveWorkspaceId
+                    workspaceId: effectiveWorkspaceId,
+                    imageProvider: paramsTyped.context?.imageProvider || context?.imageProvider,
+                    imageModel: paramsTyped.context?.imageModel || context?.imageModel,
+                    transcriptionProvider: paramsTyped.context?.transcriptionProvider || context?.transcriptionProvider,
+                    transcriptionModel: paramsTyped.context?.transcriptionModel || context?.transcriptionModel
                 }
             };
 
@@ -354,7 +383,7 @@ export class DirectToolExecutor {
      */
     private async handleGetTools(
         params: Record<string, unknown>,
-        context?: { sessionId?: string; workspaceId?: string }
+        context?: DirectToolExecutionContext
     ): Promise<unknown> {
         // Get toolManager agent to use its getTools implementation (with lazy init)
         const toolManagerAgent = await this.getAgentByNameAsync('toolManager');
@@ -373,16 +402,7 @@ export class DirectToolExecutor {
             };
         }
 
-        // Merge context from params and external context
-        const paramsContext = (params.context || {}) as Record<string, unknown>;
-        const mergedParams = {
-            ...params,
-            context: {
-                ...paramsContext,
-                sessionId: context?.sessionId || paramsContext.sessionId || `session_${Date.now()}`,
-                workspaceId: context?.workspaceId || paramsContext.workspaceId || 'default'
-            }
-        };
+        const mergedParams = this.mergeToolManagerContext(params, context);
 
         // Execute via toolManager's getTools
         return await getToolsTool.execute(mergedParams);
@@ -394,7 +414,7 @@ export class DirectToolExecutor {
      */
     private async handleUseTool(
         params: Record<string, unknown>,
-        context?: { sessionId?: string; workspaceId?: string },
+        context?: DirectToolExecutionContext,
         options?: {
             batchId?: string;
             onToolEvent?: (event: 'started' | 'completed', data: ToolEventData) => void;
@@ -410,22 +430,22 @@ export class DirectToolExecutor {
 
         const batchId = options?.batchId;
         const onToolEvent = options?.onToolEvent;
-        const paramsContext = (params.context || {}) as Record<string, unknown>;
-        const mergedParams = {
-            ...params,
-            context: {
-                ...paramsContext,
-                sessionId: context?.sessionId || paramsContext.sessionId || `session_${Date.now()}`,
-                workspaceId: context?.workspaceId || paramsContext.workspaceId || 'default'
-            }
-        };
+        const mergedParams = this.mergeToolManagerContext(params, context);
 
         const batchExecutionService = toolManagerAgent instanceof ToolManagerAgent
             ? toolManagerAgent.getToolBatchExecutionService()
             : null;
 
         if (batchExecutionService) {
-            return await batchExecutionService.execute(mergedParams as UseToolParams, {
+            const cliNormalizer = toolManagerAgent instanceof ToolManagerAgent
+                ? toolManagerAgent.getToolCliNormalizer()
+                : new ToolCliNormalizer(new Map<string, IAgent>());
+            const normalizedParams: NormalizedUseToolParams = {
+                context: cliNormalizer.normalizeContext(mergedParams),
+                calls: cliNormalizer.normalizeExecutionCalls(mergedParams),
+                strategy: mergedParams.strategy as 'serial' | 'parallel' | undefined
+            };
+            return await batchExecutionService.execute(normalizedParams, {
                 batchId,
                 observer: onToolEvent
                     ? {
@@ -502,7 +522,7 @@ export class DirectToolExecutor {
      */
     async executeToolCalls(
         toolCalls: DirectToolCall[],
-        context?: { sessionId?: string; workspaceId?: string },
+        context?: DirectToolExecutionContext,
         onToolEvent?: (event: 'started' | 'completed', data: ToolEventData) => void
     ): Promise<DirectToolResult[]> {
         const results: DirectToolResult[] = [];
@@ -516,7 +536,7 @@ export class DirectToolExecutor {
                 const argumentsStr = toolCall.function.arguments || '{}';
 
                 try {
-                    parameters = JSON.parse(argumentsStr);
+                    parameters = JSON.parse(argumentsStr) as Record<string, unknown>;
                 } catch (parseError) {
                     throw new Error(`Invalid tool arguments: ${parseError instanceof Error ? parseError.message : 'Unknown parsing error'}`);
                 }
@@ -594,6 +614,74 @@ export class DirectToolExecutor {
         }
 
         return results;
+    }
+
+    private applyChatMediaDefaults(
+        agentName: string,
+        toolName: string,
+        params: Record<string, unknown>,
+        context?: DirectToolExecutionContext
+    ): Record<string, unknown> {
+        if (!context) {
+            return params;
+        }
+
+        if (agentName === 'promptManager' && toolName === 'generateImage') {
+            return {
+                ...params,
+                provider: params.provider || context.imageProvider,
+                model: params.model || context.imageModel
+            };
+        }
+
+        if (agentName === 'ingestManager' && toolName === 'ingest') {
+            return {
+                ...params,
+                transcriptionProvider: params.transcriptionProvider || context.transcriptionProvider,
+                transcriptionModel: params.transcriptionModel || context.transcriptionModel
+            };
+        }
+
+        return params;
+    }
+
+    private mergeToolManagerContext(
+        params: Record<string, unknown>,
+        context?: DirectToolExecutionContext
+    ): Record<string, unknown> {
+        const paramsContext = (params.context || {}) as Record<string, unknown>;
+
+        return {
+            ...params,
+            workspaceId: (params.workspaceId as string | undefined)
+                || context?.workspaceId
+                || (paramsContext.workspaceId as string | undefined)
+                || 'default',
+            sessionId: (params.sessionId as string | undefined)
+                || context?.sessionId
+                || (paramsContext.sessionId as string | undefined)
+                || `session_${Date.now()}`,
+            memory: (params.memory as string | undefined)
+                || (paramsContext.memory as string | undefined)
+                || '',
+            goal: (params.goal as string | undefined)
+                || (paramsContext.goal as string | undefined)
+                || '',
+            constraints: (params.constraints as string | undefined)
+                || (paramsContext.constraints as string | undefined),
+            imageProvider: (params.imageProvider as DirectToolExecutionContext['imageProvider'] | undefined)
+                || context?.imageProvider
+                || (paramsContext.imageProvider as DirectToolExecutionContext['imageProvider'] | undefined),
+            imageModel: (params.imageModel as string | undefined)
+                || context?.imageModel
+                || (paramsContext.imageModel as string | undefined),
+            transcriptionProvider: (params.transcriptionProvider as string | undefined)
+                || context?.transcriptionProvider
+                || (paramsContext.transcriptionProvider as string | undefined),
+            transcriptionModel: (params.transcriptionModel as string | undefined)
+                || context?.transcriptionModel
+                || (paramsContext.transcriptionModel as string | undefined)
+        };
     }
 
     /**

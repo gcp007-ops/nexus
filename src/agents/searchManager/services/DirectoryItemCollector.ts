@@ -35,11 +35,11 @@ export class DirectoryItemCollector {
    * @param maxDepth Optional maximum depth for recursion
    * @returns Array of collected items
    */
-  async getDirectoryItems(
+  getDirectoryItems(
     paths: string[],
     searchType: 'files' | 'folders' | 'both',
     maxDepth?: number
-  ): Promise<(TFile | TFolder)[]> {
+  ): (TFile | TFolder)[] {
     const allItems: (TFile | TFolder)[] = [];
 
     for (const path of paths) {
@@ -55,19 +55,21 @@ export class DirectoryItemCollector {
           if (item.path === '/') continue;
 
           if (regex.test(item.path)) {
-             if (this.matchesSearchType(item, searchType)) {
-                allItems.push(item as TFile | TFolder);
+             if (this.matchesSearchType(item, searchType) && (item instanceof TFile || item instanceof TFolder)) {
+                allItems.push(item);
              }
           }
         }
       } else if (normalizedPath === '/' || normalizedPath === '') {
         // Root path - get all vault items
         const vaultItems = this.plugin.app.vault.getAllLoadedFiles()
-          .filter(file => this.matchesSearchType(file, searchType)) as (TFile | TFolder)[];
+          .filter((file): file is TFile | TFolder =>
+            this.matchesSearchType(file, searchType) && (file instanceof TFile || file instanceof TFolder)
+          );
         allItems.push(...vaultItems);
       } else {
         // Specific directory
-        const directoryItems = await this.getItemsInDirectory(
+        const directoryItems = this.getItemsInDirectory(
           normalizedPath,
           searchType,
           maxDepth
@@ -87,37 +89,39 @@ export class DirectoryItemCollector {
    * @param maxDepth Optional maximum depth
    * @returns Array of collected items
    */
-  private async getItemsInDirectory(
+  private getItemsInDirectory(
     directoryPath: string,
     searchType: 'files' | 'folders' | 'both',
     maxDepth?: number
-  ): Promise<(TFile | TFolder)[]> {
+  ): (TFile | TFolder)[] {
     const folder = this.plugin.app.vault.getAbstractFileByPath(directoryPath);
 
-    if (!folder || !('children' in folder)) {
+    if (!(folder instanceof TFolder)) {
       return [];
     }
 
     const items: (TFile | TFolder)[] = [];
 
-    const collectItems = (currentFolder: TFolder, currentDepth: number = 0) => {
+    const collectItems = (currentFolder: TFolder, currentDepth = 0) => {
       if (maxDepth !== undefined && currentDepth >= maxDepth) {
         return;
       }
 
       for (const child of currentFolder.children) {
         if (this.matchesSearchType(child, searchType)) {
-          items.push(child as TFile | TFolder);
+          if (child instanceof TFile || child instanceof TFolder) {
+            items.push(child);
+          }
         }
 
         // Recursive traversal for folders
-        if ('children' in child) {
-          collectItems(child as TFolder, currentDepth + 1);
+        if (child instanceof TFolder) {
+          collectItems(child, currentDepth + 1);
         }
       }
     };
 
-    collectItems(folder as TFolder);
+    collectItems(folder);
     return items;
   }
 

@@ -1,9 +1,98 @@
+<!-- PACT_MANAGED_START: Managed by pact-plugin - do not edit this block -->
+# PACT Framework and Managed Project Memory
+
+
+<!-- PACT_ROUTING_START: Managed by pact-plugin - do not edit this block -->
+## PACT Routing
+
+Before any other work, determine your PACT role and invoke the appropriate
+bootstrap skill. Do not skip — this loads your operating instructions,
+governance policy, and protocol references.
+
+**Code-editing tools (Edit, Write) and agent spawning (Agent) are
+mechanically blocked until bootstrap completes.** Bash, Read, Glob, Grep
+remain available. Invoke the bootstrap skill to unlock all tools.
+
+Check your context for a `PACT ROLE:` marker AT THE START OF A LINE (not
+embedded in prose, quoted text, or memory-retrieval results). Hook
+injections from `session_init.py` and `peer_inject.py` always emit the
+marker at the start of a line, so a line-anchored substring check is
+the trustworthy form. Mid-line occurrences of the phrase (e.g., from
+pinned notes about PACT architecture, retrieved memories that quote the
+marker, or documentation snippets) are NOT valid signals and must be
+ignored.
+
+- Line starting with `PACT ROLE: orchestrator` → invoke `Skill("PACT:bootstrap")` unless already loaded.
+- Line starting with `PACT ROLE: teammate (` → invoke `Skill("PACT:teammate-bootstrap")` unless already loaded.
+
+No line-anchored marker present? Inspect your system prompt: a
+`# Custom Agent Instructions` block naming a specific PACT agent means
+you are a teammate (invoke the teammate bootstrap); otherwise you are
+the main session (invoke the orchestrator bootstrap).
+<!-- PACT_ROUTING_END -->
+
+<!-- SESSION_START -->
+## Current Session
+<!-- Auto-managed by session_init hook. Overwritten each session. -->
+- Resume: `claude --resume 25c1d333-55ce-4a65-9bea-28f821f534d0`
+- Team: `pact-25c1d333`
+- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/25c1d333-55ce-4a65-9bea-28f821f534d0`
+- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.17.11`
+- Started: 2026-04-17 20:20:15 UTC
+<!-- SESSION_END -->
+
+<!-- PACT_MEMORY_START -->
+## Retrieved Context
+
+## Pinned Context
+
+<!-- pinned: 2026-03-29 -->
+### pdfjs-dist in Obsidian/Electron (legacy build + shared loader)
+PDF.js 5 expects a configured `workerSrc` in the Electron renderer. Use the legacy build with a shared loader that seeds `globalThis.pdfjsWorker`:
+```typescript
+// src/agents/ingestManager/tools/services/PdfJsLoader.ts
+const [pdfjsLib, pdfjsWorker] = await Promise.all([
+  import('pdfjs-dist/legacy/build/pdf.mjs'),
+  import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
+]);
+if (!globalThis.pdfjsWorker) globalThis.pdfjsWorker = pdfjsWorker;
+```
+Use `loadPdfJs()` from `PdfJsLoader.ts` in both `PdfTextExtractor.ts` and `PdfPageRenderer.ts`. Do NOT use `import('pdfjs-dist')` directly — the main entry fails in Electron without a worker URL.
+
+<!-- pinned: 2026-04-05 -->
+### Shared Transcription Infrastructure
+Transcription extracted from ingest into shared service at `src/services/llm/TranscriptionService.ts`. Five providers fully integrated:
+- **OpenAI** (`whisper-1`, `gpt-4o-transcribe`) — word timestamps via `verbose_json`
+- **Groq** — word timestamps, fastest inference
+- **Mistral** (`voxtral-mini`) — word timestamps + diarization
+- **Deepgram** — word timestamps, utterances, diarization, keyword biasing
+- **AssemblyAI** — word timestamps, speaker labels
+
+Adapters at `src/services/llm/adapters/{provider}/`. Types at `src/services/llm/types/VoiceTypes.ts`.
+⚠️ Ingest shim at `src/agents/ingestManager/tools/services/TranscriptionService.ts` strips word-level data — audio editor must call shared service directly.
+- **Drag-drop file path**: Browser `File.name` is basename only — use `vault.getFiles().find(f => f.name === file.name)` to get vault-relative path in `handleIngestFiles`.
+
+## Working Memory
+<!-- Auto-managed by pact-memory skill. Last 3 memories shown. Full history searchable via pact-memory skill. -->
+
+### 2026-04-16 13:00
+**Context**: Orchestrator framing error during PR #142 peer review synthesis in session pact-3d1e653b (2026-04-16). The architect reviewer explicitly deferred 2 findings to Future tier with the qualifier 'out of scope for PR #142' (items: ContextPreservationService divergent ConversationMessage + 3-site call_synth_ id duplication). When the orchestrator synthesized the review for the user, the 'out of scope' qualifier was dropped and the findings were re-presented at 'Address now' tier. The user caught the drift and asked for this to be saved as feedback so future review-synthesis work preserves severity-tier qualifiers verbatim from the reviewer.
+**Goal**: Establish a durable norm: when synthesizing reviewer findings for the user, preserve severity-tier qualifiers exactly as the reviewer wrote them. Do not silently re-escalate Future-tier findings to 'Address now' tier. If synthesis requires compressing multiple findings, keep the original tier labels and qualifying phrases (e.g., 'out of scope for this PR', 'Phase 3 candidate', 'deferred pending X') verbatim. This memory is cross-agent — any agent doing review synthesis or finding triage should apply this norm.
+**Decisions**: When synthesizing reviews for user, preserve severity-tier qualifiers verbatim, When orchestrator disagrees with reviewer's tier, flag explicitly to user
+**Lessons**: Severity tiers are semantic contracts, not editorial shorthand. When a reviewer writes 'Future — out of scope for PR #142', those 4 words encode a deliberate triage decision: the reviewer has determined the finding is real but should not block this PR. Dropping 'out of scope for PR #142' and promoting the finding to 'Address now' overrides the reviewer's judgment without consulting them. This is a form of silent disagreement resolution, which violates the Communication Charter's constructive-challenge norm (disagree with evidence, don't silently override)., Synthesis failure mode: orchestrator reads architect review -> sees 5 findings -> summarizes to user as 5 Minor items -> user sees uniform tier and assumes all need addressing now. The reviewer's tier labels were the signal that 2 of the 5 were Future, not Minor. Preserving the labels would have made the triage decision visible to the user., Fix pattern: when synthesizing reviews for user, preserve the reviewer's exact tier label (Blocking / Minor / Future / Doc-only) and any qualifying clause ('out of scope for PR #X', 'Phase N candidate', 'deferred pending Y'). If the synthesis compresses items, use a structure like 'Blocking: 1, Minor: 5, Future: 3, Doc-only: 1 — details below' rather than flattening to a single list. The user can then ask to expand any tier., Broader principle: the orchestrator is a messenger between reviewer and user, not a re-judge. If the orchestrator thinks a Future finding should actually be addressed now, the correct move is to flag that to the user EXPLICITLY: 'architect tiered X as Future but I'd recommend addressing now because Y — thoughts?' This makes the disagreement visible instead of hiding it in a silent re-tiering., This applies beyond review synthesis — any time an orchestrator or synthesizing agent summarizes another agent's tiered/prioritized output for the user, the priority labels must survive the compression. This includes uncertainty tiers (HIGH/MEDIUM/LOW), blocker status, phase deferrals, and scope qualifiers. Compression is fine; re-labeling is not.
+**Reasoning chains**: Architect tiers a finding Future with 'out of scope for PR #142' qualifier -> orchestrator synthesizes review -> qualifier dropped -> finding appears in 'Address now' tier -> user sees it as work to do -> reviewer's deliberate deferral is silently overridden -> fix: preserve tier + qualifier verbatim, Severity tiers are semantic contracts -> dropping them is silent re-judgment -> silent re-judgment violates constructive-challenge norm (disagree with evidence, don't hide the disagreement) -> fix: preserve tiers, flag orchestrator disagreements explicitly
+**Agreements**: Severity tiers + qualifying clauses are preserved verbatim when synthesizing reviews for user, Orchestrator disagreements with reviewer tiers are flagged explicitly, not silently re-tiered
+**Memory ID**: f561dbc9ae030d7b41adcb82283f902e
+<!-- PACT_MEMORY_END -->
+
+<!-- PACT_MANAGED_END -->
+
 # Claude Code Context Document
-Last Updated: 2026-03-29
+Last Updated: 2026-04-06
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.6.3
+- **Version**: 5.7.4
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -11,453 +100,49 @@ Last Updated: 2026-03-29
 
 ## Obsidian Plugin Development Guidelines
 
-This is an **Obsidian community plugin** that must follow official [Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines). All code changes must adhere to these best practices.
-
-### Plugin Lifecycle
-
-```typescript
-// Plugins extend the Plugin base class
-export default class MyPlugin extends Plugin {
-    async onload() {
-        // Initialize UI, register commands, set up events
-        // Use registration methods for auto-cleanup
-    }
-
-    async onunload() {
-        // Clean up resources (most handled automatically)
-    }
-}
-```
-
-**Key lifecycle rules:**
-- All registration methods (`registerEvent`, `addCommand`, `registerView`, `registerInterval`) auto-cleanup on unload
-- Never store view references in the plugin instance (causes memory leaks)
-- Use `this.app.workspace.onLayoutReady()` to defer startup operations
-
-### Styling - ALL STYLES IN styles.css
-
-**CRITICAL**: All styles must be defined in `styles.css`, never inline in TypeScript/JavaScript.
-
-```typescript
-// ❌ NEVER do this
-element.style.color = 'white';
-element.style.backgroundColor = 'red';
-element.style.display = 'flex';
-
-// ✅ ALWAYS do this
-element.addClass('my-plugin-element');
-```
-
-```css
-/* In styles.css - use CSS variables for theme compatibility */
-.my-plugin-element {
-    color: var(--text-normal);
-    background-color: var(--background-primary);
-    display: flex;
-}
-```
-
-**Required CSS Variables** (never hardcode colors):
-| Variable | Purpose |
-|----------|---------|
-| `--text-normal`, `--text-muted`, `--text-faint` | Text colors |
-| `--text-accent` | Interactive/link text |
-| `--background-primary`, `--background-secondary` | Background colors |
-| `--background-modifier-border` | Borders |
-| `--background-modifier-error` | Error states |
-| `--interactive-accent`, `--interactive-accent-hover` | Buttons/interactive |
-| `--radius-s`, `--radius-m`, `--radius-l` | Border radius |
-
-### Security Requirements
-
-**innerHTML is FORBIDDEN** with dynamic content:
-```typescript
-// ❌ NEVER - XSS vulnerability
-element.innerHTML = userProvidedContent;
-element.innerHTML = `<div>${dynamicData}</div>`;
-
-// ✅ Safe patterns
-element.textContent = userProvidedContent;  // For text
-element.createEl('div', { text: dynamicData });  // Obsidian API
-
-// ✅ Safe innerHTML patterns (only these are acceptable)
-element.innerHTML = '';  // Clearing
-const escaped = div.innerHTML;  // Reading already-escaped content
-```
-
-**Safe DOM creation with Obsidian API:**
-```typescript
-// Use createEl, createDiv, createSpan
-const container = contentEl.createDiv({ cls: 'my-container' });
-const heading = container.createEl('h2', { text: 'Title' });
-const button = container.createEl('button', {
-    text: 'Click me',
-    cls: 'my-button'
-});
-
-// For icons, use setIcon
-import { setIcon } from 'obsidian';
-setIcon(button, 'chevron-right');
-```
-
-### Event Registration
-
-**Always use `registerDomEvent` for DOM events:**
-```typescript
-// ❌ NEVER - causes memory leaks on unload
-element.addEventListener('click', handler);
-document.addEventListener('keydown', handler);
-window.addEventListener('resize', handler);
-
-// ✅ ALWAYS - auto-cleanup on unload
-this.registerDomEvent(element, 'click', handler);
-this.registerDomEvent(document, 'keydown', handler);
-this.registerDomEvent(window, 'resize', handler);
-
-// ✅ For Obsidian workspace events
-this.registerEvent(this.app.vault.on('modify', handler));
-this.registerEvent(this.app.workspace.on('active-leaf-change', handler));
-```
-
-### File Operations
-
-```typescript
-// ❌ NEVER use vault.adapter directly (mobile incompatible)
-await this.app.vault.adapter.read(path);
-await this.app.vault.adapter.write(path, content);
-
-// ✅ Use Vault API
-await this.app.vault.read(file);
-await this.app.vault.cachedRead(file);  // Faster, uses cache
-
-// ✅ For modifying files, use Vault.process() (atomic, prevents conflicts)
-await this.app.vault.process(file, (content) => {
-    return content.replace('old', 'new');
-});
-
-// ✅ Use Editor API for active file (preserves cursor)
-const editor = this.app.workspace.activeEditor?.editor;
-if (editor) {
-    editor.replaceRange('new text', from, to);
-}
-```
-
-**Exception**: Hidden files (like `.nexus/`) aren't indexed by Obsidian, so `vault.adapter` is acceptable for those paths. Use `isHiddenPath()` helper.
-
-### API Best Practices
-
-| Task | Do This | Not This |
-|------|---------|----------|
-| HTTP requests | `requestUrl()` | `fetch()` |
-| Path handling | `normalizePath(userPath)` | Direct string concat |
-| OS detection | `Platform.isMobile`, `Platform.isDesktop` | User agent sniffing |
-| File lookup | `vault.getFileByPath(path)` | Iterating vault.getFiles() |
-| View access | `workspace.getActiveViewOfType(MarkdownView)` | `workspace.activeLeaf.view` |
-
-### Commands
-
-```typescript
-this.addCommand({
-    id: 'my-action',  // Don't duplicate plugin ID
-    name: 'My action',  // Sentence case, no "command" word
-    // NO default hotkey - users set their own
-    checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (view) {
-            if (!checking) {
-                // Execute command
-            }
-            return true;
-        }
-        return false;
-    }
-});
-```
-
-### Mobile Compatibility
-
-```typescript
-import { Platform } from 'obsidian';
-
-if (Platform.isMobile) {
-    // Mobile-specific code
-}
-
-// ❌ These APIs are NOT available on mobile
-import { fs, path, crypto } from 'node:*';  // Node.js modules
-require('electron');  // Electron APIs
-
-// ✅ Mobile alternatives
-// Use SubtleCrypto instead of crypto
-// Use navigator.clipboard instead of electron clipboard
-// Set isDesktopOnly: true in manifest if Node.js required
-```
-
-### Accessibility Requirements
-
-```typescript
-// ✅ Interactive elements need aria-labels
-const iconButton = container.createEl('button', { cls: 'icon-button' });
-iconButton.setAttribute('aria-label', 'Open settings');
-setIcon(iconButton, 'settings');
-
-// ✅ Keyboard navigation (Tab, Enter, Space)
-// ✅ Focus indicators with :focus-visible
-// ✅ Touch targets minimum 44×44px on mobile
-```
-
-### Code Quality Rules
-
-| Rule | Requirement |
-|------|-------------|
-| Type safety | No `as any` casts, use `instanceof` checks |
-| Variables | Use `const`/`let`, never `var` |
-| Console logging | No `console.log` in production, only `console.error` for actual errors |
-| UI text | Sentence case everywhere |
-| Cleanup | Remove all template/sample code before submission |
-
-### Manifest Requirements
-
-```json
-{
-    "id": "my-plugin-id",      // Lowercase, no "obsidian", doesn't end with "plugin"
-    "name": "My Plugin Name",  // No "Obsidian" or "Plugin" suffix
-    "version": "1.0.0",
-    "minAppVersion": "1.0.0",
-    "description": "Does something useful.",  // <250 chars, ends with punctuation
-    "author": "Author Name",
-    "isDesktopOnly": false     // true only if Node.js APIs required
-}
-```
-
-### Performance Guidelines
-
-```typescript
-// ❌ Vault 'create' fires for ALL files on startup
-this.registerEvent(this.app.vault.on('create', handler));
-
-// ✅ Wait for layout ready
-this.app.workspace.onLayoutReady(() => {
-    this.registerEvent(this.app.vault.on('create', handler));
-});
-
-// OR check inside handler
-onCreate(file: TFile) {
-    if (!this.app.workspace.layoutReady) return;
-    // Process event
-}
-```
-
-### References
-
-- [Official Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)
-- [Obsidian API Types](https://github.com/obsidianmd/obsidian-api)
-- [CSS Variables Reference](https://docs.obsidian.md/Reference/CSS+variables)
-- [Sample Plugin Template](https://github.com/obsidianmd/obsidian-sample-plugin)
-
-## Recent Milestones
-
-### March 2026
-
-**Mar 29**: v5.6.1 — Ingestion multi-provider, app UX fixes, Mistral multi-turn
-- **Ingestion**: `IngestModelCatalog` + `IngestCapabilityService` — explicit catalog of OCR/transcription models; UI now shows provider+model dropdowns; supports OpenAI (Whisper, GPT-4o Transcribe), Groq (Whisper), Google Gemini multimodal audio, OpenRouter (Mistral OCR, Gemini); `enableIngestion` toggle in settings
-- **App UX**: `AppManager` refactored — config is source of truth; apps install as disabled (credentials first); `BaseAppAgent.supportsValidation()` + `getValidationActionLabel()`; `AppsTab` shows real manifest descriptions
-- **Mistral**: passes `conversationHistory` for multi-turn; `supportsImages: true`
-
-**Mar 29**: Web Tools Agent ✅ (PR #82)
-- New `WebToolsAgent` with 5 desktop-only tools: `openWebpage`, `capturePagePdf`, `capturePagePng`, `captureToMarkdown`, `extractLinks`
-- Electron BrowserWindow (`webViewer.ts`) renders pages headlessly; captures via `webContents.printToPDF()`, `capturePage()`, and DOM extraction
-- `captureToMarkdown`: strips boilerplate (nav/header/footer/ads), converts HTML→Markdown via Turndown
-- `extractLinks`: full link inventory with URL, text, and type (internal/external/anchor/resource)
-- Desktop-only (`Platform.isDesktop` guard) — requires Electron APIs
-
-**Mar 29**: Nexus Ingester ✅ (PR #83)
-- New `IngestManagerAgent` with `ingest` + `listCapabilities` tools
-- Drag PDF/audio files onto chat → confirmation modal → extraction/transcription → `.md` note alongside original
-- PDF modes: text (pdfjs-dist `getTextContent()`) + vision (pdfjs-dist page render → OCR via vision API); default 20-page limit
-- Audio: Whisper API via OpenAI + Groq only (Ollama/LM Studio excluded — no endpoint; Google deferred to v2)
-- pdfjs-dist bundled via LoopbackPort (no worker file needed); `decodeAudioData` try-catch fallback + >25MB size guard
-- VisionMessageFormatter: 4 provider families (OpenAI, Anthropic, Google, Ollama format)
-- UI: IngestDropOverlay, IngestProgressBanner, IngestConfirmModal, IngestEventBinder + DefaultsTab settings
-- 175 tests across 9 test files
-- Plan: `docs/plans/nexus-ingester-plan.md`
-
-**Mar 29**: Composer App ✅ (PR #81)
-- New `ComposerAgent` with `compose` + `listFormats` tools following BaseAppAgent pattern
-- IFormatComposer strategy pattern: markdown concat, PDF merge (pdf-lib 1.17.1), audio concat/mix (OfflineAudioContext)
-- Audio output: WAV (native PCM), WebM/Opus (MediaRecorder), MP3 (wasm-media-encoders 0.7.0, MIT)
-- Audio mixing: multi-track with per-track volume, offset, fadeIn/fadeOut via Web Audio API
-- Security: isValidPath() path traversal prevention, aggregate file size limit (default 200MB), atomic overwrite, bounds validation
-- 87 tests (7 files); pdf-lib + wasm-media-encoders pinned to exact versions
-
-**Mar 25**: v5.5.0 — Task Board, Compaction Frontier, Tool Refactors, Provider Updates ✅ (PRs #65–72)
-- **CLI providers stdin** (PR #65): Claude Code + Gemini CLI now pass prompts via stdin; Windows argv safety guard (24K limit)
-- **SystemPromptBuilder refactor** (PR #66): Cleaner composition pipeline, `CompactionFrontierRecord` injection, new guide
-- **Task Board UI** (PR #67): Native Obsidian kanban view (todo/in-progress/done), `openTasks` agent tool, `TaskBoardEvents` pub/sub for live refresh
-- **ContextBudgetService** (PR #72): Unified context window budget tracking + compaction thresholds across all providers
-- **CompactionFrontierService** (PR #68): Bounded stack of compacted context records; meta-compaction; transcript recovery; pre-send spinner in ChatInput
-- **Tool display refactor** (PR #69): `toolDisplayNormalizer` + `toolDisplayFormatter` extracted from `ProgressiveToolAccordion`; structured `ToolDisplayGroup`/`ToolDisplayStep` types
-- **Tool execution refactor** (PR #70): `ToolBatchExecutionService` extracted from `useTools` (430→122 lines); enriched `DirectToolExecutor` event shape
-- **Provider updates** (PR #71): GPT-5.4 Mini + Nano, GitHub Copilot live model discovery, `StreamingOrchestrator` responseId persistence, `ModelDropdownRenderer` fallback fix
-
-**Mar 23**: Claude Code Integration + Replace/Insert Tools ✅ (v5.4.0, PRs #57, #58)
-- Claude Code as native chat provider: uses local Claude CLI subscription login (no API key needed)
-- New `anthropic-claude-code` adapter with headless Claude Code runner and binary discovery
-- Claude Code models (Haiku 4.5, Sonnet 4.6, Opus 4.6) labeled "(Claude Code)" in model dropdown
-- Tool call traces and reasoning surfaced in existing chat accordions
-- Replaced unified `update` tool with `replace` + `insert` tools (inspired by community PR #56)
-- `replace`: validates `oldContent` at startLine/endLine, sliding-window search on mismatch
-- `insert`: positional insert (N), prepend (1), append (-1)
-
-**Mar 13**: Settings UI Redesign ✅ (PR #42)
-- CSS spacing token system: 7 `--space-*` tokens (4px base), replacing ~15 hardcoded values
-- New `SearchableCardManager` component: composition wrapper with search/filter + group headers
-- All 4 card tabs migrated (Workspaces, Providers, Apps, Prompts) + GetStartedTab
-- BreadcrumbNav: chevron icon separators, CSS specificity fix for Obsidian button defaults
-- Card hover: `box-shadow` → `background-color` transition (theme-aware)
-- Cross-platform: removed hardcoded button sizes fighting `clickable-icon`
-- BackButton: `div` → `button` element (keyboard accessibility)
-- `CardManagerConfig.onAdd`/`addButtonText` now optional
-- WorkspacesTab decomposed: 1,611 → 855 lines + WorkspaceListRenderer + WorkspaceDetailRenderer
-- 132 new tests across 6 files (SettingsRouter, SearchableCardManager, Card, CardManager, BackButton, WorkspacesTab)
-- Plan: `docs/plans/settings-ui-redesign-plan.md`
-
-**Mar 8**: SDK→HTTP Migration ✅ (commit 103a9e73)
-- Removed provider SDKs (OpenAI, Anthropic, Google, Groq, Mistral) — direct HTTP via shared ProviderHttpClient
-- Real-time streaming via Node.js https + `processNodeStream()` (replaces buffered requestUrl approach)
-- New: `ProviderHttpClient.ts` (shared HTTP + streaming + HTTPS enforcement + retry), `BufferedSSEStreamProcessor.ts`
-- Fixed: Google finish reason mapping, MALFORMED_FUNCTION_CALL error surfacing, OpenAI SSE multi-line parser, Anthropic stale betas field, Mistral param names, error body truncation (security)
-- 796 tests (+34 new across ProviderHttpClient, BufferedSSEStreamProcessor, OpenAICodexAdapter, MessageManager)
-- UI: ChatInput tri-state button, MessageManager interrupt-before-send
-
-**Mar 8**: v5.1.0 Release ✅
-- SDK→HTTP migration: Removed all LLM provider SDKs, direct HTTP via `ProviderHttpClient` + Obsidian `requestUrl`
-- Real streaming on desktop (Node.js https), buffered fallback on mobile
-- TaskManager DI wiring fixed (was never registered in runtime init path)
-- Deleted unused agent factory system (`ServiceFactory.ts`, -409 lines)
-- Self-documenting TaskManager tool schemas (result objects fully defined)
-- Wired TaskService into MemoryManager for loadWorkspace task summaries
-
-**Mar 8**: TaskManager Agent ✅ (PR #37)
-- New agent: workspace-scoped project/task management with DAG dependencies
-- Data model: Workspace → Project → Task, with `dependsOn[]` DAG edges + `parentTaskId` subtask tree
-- 10 tools: createProject, listProjects, updateProject, archiveProject, createTask, listTasks, updateTask, moveTask, queryTasks, linkNote
-- Services: TaskService (facade) + DAGService (pure computation: cycle detection, topological sort, next actions, blocked tasks)
-- DB: 4 new tables (projects, tasks, task_dependencies, task_note_links), schema v8→v9, JSONL+SQLite hybrid
-- Integration: auto-loads task summary via loadWorkspace, CacheableEntityType extended with 'project'/'task'
-- 857 tests (236 new across 5 test files)
-- Plan: `docs/plans/task-manager-agent-plan.md`, Architecture: `docs/architecture/task-manager-agent-architecture.md`
-
-**Mar 4**: New Models + Bug Fixes ✅ (v4.4.5 → v4.4.6)
-- Added Claude Sonnet 4.6, Gemini 3.1 Pro/Flash Lite, GPT-5.3 Chat/Codex; removed legacy Claude 4 Opus/Sonnet
-- Fixed ConversationTitleModal focus trap: replaced fragile setTimeout/rAF hack, added focus restoration in onClose()
-- Fixed default temperature not loading from user settings (hardcoded 0.5 → reads `defaultTemperature`)
-- Fixed prompt selector using name instead of id as dropdown key (wouldn't persist selection)
-- Fixed `syncWorkspacePrompt()` saving name instead of id
-
-### February 2026
-
-**Feb 28**: Dynamic Image Model Defaults ✅ (v4.4.4)
-- Image generation defaults now resolve from user settings instead of hardcoded values
-- Priority chain: explicit param > user settings > first available provider/model > fallback
-- `generateImage`: new `resolveDefaults()`, `getAvailableProviderNames()`, dynamic schema/errors
-- `executePrompts`/`promptParser`/`RequestExecutor`: removed hardcoded model lists and google-only restrictions
-- `ImageGenerationService`: added `getInitializedProviders()`
-- `executeTypes`: provider optional + accepts openrouter, model widened to string
-
-**Feb 26**: Dynamic Image Model Loading ✅ (v4.4.3)
-- Image model dropdowns now load dynamically from adapters (removed hardcoded `IMAGE_MODELS` in ChatSettingsRenderer)
-- `generateImage` tool schema builds model enum at runtime from configured providers
-- Added `getModelsForProvider()` and `getSupportedModelIds()` to `ImageGenerationService`
-- Adding a new image model to an adapter now auto-populates UI and tool schema
-
-**Feb 26**: New Image Models + FLUX Validation Fix ✅ (v4.4.2)
-- Added `gemini-3.1-flash-image-preview` (Nano Banana 2): Google direct + OpenRouter, 512px-4K, 14 ref images, new aspect ratios (1:4, 4:1, 1:8, 8:1)
-- Added `gpt-5-image` (OpenRouter only): GPT-5 with image generation, 400K context
-- Fixed FLUX models (`flux-2-pro`, `flux-2-flex`) failing validation — missing from `supportedModels` and `ImageModel` union type
-
-**Feb 23**: Workspace Settings Display Fix ✅ (v4.4.1)
-- Root cause: `renderWorkspacesTab()` passed stale `prefetchedWorkspaces` (populated before SQLite ready) → WorkspacesTab skipped async load, showed JSONL fallback data only
-- Fix: pass `prefetchedWorkspaces: null` → WorkspacesTab always shows loading skeleton → awaits both `workspaceService` + `hybridStorageAdapter` → queries SQLite with full data
-- Also removed temporary `[DEBUG-WS]` console.error logs from 6 files: `SettingsView.ts`, `WorkspacesTab.ts`, `ServiceManager.ts`, `WorkspaceService.ts`, `BackgroundProcessor.ts`, `PluginLifecycleManager.ts`
-
-**Feb 22**: Tool Call History Fix ✅ (v4.4.0)
-- `MessageStreamHandler.ts` — post-loop safety net: forces `state=complete` + accumulated toolCalls onto in-memory message before second save runs; prevents stale `draft/null` from overwriting good data
-- `ConversationService.ts` — try-catch around `JSON.parse(tc.function.arguments)` in `convertToLegacyConversation`; malformed JSON no longer crashes entire conversation load
-- `MessageRepository.ts` — defensive try-catch in `rowToMessage()` for toolCallsJson/metadataJson/alternativesJson
-- **Note for existing stale conversations**: Delete `.nexus/cache.db` to force JSONL rebuild; tool calls will reappear
-
-**Feb 22**: TypeScript Build Fix ✅ (PR #31)
-- `IPCTransportManager.ts` — changed socket param from `NodeJS.ReadWriteStream` to `net.Socket`; removed 4 redundant casts
-- `npm run build` (tsc + esbuild) now passes clean
-
-**Feb 22**: OpenAI CORS Bypass + Validation Fixes ✅ (PR #29)
-- `nodeFetch.ts` — Node.js `https.request()` passed as custom `fetch` to OpenAI SDK; bypasses CORS on `/v1/responses`
-- Fixed 3 stale validation probes: `gpt-5-nano` needs `max_completion_tokens`; `claude-3-5-haiku-latest` deprecated → `claude-haiku-4-5-20251001`
-- 619 tests (adds 55 nodeFetch unit tests)
-
-**Feb 22**: Provider OAuth Connect ✅ (PR #26 — v4.3.4)
-- OpenAI Codex OAuth via ChatGPT: connect button, token refresh, model listing with `(ChatGPT)` suffix
-- **Codex Responses API gotchas (CRITICAL)**:
-  - No `previous_response_id` support — must use stateless full input array continuation
-  - `delta` is plain string, not object — `typeof event.delta === 'string'` check required
-  - CORS from `app://obsidian.md` — must use Node.js `require('https').request()` not `fetch()`
-  - `for await` unreliable in Electron — use explicit `chunkQueue`/`chunkWaiter` event-listener queue
-  - `instructions` field always required — cannot be conditional on conversationHistory
-  - Model won't use tools without `tool_choice: "auto"` + explicit tool-use preamble in instructions
-- 547 tests passing, all console.log removed, JSON.parse in try-catch, `expires_in` validated
-
-**Feb 21**: IPC Transport Fix ✅ (v4.3.2 — cherry-pick from PR #24, DylanLacey)
-- Fixed `handleSocketConnection` never wiring socket `close`/`end` to `transport.close()`
-- Crashed connectors no longer permanently wedge `Protocol._transport`; reconnects cleanly
-- FD leak on failed `connect()` also fixed (socket destroyed on rejection)
-- PR #24 mux part still open — pending contributor fix for hardcoded socket path
-
-**Feb 20**: New Model Definitions ✅ (PR #22 — v4.3.1)
-- Added Claude Sonnet 4.6 (`claude-sonnet-4-6`): 200K ctx, 64K out, $3/$15/M + 1M beta variant
-- Added Gemini 3.1 Pro Preview (`gemini-3.1-pro-preview`): 1M ctx, 65K out, $2/$12/M
-- Updated: AnthropicModels.ts, GoogleModels.ts, OpenRouterModels.ts
-
-**Feb 9**: Conversation Memory Search ✅ (PR #19 — merged)
-- Semantic search across conversation turns and tool call traces via `searchMemory` tool
-- Two modes: Discovery (workspace-scoped) and Scoped (session-filtered, N-turn window)
-- QA pair model + ContentChunker (500-char/100-overlap) + sqlite-vec KNN + multi-signal reranking
-- Real-time indexing via ConversationEmbeddingWatcher + background backfill
-- Actionable error feedback, enhanced descriptions, optional workspaceId
-- EmbeddingService refactored: facade pattern (1034→199 lines) + 3 domain services
-- MemorySearchProcessor (824→553) and IndexingQueue (822→497) split into extracted modules
-- 351 tests pass (205 new), all coverage thresholds met, 19 commits
-- Plan: `docs/plans/conversation-memory-search-plan.md`
-- Review: `docs/review/pr19-conversation-memory-search.md`
-
-**Feb 5**: Startup Performance Fix ✅ (PR #15)
-- Non-blocking startup ~200ms (75x improvement from ~15s)
-- Root cause: deadlock between ChatView.onOpen() and onLayoutReady
-- Solution: setTimeout(0) services, registerViewEarly(), non-blocking onOpen()
-
-**Feb 5**: Chat Stop/Retry/Branch Bug Fixes ✅ (PR #16)
-- 12 bugs fixed across stop, retry, and branch navigation
-- Key patterns: clear-and-restream, incremental reconciliation, dual abort controllers
-- 142 unit tests across 7 new test files
-
-**Feb 5**: Inline AI Editing Feature ✅ (PR #14)
-- Right-click or hotkey to edit selected text via LLM
-- State machine pattern, streaming preview, Jest test infrastructure (41 tests)
-
-### January 2026
-
-**Jan 24**: ExecutePrompts improvements (optional provider/model, reference images, CommandManager cleanup)
-**Jan 12**: MCP integration settings fix (invalid config handling)
-**Jan 4**: CanvasManager agent (4 tools), SQLite transaction fix, memory leak fixes (7), embeddings toggle
-
-### December 2025
-
-**Dec 22**: Subagent UI + architecture
-**Dec 20**: Auto-compaction + dual models + WebLLM
-**Dec 17**: Two-Tool Architecture (95% token reduction)
-**Dec 16**: Local embeddings + dead code cleanup (~4,000 lines removed)
-**Dec 9**: Mobile + branching persistence
-**Dec 3**: SQLite + JSONL hybrid storage
+Full guidelines: `docs/obsidian-plugin-guidelines.md`
+
+**Non-negotiable rules:**
+- All styles in `styles.css`, never inline
+- `innerHTML` forbidden with dynamic content — use `createEl()` / `.textContent`
+- `registerDomEvent` for all DOM events (not `addEventListener` — causes memory leaks)
+- Use `requestUrl()` not `fetch()` for HTTP; `normalizePath()` for paths
+- Hidden files (`.nexus/`) are the only valid exception to `vault.adapter` usage
+
+### Mobile Compatibility (Critical)
+
+**`isDesktopOnly: false`** — this plugin runs on mobile. Node.js built-ins (`fs`, `path`, `http`, `crypto`, `events`, `stream`, `net`, `os`, `url`, `process`, `buffer`) do NOT exist on Obsidian mobile.
+
+**Top-level imports execute during module init, BEFORE any `Platform.isDesktop` guard can run.** This means:
+
+| Pattern | Result on Mobile |
+|---------|-----------------|
+| `import mammoth from 'mammoth'` (top-level) | **Crashes plugin** — mammoth depends on `stream`, `fs` |
+| `import { EventEmitter } from 'events'` (top-level) | **Crashes plugin** — null on mobile |
+| `const mammoth = await import('mammoth')` (inside async fn) | **Safe** — only loads when called |
+| `const fs = desktopRequire<typeof import('node:fs')>('node:fs')` (inside fn) | **Safe** — lazy load |
+
+**Rules for new code:**
+1. **Never** top-level import Node.js built-ins — use `desktopRequire()` from `src/utils/desktopRequire.ts`
+2. **Never** top-level import npm packages that depend on Node.js built-ins (mammoth, jszip, xlsx, yaml, etc.) — use dynamic `await import()` inside async functions
+3. **Replace** `EventEmitter` with Obsidian's `Events` class (cross-platform)
+4. **Desktop-only features** (ingestion, composer, OAuth, CLI, MCP transports): ensure all Node.js-dependent imports are lazy
+
+**Known desktop-only npm packages**: mammoth, jszip, xlsx, yaml (all have Node.js transitive deps)
+
+## Recent Changes
+
+**Current Version**: 5.8.1
+Full changelog: `docs/changelog.md`
+
+**Latest features** (Apr 2026):
+- v5.8.0 — Glass-chrome chat UI redesign (ToolStatusBar, ContextBadge, ThinkingLoader, ToolInspectionModal), CLI-first MCP tool-calling contract (PR #157), Claude Opus 4.7 added, LLM pipeline fixes (Azure call_id + latent field preservation), new OpenRouter models (GPT 5.4/5.4-pro, Gemini 3 family, GLM 5.1, MiMo v2, Qwen 3.5, MiniMax M2.7), SQLite-from-JSONL sync trigger, branch management fixes, chat media model persistence
+- v5.7.1 — Claude Code desktop auth status/login fix for Electron renderer imports (issue #120)
+- v5.7.0 — Plugin-scoped storage migration, mobile support (experimental), major refactors (PRs #102–#119)
+- v5.6.9 (PR #99) — Conversation list pagination ("Load More") + FTS title search in sidebar
+- v5.6.4 (PR #86) — any→unknown type migration, ESLint v9 + obsidianmd linter, Anthropic multi-tool fix
+- v5.6.0 — Nexus Ingester, Web Tools Agent, Composer App (PRs #81–83)
+- v5.5.0 — Task Board, Compaction Frontier, Tool Refactors (PRs #65–72)
 
 ## Quick Navigation
 
@@ -507,17 +192,26 @@ onCreate(file: TFile) {
    - Services: TaskService (business facade), DAGService (pure computation)
    - Auto-loads task summary when workspace loads
 
+8. **IngestManager** (`src/agents/ingestManager/`) - PDF/audio ingestion
+   - Tools: ingest, listCapabilities
+
+9. **WebToolsAgent** (`src/agents/apps/webTools/`) - Headless browser tools (desktop-only)
+   - Tools: openWebpage, capturePagePdf, capturePagePng, captureToMarkdown, extractLinks
+
+10. **ComposerAgent** (`src/agents/apps/composer/`) - Multimodal file composition
+    - Tools: compose, listFormats
+
 ### Agent Structure Pattern
 ```
 agents/
   [agentName]/
     [agentName].ts          # Main agent class extending BaseAgent
     tools/                   # Operation tools
-      [toolName].ts         # File: read.ts, Class: ReadTool
+      [toolName].ts
       services/             # Tool-specific services
     services/               # Agent-level shared services
-    types.ts                # Agent-specific types
-    utils/                  # Agent-specific utilities
+    types.ts
+    utils/
 ```
 
 ### Base Classes
@@ -536,9 +230,40 @@ None.
 
 ### Current Work
 
-**Context Budget Service** — `feat/context-budget-service` branch is the user's active in-progress branch. Work ongoing.
+**ThinkingLoader continuity fix (2026-04-17)** — Branch `fix/thinking-loader-during-tools` (worktree `.worktrees/fix-thinking-loader-during-tools`), commit `4fc646f6`. Animated loader (noodling/forging) now stays mounted through tool execution instead of being wiped by `contentElement.empty()` on every tool-call update. Reconciled via new `MessageBubble.syncLoadingIndicator` — loader lives in `.ai-loading-header` sibling outside `.message-content` and is torn down only when (a) first text chunk arrives via new `MessageDisplay.notifyStreamingStarted` hook from `ChatView`, or (b) `isLoading=false`. 5 files +191/-21. Tests + build clean. Build artifacts copied to main plugin dir for manual smoke. One MEDIUM uncertainty: subagent streaming path not yet wired to `notifyStreamingStarted` (pre-existing edge case; net-positive regardless). Next: user testing → PR or coder fixes.
 
-**File Picker Bug** — `FilePickerRenderer.getRootFolder()` fails when workspace rootFolder has leading `/` (e.g., `/blog-test` → Obsidian expects `blog-test`). Separate fix needed.
+**Glass Chrome Audit + Remediation (2026-04-16)** — Post-merge audit of PR #131 + followups + 5 remediation bundles shipped in parallel waves. Reports: `docs/review/glass-chrome-{architect,frontend,qa,test}-review.md`. Triage walked 31 findings one-at-a-time; 23 queued, 3 skipped (QA M3/M4/M5), 1 Future overridden (Frontend F1), ~11 deferred as Future with qualifiers preserved.
+
+**Remediation PRs shipped**:
+- **PR #145** — Bundle A: strip dead `addEventListener` fallbacks in ToolInspectionModal + MessageBranchNavigator + BranchHeader (Architect M3 + Frontend M5/M6/D1).
+- **PR #146** — Bundle G: test coverage for `ToolCallStateManager` + `MessageBubbleStateResolver` + `ToolEventCoordinator` (raised threshold 70/60 → 98/82) + tightened 2 integration-test fake-pass risks.
+- **PR #147** — Wave 4: delete vestigial `getToolBubbleElement` + plug `ThinkingLoader` into Component tree via `addChild` + tie `ChatLayoutBuilder` MutationObserver cleanup to Component lifecycle (Architect M1 + Frontend M2/M9).
+- **PR #148** — Wave 3: finish faux-glass pivot (strip 5 `backdrop-filter` sites, keep modal overlay as intentional carve-out, rewrite `styles.css:14-31`) + a11y sweep (`:focus-visible` on glass icon buttons, `aria-live` on `.tool-status-slot`, agent-slot overflow clip, opaque textarea, compacting-state pulse, WCAG comment fix, `ToolStatusEntry` dedup, `--chat-input-height` CSS var).
+- **PR #149** — Bundle D: extract `ManagedTimeoutTracker` helper + migrate 5 fire-and-forget setTimeout sites + promote `AgentStatusMenu`/`UIStateController` `component` params to required (Frontend M1/M3/M4/M7 + original 8d881e6d pattern DRY'd).
+
+**Pending**: Wave 5 (#17 extract `ChatKeyboardViewportController` from ChatInput + F2 cascade refactor + #23 rAF-throttle ToolInspectionModal scroll handler) — dispatching now.
+
+**Session lessons pinned for future dispatches**:
+- **CRLF/LF churn**: `ChatInput.ts`, `NexusLoadingController.ts` have mixed CRLF+LF line endings; Edit tool LF-normalization produces massive whitespace churn. Fix: byte-level Python patch preserving line endings. Coders must detect before editing and STOP on first bad diff rather than retry.
+- **Reassign via fresh Agent spawn**: SendMessage reassignments across worktrees don't force `cd`, resulting in commits landing on wrong branch (hit on coder-invariant Wave 4 — recovered via cherry-pick + reset).
+- **Shut down teammates at PR open**: idle hooks turn rest state into self-prodding work loops. Shut down as soon as their PR is live.
+
+**Canonical Message Pipeline Refactor** — `docs/plans/canonical-message-pipeline-plan.md`. 4-phase plan to eliminate lossy `.map()` remap sites between storage and provider:
+- **Phase 1+2 (DONE, PR #142 merged as `08b55cd9`)**: 11 commits. Phase 1 fixed Azure `Missing required parameter: 'input[N].call_id'` (root cause: `LLMService.generateResponseStream` remap stripped `tool_call_id`). Phase 2 preserved 3 latent fields (`reasoning_details`, `thought_signature`, `name`). Review remediation: 1 Blocking (removed leaky OpenRouter `console.log`), 8 Minor + 5 Future addressed across 4 parallel coders + 1 test-engineer. New helper `src/services/llm/utils/toolCallId.ts` (uses `crypto.randomUUID`). Foreign-id regex relaxed to `/^call_/`. Logger.logToConsole switch bug fixed (debug/info/warn now wired). Repro test moved to `tests/debug/` with env-gate.
+- **Phase 3 (next, ~3-5h, medium risk)**: Drop the redundant `LLMService.generateResponseStream` remap entirely. Accept `ConversationMessage[]` directly. M7 widening already removed the parameter-type lie that made this look harder.
+- **Phase 4 (later, 1-2 days)**: Single canonical message type. Worth doing when adding next provider (bedrock direct, vertex AI direct). F1 (storage vs wire `ConversationMessage` distinction) already documented at `ContextPreservationService.ts:16`.
+
+**LLM Eval Harness** (`tests/eval/`, ~3500 lines, plan at `docs/plans/llm-eval-harness-plan.md`):
+- 27/30 pass (90%) with multi-model coverage: Sonnet 4.6 (97%), GPT 5.4-mini (94%), GPT 5.4 (77%), Gemini 3 Flash (46%)
+- **Next — Headless Agent Stack**: Replace fake tool schemas with real agents on TestVault. Plan in `docs/plans/`.
+
+**Issue #88 — CustomPromptStorageService dual-write desync** — Fix on `fix/issue-88-dual-write-desync` branch (worktree). Committed (3447d8c5), awaiting PR.
+
+**Issue #64 — Claude Code ENAMETOOLONG** — PR #73 fix may not have fully resolved. Needs re-investigation.
+
+**Context Budget Service** — `feat/context-budget-service` branch, work ongoing.
+
+**File Picker Bug** — `FilePickerRenderer.getRootFolder()` fails when workspace rootFolder has leading `/`. Separate fix needed.
 
 ### Branch Architecture
 
@@ -557,52 +282,22 @@ A branch IS a conversation with parent metadata:
 
 **Task Board: No JSONL→SQLite sync for tasks** (Mar 26 — fix in progress, branch `fix/task-board-sync`):
 - Fix implemented: `TaskEventApplier.ts` (new), `SyncCoordinator.rebuildTasks()`, `clearAllData()` now clears task tables, `reconcileMissingTasks()` in HybridStorageAdapter, workspace name→UUID resolution in TaskService
-- Workspace name resolution: `createProject`/`createTask` now accept workspace names (e.g. `"Website Redesign"`) and silently resolve to UUID; ambiguous names (2+ matches) fail with nudge listing all UUIDs
-- **Do NOT recommend deleting `cache.db`** for task data recovery — task tables are not rebuilt from JSONL (this PR fixes that, but until released, don't delete)
+- Workspace name resolution: `createProject`/`createTask` now accept workspace names and silently resolve to UUID; ambiguous names fail with nudge listing all UUIDs
+- **Do NOT recommend deleting `cache.db`** — task tables are not rebuilt from JSONL (this PR fixes that, but until released, don't delete)
 
 **File Picker rootFolder Leading Slash** (Mar 13):
-- `FilePickerRenderer.getRootFolder()` passes workspace rootFolder (e.g., `/blog-test`) directly to `getAbstractFileByPath()`, which expects no leading slash (`blog-test`)
-- Shows "Folder not found" for valid folders. Also "Destination file already exists" error when adding context files.
-- Fix: `normalizePath(this.rootPath)` or strip leading slash before lookup
+- `FilePickerRenderer.getRootFolder()` passes workspace rootFolder (e.g., `/blog-test`) directly to `getAbstractFileByPath()`, which expects no leading slash
+- Shows "Folder not found" for valid folders. Fix: `normalizePath(this.rootPath)` or strip leading slash
 
 **Workspace Delete Persistence** (Feb 2):
-- Deleted workspaces may reappear on page reload
-- Backend delete logic looks correct, may be UI cache issue
+- Deleted workspaces may reappear on page reload. Backend delete logic looks correct, may be UI cache issue.
 
 **Subagent Flow** (Dec 22, fixed Feb 20 in `fix/subagent-bugs` — awaiting manual test):
-- 29 bugs fixed: icon race, retry-stuck, abort race, O(N) scan, Continue feature, EventBus instance-scoping, maxIterations enforcement, and more
-- Full fix list: `docs/review/pr23-subagent-functionality-review.md`
+- 29 bugs fixed. Full fix list: `docs/review/pr23-subagent-functionality-review.md`
 
 **WebLLM/Nexus** (Dec 20):
 - Multi-turn tool continuations may crash on Apple Silicon (WebGPU issue)
 - If startup hangs on "loading cache", clear site data
-
-### Backlog
-1. **Obsidian Secrets API Adoption** (target: March 2026): Migrate API key storage to `SecretStorage` API (v1.11.4+). Research: `docs/preparation/obsidian-secrets-api-research.md`
-2. **Port 3000 conflict**: ~~Fixed~~ OpenRouter OAuth port changed to 3456 (commit 15576fb2). MCPServer.ts HttpTransportManager still on 3000; long-term: make configurable.
-3. **SOLID Audit**: `ModelAgentManager.ts` is still a very large file (1900+ lines after compaction frontier merge)
-4. **SQLiteCacheManager.ts** (849 lines): Above 600-line threshold
-5. **v5.0.0 Deprecation Cleanup**: Remove backward compatibility for old dedicated agent structures (TODO(v5.0.0) in WorkspacePromptResolver)
-6. **Obsidian CLI Integration** (blocked: Catalyst-only): Research: `docs/preparation/obsidian-cli-research.md`
-7. **Missing `version-bump.mjs`**: `package.json` `version` lifecycle script references `node version-bump.mjs` but file doesn't exist — `npm version` will error. Either create it or remove the script reference.
-
-## Obsidian Plugin Guidelines Compliance
-
-**Status**: Audit 2026-03-13 found regressions. `isDesktopOnly: false` is correct (chat works on mobile, MCP requires desktop).
-**Full audit report**: `docs/review/plugin-store-audit-2026-03-13.md`
-
-| Issue | Status | Count |
-|-------|--------|-------|
-| innerHTML security | 1 unsafe (MessageEditController restore); 6 safe patterns | 1 to fix |
-| registerDomEvent | ~27 raw addEventListener (modals + view components) | ~27 to fix |
-| console.log cleanup | 398 → 37 (WebLLM: 25, others: 12) | 37 to fix |
-| Inline styles | 85 → 10 (all dynamic/justified — progress bars, positioning) | 0 blocking |
-| Type safety (`as any`) | Regressed from 0 → 16; GithubCopilotAdapter adds 7 more | ~23 to fix |
-| `@ts-ignore` | Regressed from 1 → 5 | 5 to fix |
-| SQL injection | sortBy column interpolation in 2 repositories | 2 to fix |
-| Timer leak | ContentCache.ts unmanaged setInterval | 1 to fix |
-| Node.js imports | 4 pre-existing + new CLI utils (desktopProcess, geminiCli, binaryDiscovery) — mobile crash risk; CLI features are desktop-only, need Platform guards | ~7 to fix |
-| Accessibility | ~5 icon buttons missing aria-label | ~5 to fix |
 
 ## Development Notes
 
@@ -615,7 +310,7 @@ A branch IS a conversation with parent metadata:
 - **Release**: Use `/nexus-release` skill for version bumping and GitHub release creation
 
 ### Testing Approach
-- **Unit Tests**: Jest for core logic and services (1200+ tests — added compaction frontier, tool display, context budget, CLI adapter, and system prompt suites in v5.5.0)
+- **Unit Tests**: Jest for core logic and services (1200+ tests)
 - **Integration Tests**: Manual testing in Obsidian environment
 - **MCP Testing**: Via Claude Desktop connection
 
@@ -625,29 +320,18 @@ A branch IS a conversation with parent metadata:
 - **Tools**: Extend `BaseTool<Params, Result>`, implement `execute()`, `getParameterSchema()`, `getResultSchema()`
 - **Results**: Return `{ success: boolean, ...data }` or `{ success: false, error: string }`
 - **Services**: Singletons with dependency injection via constructor
-- **Adding a new agent**: (1) Add `initializeYourAgent()` to `AgentInitializationService.ts`, (2) Add `safeInitialize('yourAgent', ...)` to a phase in `AgentRegistrationService.doInitializeAllAgents()`. That's it — no factory classes, no ServiceDefinitions entry.
+- **Adding a new agent**: (1) Add `initializeYourAgent()` to `AgentInitializationService.ts`, (2) Add `safeInitialize('yourAgent', ...)` to a phase in `AgentRegistrationService.doInitializeAllAgents()`. No factory classes, no ServiceDefinitions entry.
 
 ### Dependencies
 See `package.json`. Key: MCP SDK, express, winston, uuid. LLM provider SDKs removed — direct HTTP via ProviderHttpClient.
 
 ## Code Quality
 
-### SOLID Refactoring Progress (17/22 large files completed or assessed)
-Key reductions: HybridStorageAdapter (-72%), LLMService (-75%), ChatService (-60%), LLMProviderModal (-82%), MessageBubble (-45%), EmbeddingService (-81% facade), MemorySearchProcessor (-33%), IndexingQueue (-40%), ChatSettingsRenderer (-31%), GenericProviderModal (-28%), WorkspacesTab (-31%), WorkspaceService (-20%), ConversationService (-27%)
+Full tech debt tracker: `docs/tech-debt.md`
 
-### Remaining Large Files (600+ lines)
-WorkspaceService (965), ConversationService (813), connector (731), ModelAgentManager (895), SQLiteCacheManager (856), ChatSettingsModal (702), ChatView (659, well-decomposed), OpenRouterAdapter (640), ValidationService (625), BatchExecutePromptTool (618), GoogleAdapter (612)
+**600+ line files to watch**: WorkspaceService (965), ModelAgentManager (895), SQLiteCacheManager (856), ConversationService (813), connector (731), ChatSettingsModal (702), ChatView (659), OpenRouterAdapter (640), ValidationService (625), BatchExecutePromptTool (618), GoogleAdapter (612)
 
-### New Shared Modules (from DRY refactoring)
-- `src/services/helpers/DualBackendExecutor.ts` — shared dual-backend routing for 3 services
-- `src/services/helpers/findByNameOrId.ts` — generic ID/name lookup
-- `src/services/helpers/WorkspaceTypeConverters.ts` — workspace type conversion
-- `src/services/helpers/WorkspaceNormalizer.ts` — workspace normalization + search indexing
-- `src/services/helpers/ConversationTypeConverters.ts` — conversation type conversion
-- `src/components/shared/ModelDropdownRenderer.ts` — shared provider+model dropdown
-- `src/components/shared/OAuthBannerComponent.ts` — shared OAuth banner rendering
-- `src/services/oauth/OAuthFlowManager.ts` — shared OAuth connect/disconnect flow
-- `src/components/workspace/ProjectsManagerView.ts` — projects CRUD extracted from WorkspacesTab
+**Plugin store compliance**: `isDesktopOnly: false` is correct. PR #11597 to obsidian-releases — all ~190 bot violations fixed on `fix/pr-bot-lint`. Audited GREEN. VaultOperations now uses `app.fileManager.trashFile()` (constructor takes `App` as first arg).
 
 ## MCP Integration
 
@@ -674,11 +358,20 @@ Instead of 50+ tools, MCP exposes just 2: `getTools` (discovery) and `useTools` 
 ## Memory & Workspace System
 
 ### Storage Location
-`.nexus/` - All storage in single hidden folder:
-- `conversations/*.jsonl` - OpenAI fine-tuning format (syncs across devices)
+
+**Primary (synced)**: `.obsidian/plugins/<plugin-folder>/data/` — plugin-scoped, included by Obsidian Sync:
+- `conversations/*.jsonl` - OpenAI fine-tuning format
 - `workspaces/*.jsonl` - Event-sourced workspace data
 - `tasks/tasks_[workspaceId].jsonl` - Task/project events per workspace
-- `cache.db` - SQLite local cache (auto-rebuilt, not synced) ⚠️ **Do NOT delete** — task/project data is NOT recovered from JSONL on rebuild
+- `migration/` - Migration manifest and verification state
+
+**Legacy fallback**: `.nexus/` — original hidden folder, kept as read-only fallback after migration. Not deleted automatically.
+
+**Local-only**: `cache.db` - SQLite local cache (auto-rebuilt from JSONL, never synced) ⚠️ **Do NOT delete** — task/project data is NOT recovered from JSONL on rebuild
+
+**Migration**: On first launch, JSONL files are copied from `.nexus/` to the plugin data folder. The migration is copy-only, idempotent, and verified before the plugin switches reads to the new location. Mobile users whose vault syncs after init can run **Nexus: Refresh synced data** from the command palette.
+
+**Path resolution**: The plugin folder name is resolved at runtime from `plugin.manifest.dir` (supports both `nexus` and legacy `claudesidian-mcp` installs). See `src/database/storage/PluginStoragePathResolver.ts`.
 
 ### Architecture
 - Hybrid JSONL + SQLite: JSONL = source of truth, SQLite = fast queries
@@ -705,58 +398,12 @@ Key files: `src/ui/chat/components/suggesters/`, `MessageEnhancer.ts`, `SystemPr
 
 - **Subagents**: Branch → stream via LLMService → save result. `chunk.toolCalls` are display-only.
 - **WebLLM/Nexus**: Nexus Quark (4B, 4K context), `<tool_call>` format. May crash on Apple Silicon.
-- **Storage**: Branches as JSONL events, SQLite v9 schema (4 task tables added in v9), tool names use `agent_tool` format.
-- **Apps & Vault Access**: App agents that produce files (binary or text) must have vault access wired through `BaseAppAgent`. Use `vault.createBinary()` for binary outputs (audio, images) and `vault.create()` for text files. Always ensure parent directories exist before writing. Follow the pattern established by ElevenLabs audio tools and `ImageFileManager`. Future apps will likely need the same vault integration for saving their outputs.
+- **Storage**: Branches as JSONL events, SQLite v11 schema (4 task tables added in v9, workflow columns in v10, archive flag in v11), tool names use `agent_tool` format.
+- **Apps & Vault Access**: App agents that produce files must have vault access wired through `BaseAppAgent`. Use `vault.createBinary()` for binary outputs (audio, images) and `vault.create()` for text. Always ensure parent directories exist before writing.
 
-## Pinned Context
-
-<!-- pinned: 2026-03-29 -->
-### pdfjs-dist in Obsidian/Electron (legacy build + shared loader)
-PDF.js 5 expects a configured `workerSrc` in the Electron renderer. Use the legacy build with a shared loader that seeds `globalThis.pdfjsWorker`:
-```typescript
-// src/agents/ingestManager/tools/services/PdfJsLoader.ts
-const [pdfjsLib, pdfjsWorker] = await Promise.all([
-  import('pdfjs-dist/legacy/build/pdf.mjs'),
-  import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
-]);
-if (!globalThis.pdfjsWorker) globalThis.pdfjsWorker = pdfjsWorker;
-```
-Use `loadPdfJs()` from `PdfJsLoader.ts` in both `PdfTextExtractor.ts` and `PdfPageRenderer.ts`. Do NOT use `import('pdfjs-dist')` directly — the main entry fails in Electron without a worker URL.
-
-<!-- pinned: 2026-03-29 -->
-### IngestManagerAgent — audio transcription provider scope (v1)
-Whisper API (OpenAI + Groq) only. Excluded in v1:
-- **Ollama / LM Studio**: No audio transcription endpoint — vision-only
-- **Google multimodal audio**: Deferred to v2 (requires different API path)
-- **Drag-drop file path**: Browser `File.name` is basename only — use `vault.getFiles().find(f => f.name === file.name)` to get vault-relative path in `handleIngestFiles`.
-
-## Working Memory
-<!-- Auto-managed by pact-memory skill. Last 3 memories shown. Full history searchable via pact-memory skill. -->
-
-### 2026-03-29 18:54
-**Context**: Orchestration retrospective for the Nexus Ingester feature in claudesidian-mcp. Full PACT cycle: PREPARE, concurrent CODE (backend + frontend), TEST, REVIEW (5 reviewers), REMEDIATION (3 concurrent fixers). PR #83 on feat/nexus-ingester branch. Variety scored 13 (Novelty:3, Scope:4, Uncertainty:3, Risk:3). Zero imPACT cycles triggered. All phases completed on first pass. 16 specialist tasks total across the workflow. The orchestration pattern was: sequential phases with concurrent specialists within each phase, plus a planned follow-up wiring task to bridge concurrent CODE outputs.
-**Goal**: Calibrate orchestration judgment via second-order observation -- track variety scoring accuracy and dispatch strategy effectiveness for the ingester domain. This data feeds Learning II pattern matching for future new-agent implementations.
-**Decisions**: Variety scored 13 (Novelty:3, Scope:4, Uncertainty:3, Risk:3), actual was close -- zero imPACT cycles, Concurrent frontend+backend CODE dispatch with planned wiring task, Concurrent remediation dispatch (3 fixers in parallel) with test-reviewer reuse
-**Lessons**: Concurrent agent dispatch consistently produces shared constant duplication (DRY findings in review) -- consider injecting shared constants explicitly in dispatch prompts for cross-domain parallel work. The ingester had ACCEPTED_EXTENSIONS duplicated 4x and provider lists duplicated in ChatView and DefaultsTab., PREPARE phase investment pays off: pdfjs-dist LoopbackPort approach and decodeAudioData crash risk identified upfront prevented blocking issues during CODE. Without PREPARE, these would have been imPACT-triggering blockers., Reviewer reuse as fixer (test-reviewer stayed for test alignment fixes after review) is efficient -- no context loss. The reviewer already understood the codebase and the issues, so fixing was faster than spawning a fresh agent., Variety score of 13 was accurate -- actual difficulty matched prediction. Zero imPACT cycles, all phases ran as planned. The high Scope dimension (4) was justified by the cross-cutting nature (new agent + adapter extensions + UI + settings + tests)., Concurrent remediation dispatch caused test/implementation alignment gap: TranscriptionService error format and AudioChunkingService >25MB behavior were changed by backend fixer but tests were written against the pre-fix behavior. Resolved by reusing test-reviewer to align tests with fixes. For future concurrent remediation, consider sequencing test updates after implementation fixes., The wiring task pattern (task #14) for bridging concurrent CODE outputs worked well and was planned upfront. This should be the standard pattern when frontend and backend are dispatched concurrently with a shared integration point.
-**Reasoning chains**: Variety calibration: predicted 13 -> actual ~13 (no imPACTs, no phase reruns) -> scoring was accurate for new-agent implementations with PREPARE investment -> future new-agent tasks in this project can use 12-14 as baseline variety, DRY duplication from concurrent dispatch: parallel agents independently define same constants -> review catches it -> remediation consolidates -> prevention: inject shared constants in dispatch prompts or define types.ts contents upfront in architecture phase, PREPARE ROI: 1 preparer task upfront -> 0 imPACT cycles during CODE -> saved at least 2 potential blockers (pdfjs-dist bundling, decodeAudioData crash) -> PREPARE is justified for variety 10+ tasks
-**Memory ID**: 6ecbd511caced58995c91472df49c955
-
-### 2026-03-29 18:46
-**Summary**: Post-review remediation for Nexus Ingester PR #83 in claudesidian-mcp.
-
-### 2026-03-29 16:10
-**Summary**: Completed full PACT cycle (PREPARE → CODE → TEST → REVIEW in progress) for the Nexus Ingester feature in claudesidian-mc...
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 53b8cd78-df63-4a32-b113-132dde8d14df`
-- Team: `pact-53b8cd78`
-- Started: 2026-03-29 13:26:59 UTC
-<!-- SESSION_END -->
-
-<!-- SESSION_START -->
-## Current Session
-<!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 63e74727-e3ea-443e-9c40-f83d2bde44a0`
-- Team: `pact-63e74727`
-- Started: 2026-03-31 11:19:57 UTC
+- Resume: `claude --resume a89883a5-9570-4c8e-a9b5-b53f8ae4ad39`
+- Team: `pact-a89883a5`
+- Started: 2026-04-06 20:25:34 UTC
 <!-- SESSION_END -->

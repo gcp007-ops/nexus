@@ -202,7 +202,7 @@ export interface StateMetadata {
  */
 export interface StateData extends StateMetadata {
   /** The actual state content (workspace structure, files, etc.) */
-  content: any;
+  content: unknown;
 }
 
 // ============================================================================
@@ -275,6 +275,9 @@ export interface AlternativeMessage {
 
   /** Tool calls made in this alternative */
   toolCalls?: ToolCall[];
+
+  /** Optional provider-specific metadata */
+  metadata?: Record<string, unknown>;
 
   /** Reasoning/thinking content for this alternative */
   reasoning?: string;
@@ -551,7 +554,7 @@ export interface StorageEvent {
   deviceId: string;
 
   /** Event payload (varies by event type) */
-  payload: any;
+  payload: unknown;
 
   /** Optional metadata */
   metadata?: Record<string, unknown>;

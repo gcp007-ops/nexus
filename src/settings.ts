@@ -1,5 +1,6 @@
 import { Plugin } from 'obsidian';
-import { MCPSettings, DEFAULT_SETTINGS } from './types';
+import { MCPSettings, DEFAULT_SETTINGS, type LLMProviderConfig } from './types';
+import { pluginDataLock } from './utils/pluginDataLock';
 
 /**
  * Settings manager
@@ -22,11 +23,11 @@ export class Settings {
      * Load settings from plugin data
      * Now synchronous with minimal validation for fast startup
      */
-    async loadSettings() {
+    async loadSettings(): Promise<void> {
         try {
-            const loadedData = await this.plugin.loadData();
+            const loadedData: unknown = await this.plugin.loadData();
             this.applyLoadedData(loadedData);
-        } catch (error) {
+        } catch {
             // Continue with defaults - plugin should still function
         }
     }
@@ -34,8 +35,8 @@ export class Settings {
     /**
      * Apply loaded data with minimal validation for fast startup
      */
-    private applyLoadedData(loadedData: any) {
-        if (!loadedData) {
+    private applyLoadedData(loadedData: unknown): void {
+        if (!loadedData || typeof loadedData !== 'object') {
             return; // Use defaults
         }
         
@@ -44,25 +45,39 @@ export class Settings {
         
         // Quick shallow merge for startup - detailed validation deferred
         try {
-            const { memory, llmProviders, ...otherSettings } = loadedData;
+            const sanitizedLoadedData = { ...(loadedData as Record<string, unknown>) };
+            delete sanitizedLoadedData.pluginStorage;
+
+            const { llmProviders, storage, ...otherSettings } = sanitizedLoadedData;
             Object.assign(this.settings, otherSettings);
-            
+
             // Ensure memory settings exist
             this.settings.memory = DEFAULT_SETTINGS.memory;
 
+            // Deep merge storage settings to preserve defaults for missing keys
+            if (storage && typeof storage === 'object') {
+                this.settings.storage = {
+                    ...DEFAULT_SETTINGS.storage,
+                    ...(storage as Record<string, unknown>)
+                } as typeof DEFAULT_SETTINGS.storage;
+            }
+
             // Basic LLM provider settings merge
-            if (llmProviders && DEFAULT_SETTINGS.llmProviders) {
+            if (llmProviders && typeof llmProviders === 'object' && DEFAULT_SETTINGS.llmProviders) {
+                const loadedProviders = llmProviders as Record<string, unknown> & {
+                    providers?: Record<string, LLMProviderConfig>;
+                };
                 this.settings.llmProviders = {
                     ...DEFAULT_SETTINGS.llmProviders,
-                    ...llmProviders,
+                    ...loadedProviders,
                     // Ensure providers exists with all default providers
                     providers: {
                         ...DEFAULT_SETTINGS.llmProviders.providers,
-                        ...(llmProviders.providers || {})
+                        ...(loadedProviders.providers || {})
                     }
                 };
             }
-        } catch (error) {
+        } catch {
             // Continue with defaults - plugin should still function
         }
     }
@@ -70,9 +85,19 @@ export class Settings {
     /**
      * Save settings to plugin data
      */
-    async saveSettings() {
-        // Simple JSON-based storage
-        await this.plugin.saveData(this.settings);
+    async saveSettings(): Promise<void> {
+        await pluginDataLock.acquire(async () => {
+            const loadedData: unknown = await this.plugin.loadData();
+            const settingsWithoutRuntimeState = {
+                ...(this.settings as MCPSettings & { pluginStorage?: unknown })
+            };
+            delete settingsWithoutRuntimeState.pluginStorage;
+            const mergedData = loadedData && typeof loadedData === 'object'
+                ? { ...(loadedData as Record<string, unknown>), ...settingsWithoutRuntimeState }
+                : settingsWithoutRuntimeState;
+
+            await this.plugin.saveData(mergedData);
+        });
     }
 }
 

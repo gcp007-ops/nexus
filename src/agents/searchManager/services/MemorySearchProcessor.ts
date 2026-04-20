@@ -19,6 +19,7 @@ import {
   RawMemoryResult,
   MemorySearchContext,
   MemorySearchExecutionOptions,
+  MemorySearchTraceLike,
   ValidationResult,
   MemoryProcessorConfiguration,
   MemoryResultMetadata,
@@ -55,9 +56,9 @@ export interface MemorySearchProcessorInterface {
   process(params: MemorySearchParameters): Promise<SearchProcessResult>;
   validateParameters(params: MemorySearchParameters): ValidationResult;
   executeSearch(query: string, options: MemorySearchExecutionOptions): Promise<RawMemoryResult[]>;
-  enrichResults(results: RawMemoryResult[], context: MemorySearchContext): Promise<EnrichedMemorySearchResult[]>;
+  enrichResults(results: RawMemoryResult[], context: MemorySearchContext): EnrichedMemorySearchResult[];
   getConfiguration(): MemoryProcessorConfiguration;
-  updateConfiguration(config: Partial<MemoryProcessorConfiguration>): Promise<void>;
+  updateConfiguration(config: Partial<MemoryProcessorConfiguration>): void;
 }
 
 export class MemorySearchProcessor implements MemorySearchProcessorInterface {
@@ -109,7 +110,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
 
     const searchOptions = this.buildSearchOptions(params);
     const { rawResults, metadata } = await this.executeSearchWithMetadata(params.query, searchOptions);
-    const results = await this.enrichResults(rawResults, context);
+    const results = this.enrichResults(rawResults, context);
 
     return { results, metadata };
   }
@@ -222,7 +223,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
   /**
    * Enrich raw results with metadata and context
    */
-  async enrichResults(results: RawMemoryResult[], context: MemorySearchContext): Promise<EnrichedMemorySearchResult[]> {
+  enrichResults(results: RawMemoryResult[], context: MemorySearchContext): EnrichedMemorySearchResult[] {
     const enrichedResults: EnrichedMemorySearchResult[] = [];
 
     for (const result of results) {
@@ -243,7 +244,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
     return { ...this.configuration };
   }
 
-  async updateConfiguration(config: Partial<MemoryProcessorConfiguration>): Promise<void> {
+  updateConfiguration(config: Partial<MemoryProcessorConfiguration>): void {
     this.configuration = { ...this.configuration, ...config };
   }
 
@@ -362,9 +363,9 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
             type: trace.type || 'generic',
             content: trace.content,
             metadata: trace.metadata
-          },
+          } as unknown as RawMemoryResult['trace'],
           similarity: 1.0
-        }));
+        } as RawMemoryResult));
       } catch (error) {
         console.error('[MemorySearchProcessor] Error searching traces via storage adapter:', error);
         return [];
@@ -394,9 +395,9 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
             if (match) {
               const normalizedScore = Math.max(0, Math.min(1, 1 + (match.score / 100)));
               results.push({
-                trace: { ...trace, workspaceId, sessionId },
+                trace: { ...trace, workspaceId, sessionId } as unknown as RawMemoryResult['trace'],
                 similarity: normalizedScore
-              });
+              } as RawMemoryResult);
             }
           }
         }
@@ -410,8 +411,8 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
     }
   }
 
-  private async searchToolCallTraces(): Promise<RawMemoryResult[]> {
-    return [];
+  private searchToolCallTraces(): Promise<RawMemoryResult[]> {
+    return Promise.resolve([]);
   }
 
   private async searchSessions(query: string, options: MemorySearchExecutionOptions): Promise<RawMemoryResult[]> {
@@ -428,7 +429,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
         if ((session.name || '').toLowerCase().includes(queryLower)) score += 0.9;
         if (session.description?.toLowerCase().includes(queryLower)) score += 0.8;
         if (score > 0) {
-          results.push({ trace: session, similarity: score });
+          results.push({ trace: session as unknown as RawMemoryResult['trace'], similarity: score } as RawMemoryResult);
         }
       }
       return results;
@@ -451,7 +452,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
         let score = 0;
         if (state.name.toLowerCase().includes(queryLower)) score += 0.9;
         if (score > 0) {
-          results.push({ trace: state, similarity: score });
+          results.push({ trace: state as unknown as RawMemoryResult['trace'], similarity: score } as RawMemoryResult);
         }
       }
       return results;
@@ -461,7 +462,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
     }
   }
 
-  private async searchWorkspaces(query: string, options: MemorySearchExecutionOptions): Promise<RawMemoryResult[]> {
+  private async searchWorkspaces(query: string, _options: MemorySearchExecutionOptions): Promise<RawMemoryResult[]> {
     const workspaceService = this.serviceAccessors.getWorkspaceService();
     if (!workspaceService) return [];
 
@@ -475,7 +476,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
         if (workspace.name.toLowerCase().includes(queryLower)) score += 0.9;
         if (workspace.description?.toLowerCase().includes(queryLower)) score += 0.8;
         if (score > 0) {
-          results.push({ trace: workspace, similarity: score });
+          results.push({ trace: workspace as unknown as RawMemoryResult['trace'], similarity: score } as RawMemoryResult);
         }
       }
       return results;
@@ -490,7 +491,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
   // ---------------------------------------------------------------------------
 
   private enrichSingleResult(result: RawMemoryResult, context: MemorySearchContext): EnrichedMemorySearchResult | null {
-    const trace = result.trace;
+    const trace = result.trace as unknown as MemorySearchTraceLike;
     const query = context.params.query;
 
     try {
@@ -506,7 +507,7 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
         metadata,
         context: searchContext,
         score: result.similarity || 0,
-        _rawTrace: trace
+        _rawTrace: trace as unknown as RawMemoryResult['trace']
       };
     } catch (error) {
       console.error('[MemorySearchProcessor] Failed to enrich result:', { error, traceId: trace?.id });
@@ -621,7 +622,9 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
   private enhanceToolCallContext(ctx: SearchResultContext, trace: Record<string, unknown>): SearchResultContext {
     const meta = trace.metadata as Record<string, unknown> | undefined;
     const toolMeta = meta?.tool as Record<string, unknown> | undefined;
-    const toolInfo = toolMeta ? `${toolMeta.agent}.${toolMeta.mode}` : `${trace.agent}.${trace.mode}`;
+    const toolInfo = toolMeta
+      ? `${toDisplayString(toolMeta.agent)}.${toDisplayString(toolMeta.mode)}`
+      : `${toDisplayString(trace.agent)}.${toDisplayString(trace.mode)}`;
     const outcome = meta?.outcome as Record<string, unknown> | undefined;
     const response = meta?.response as Record<string, unknown> | undefined;
     const success = outcome?.success ?? response?.success;
@@ -629,11 +632,12 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
     const execCtx = trace.executionContext as Record<string, unknown> | undefined;
     const timing = execCtx?.timing as Record<string, unknown> | undefined;
     const executionTime = timing?.executionTime;
+    const executionTimeText = executionTime === undefined ? '' : ` - ${toDisplayString(executionTime)}ms`;
 
     return {
       before: `[${toolInfo}] ${ctx.before}`,
       match: ctx.match,
-      after: `${ctx.after} [${statusInfo}${executionTime ? ` - ${executionTime}ms` : ''}]`
+      after: `${ctx.after} [${statusInfo}${executionTimeText}]`
     };
   }
 
@@ -653,4 +657,28 @@ export class MemorySearchProcessor implements MemorySearchProcessorInterface {
     }
     return [];
   }
+}
+
+function toDisplayString(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (value && typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '[Object]';
+    }
+  }
+
+  return '';
 }

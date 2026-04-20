@@ -9,14 +9,18 @@
  */
 
 import { App, TFile, TFolder } from 'obsidian';
-import { WorkspaceContext } from '../../../database/types/workspace/WorkspaceTypes';
-import { VaultStructure, WorkspaceSummary } from './SystemPromptBuilder';
+import type { BuiltInDocsWorkspaceInfo, VaultStructure, WorkspaceSummary } from './SystemPromptBuilder';
 import { getNexusPlugin } from '../../../utils/pluginLocator';
 import type NexusPlugin from '../../../main';
 import type { WorkspaceService } from '../../../services/WorkspaceService';
 import type { SessionContextManager } from '../../../services/SessionContextManager';
 import type { AgentManager } from '../../../services/AgentManager';
-import type { IAgent } from '../../../agents/interfaces/IAgent';
+
+type LoadWorkspaceToolResult = {
+  success?: boolean;
+  data?: Record<string, unknown>;
+  workspaceContext?: unknown;
+};
 
 /**
  * Service for workspace integration with chat
@@ -58,7 +62,7 @@ export class WorkspaceIntegrationService {
             const result = await memoryManager.executeTool('loadWorkspace', {
               id: resolvedWorkspaceId,
               limit: 3 // Get recent sessions, states, and activity
-            });
+            }) as LoadWorkspaceToolResult;
 
             if (result.success && result.data) {
               // Return the comprehensive workspace data from the tool
@@ -117,7 +121,7 @@ export class WorkspaceIntegrationService {
       }
 
       return '[File not found]';
-    } catch (error) {
+    } catch {
       return '[Error reading file]';
     }
   }
@@ -215,6 +219,36 @@ export class WorkspaceIntegrationService {
     } catch (error) {
       console.error('[WorkspaceIntegrationService] Failed to list workspaces:', error);
       return [];
+    }
+  }
+
+  async getBuiltInDocsWorkspaceInfo(): Promise<BuiltInDocsWorkspaceInfo | null> {
+    try {
+      const plugin = getNexusPlugin<NexusPlugin>(this.app);
+      if (!plugin) {
+        return null;
+      }
+
+      const workspaceService = await plugin.getService<WorkspaceService>('workspaceService');
+      if (!workspaceService) {
+        return null;
+      }
+
+      const summary = workspaceService.getSystemGuidesWorkspaceSummary();
+      if (!summary) {
+        return null;
+      }
+
+      return {
+        id: summary.id,
+        name: summary.name,
+        description: summary.description,
+        rootFolder: summary.rootFolder,
+        entrypoint: summary.entrypoint
+      };
+    } catch (error) {
+      console.error('[WorkspaceIntegrationService] Failed to get built-in docs workspace:', error);
+      return null;
     }
   }
 }

@@ -1,0 +1,171 @@
+# Storage operations — move, copy, archive, create folder
+
+- name: move-file
+  description: User asks to move a file to a different folder
+  toolSet: meta
+  turns:
+    - userMessage: "Move notes/draft.md to the published folder"
+      expectedTools:
+        - name: getTools
+          params:
+            tool: "storage"
+      mockResponses:
+        getTools:
+          success: true
+          result:
+            tools:
+              - agent: storageManager
+                tool: move
+                description: Move a file or folder
+                command: "storage move"
+                usage: "storage move <path> <destination>"
+                arguments:
+                  - name: path
+                    flag: --path
+                    type: string
+                    required: true
+                    positional: true
+                  - name: destination
+                    flag: --destination
+                    type: string
+                    required: true
+                    positional: true
+                examples:
+                  - 'storage move "path-value" "destination-value"'
+
+    - expectedTools:
+        - name: useTools
+          params:
+            tool: "storage move"
+      mockResponses:
+        useTools:
+          success: true
+          result:
+            results:
+              - tool: move
+                success: true
+
+- name: create-folder-structure
+  description: User asks to create a new folder
+  toolSet: meta
+  turns:
+    - userMessage: "Create a new folder called projects/2026/q2"
+      expectedTools:
+        - name: getTools
+          params:
+            tool: "storage"
+      mockResponses:
+        getTools:
+          success: true
+          result:
+            tools:
+              - agent: storageManager
+                tool: createFolder
+                description: Create a new folder
+                command: "storage create-folder"
+                usage: "storage create-folder <path>"
+                arguments:
+                  - name: path
+                    flag: --path
+                    type: string
+                    required: true
+                    positional: true
+                examples:
+                  - 'storage create-folder "path-value"'
+
+    - expectedTools:
+        - name: useTools
+          params:
+            tool: "storage create-folder"
+      mockResponses:
+        useTools:
+          success: true
+          result:
+            results:
+              - tool: createFolder
+                success: true
+
+- name: copy-and-rename
+  description: User asks to copy a file — should use copy not move
+  toolSet: meta
+  turns:
+    - userMessage: "Make a copy of templates/weekly-review.md and put it in notes/this-week.md"
+      expectedTools:
+        - name: getTools
+          params:
+            tool: "storage"
+      mockResponses:
+        getTools:
+          success: true
+          result:
+            tools:
+              - agent: storageManager
+                tool: copy
+                description: Copy a file or folder
+                command: "storage copy"
+                usage: "storage copy <path> <destination>"
+                arguments:
+                  - name: path
+                    flag: --path
+                    type: string
+                    required: true
+                    positional: true
+                  - name: destination
+                    flag: --destination
+                    type: string
+                    required: true
+                    positional: true
+                examples:
+                  - 'storage copy "path-value" "destination-value"'
+
+    - expectedTools:
+        - name: useTools
+          params:
+            tool: "storage copy"
+      mockResponses:
+        useTools:
+          success: true
+          result:
+            results:
+              - tool: copy
+                success: true
+
+- name: archive-old-files
+  description: User asks to archive a file — should use archive tool
+  toolSet: meta
+  turns:
+    - userMessage: "Archive the file at notes/old-project.md"
+      expectedTools:
+        - name: getTools
+          params:
+            tool: "storage"
+      mockResponses:
+        getTools:
+          success: true
+          result:
+            tools:
+              - agent: storageManager
+                tool: archive
+                description: Archive a file or folder
+                command: "storage archive"
+                usage: "storage archive <path>"
+                arguments:
+                  - name: path
+                    flag: --path
+                    type: string
+                    required: true
+                    positional: true
+                examples:
+                  - 'storage archive "path-value"'
+
+    - expectedTools:
+        - name: useTools
+          params:
+            tool: "storage archive"
+      mockResponses:
+        useTools:
+          success: true
+          result:
+            results:
+              - tool: archive
+                success: true

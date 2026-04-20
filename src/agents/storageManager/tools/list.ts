@@ -4,6 +4,8 @@ import { BaseDirectoryTool } from './baseDirectory';
 import { ListParams, ListResult } from '../types';
 import { createErrorMessage } from '../../../utils/errorUtils';
 import { filterByName, FILTER_DESCRIPTION } from '../../../utils/filterUtils';
+import type { ToolStatusTense } from '../../interfaces/ITool';
+import { labelFileOp, verbs } from '../../utils/toolStatusLabels';
 
 /**
  * Location: src/agents/storageManager/tools/list.ts
@@ -30,18 +32,26 @@ export class ListTool extends BaseDirectoryTool<ListParams, ListResult> {
     );
   }
 
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelFileOp(verbs('Listing', 'Listed', 'Failed to list'), params, tense, {
+      keys: ['path'],
+      fallback: 'directory',
+    });
+  }
+
   /**
    * Execute the tool
    * @param params Tool parameters
    * @returns Promise resolving to the result
    */
+  // eslint-disable-next-line @typescript-eslint/require-await -- implements abstract BaseTool.execute()
   async execute(params: ListParams): Promise<ListResult> {
     try {
       // Default to vault root if no path provided
       const path = params.path ?? '';
 
       // Get the folder using base class method
-      const parentFolder = await this.getFolder(path);
+      const parentFolder = this.getFolder(path);
       const normalizedPath = this.normalizeDirectoryPath(path);
 
       // Get contents (depth 0 = current folder only)
@@ -57,11 +67,8 @@ export class ListTool extends BaseDirectoryTool<ListParams, ListResult> {
         filteredFolders = filterByName(allFolders, params.filter);
       }
 
-      // Prepare result data
-      const result: any = {};
-
       // Map files to required format
-      const fileData = filteredFiles.map(file => ({
+      const fileData: NonNullable<ListResult['data']>['files'] = filteredFiles.map(file => ({
         name: file.name,
         path: file.path,
         size: file.stat.size,
@@ -71,23 +78,24 @@ export class ListTool extends BaseDirectoryTool<ListParams, ListResult> {
 
       // Sort files by modified date (newest first)
       fileData.sort((a, b) => b.modified - a.modified);
-      result.files = fileData;
 
       // Map folders to required format
-      const folderData = filteredFolders.map(folder => ({
+      const folderData: NonNullable<ListResult['data']>['folders'] = filteredFolders.map(folder => ({
         name: folder.name,
         path: folder.path
       }));
 
       // Sort folders alphabetically
       folderData.sort((a, b) => a.name.localeCompare(b.name));
-      result.folders = folderData;
 
-      // Add summary
-      result.summary = {
-        fileCount: filteredFiles.length,
-        folderCount: filteredFolders.length,
-        totalItems: filteredFiles.length + filteredFolders.length
+      const result: NonNullable<ListResult['data']> = {
+        files: fileData,
+        folders: folderData,
+        summary: {
+          fileCount: filteredFiles.length,
+          folderCount: filteredFolders.length,
+          totalItems: filteredFiles.length + filteredFolders.length
+        }
       };
 
       // Generate helpful message
@@ -114,12 +122,12 @@ export class ListTool extends BaseDirectoryTool<ListParams, ListResult> {
     const result: TFile[] = [];
 
     // Get direct children that are files
-    const childFiles = (folder.children || []).filter(child => child instanceof TFile) as TFile[];
+    const childFiles = (folder.children || []).filter(child => child instanceof TFile);
     result.push(...childFiles);
 
     // If depth > 0, recursively get files from subfolders
     if (depth > 0) {
-      const childFolders = (folder.children || []).filter(child => child instanceof TFolder) as TFolder[];
+      const childFolders = (folder.children || []).filter(child => child instanceof TFolder);
       for (const childFolder of childFolders) {
         const subFiles = this.getFilesRecursively(childFolder, depth - 1);
         result.push(...subFiles);
@@ -139,7 +147,7 @@ export class ListTool extends BaseDirectoryTool<ListParams, ListResult> {
     const result: TFolder[] = [];
 
     // Get direct children that are folders
-    const childFolders = (folder.children || []).filter(child => child instanceof TFolder) as TFolder[];
+    const childFolders = (folder.children || []).filter(child => child instanceof TFolder);
     result.push(...childFolders);
 
     // If depth > 0, recursively get subfolders

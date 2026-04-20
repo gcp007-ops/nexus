@@ -17,6 +17,8 @@
  * - Dependency Inversion: Modules depend on abstractions
  */
 
+import type { Command, Plugin } from 'obsidian';
+
 // Re-export all types from the modular structure for backward compatibility
 // Import from specific modules to avoid circular dependency
 
@@ -33,12 +35,9 @@ export {
 } from './types/llm';
 
 // Memory management settings
-export interface MemorySettings {
-  // Workspace management interface
-}
+export type MemorySettings = Record<string, never>;
 
-export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {
-};
+export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {};
 
 // MCP protocol types
 export type {
@@ -64,7 +63,12 @@ export type {
 
 // Plugin configuration types
 export type {
-  MCPSettings
+  MCPSettings,
+  MCPStorageSettings
+} from './types/plugin/PluginTypes';
+
+export {
+  DEFAULT_STORAGE_SETTINGS
 } from './types/plugin/PluginTypes';
 
 // Common/shared types
@@ -79,7 +83,7 @@ export type {
 // Create default settings object
 import { DEFAULT_CUSTOM_PROMPTS_SETTINGS } from './types/mcp';
 import { DEFAULT_LLM_PROVIDER_SETTINGS } from './types/llm';
-import { MCPSettings } from './types/plugin';
+import { DEFAULT_STORAGE_SETTINGS, MCPSettings } from './types/plugin/PluginTypes';
 // DEFAULT_MEMORY_SETTINGS defined above in this file
 
 /**
@@ -92,6 +96,7 @@ export const DEFAULT_SETTINGS: MCPSettings = {
   autoIngestion: false,
   configFilePath: undefined,
   memory: DEFAULT_MEMORY_SETTINGS,
+  storage: DEFAULT_STORAGE_SETTINGS,
   customPrompts: DEFAULT_CUSTOM_PROMPTS_SETTINGS,
   llmProviders: DEFAULT_LLM_PROVIDER_SETTINGS,
   lastUpdateVersion: undefined,
@@ -112,10 +117,10 @@ declare module 'obsidian' {
       commands: { [id: string]: Command };
     };
     plugins: {
-      getPlugin(id: string): any;
+      getPlugin(id: string): Plugin | undefined;
       enablePlugin(id: string): Promise<void>;
       disablePlugin(id: string): Promise<void>;
-      plugins: { [id: string]: any };
+      plugins: { [id: string]: Plugin | undefined };
     };
   }
 }

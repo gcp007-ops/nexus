@@ -18,7 +18,7 @@
  */
 
 import { ChatService } from '../../../services/chat/ChatService';
-import { ConversationData, ConversationMessage } from '../../../types/chat/ChatTypes';
+import { ConversationData, ConversationMessage, ToolCall } from '../../../types/chat/ChatTypes';
 import { BranchManager } from './BranchManager';
 import { MessageStreamHandler } from './MessageStreamHandler';
 import { AbortHandler } from '../utils/AbortHandler';
@@ -27,7 +27,7 @@ import { filterCompletedToolCalls } from '../utils/toolCallUtils';
 export interface MessageAlternativeServiceEvents {
   onStreamingUpdate: (messageId: string, content: string, isComplete: boolean, isIncremental?: boolean) => void;
   onConversationUpdated: (conversation: ConversationData) => void;
-  onToolCallsDetected: (messageId: string, toolCalls: any[]) => void;
+  onToolCallsDetected: (messageId: string, toolCalls: ToolCall[]) => void;
   onLoadingStateChanged: (isLoading: boolean) => void;
   onError: (message: string) => void;
 }
@@ -72,6 +72,11 @@ export class MessageAlternativeService {
       systemPrompt?: string;
       workspaceId?: string;
       sessionId?: string;
+      temperature?: number;
+      imageProvider?: 'google' | 'openrouter';
+      imageModel?: string;
+      transcriptionProvider?: string;
+      transcriptionModel?: string;
     }
   ): Promise<void> {
     // Concurrent retry guard: if a retry is already in progress for this message, bail
@@ -128,6 +133,7 @@ export class MessageAlternativeService {
         if (targetBranch) {
           targetBranch.messages.push(...continuationMessages);
           targetBranch.updated = Date.now();
+          await this.branchManager.addMessagesToBranch(branchId, continuationMessages);
           // Persist the branch with its continuation messages
           await this.chatService.updateConversation(conversation);
         }

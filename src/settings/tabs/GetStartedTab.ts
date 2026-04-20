@@ -13,8 +13,28 @@ import { App, Setting, Notice, Platform, Component } from 'obsidian';
 import { BackButton } from '../components/BackButton';
 import { getPrimaryServerKey } from '../../constants/branding';
 import { ConfigStatus, getClaudeDesktopConfigPath, getConfigStatus } from '../getStartedStatus';
+import { resolveDesktopBinaryPath } from '../../utils/binaryDiscovery';
 
 type GetStartedView = 'paths' | 'internal-chat' | 'mcp-setup';
+type DesktopModuleMap = {
+    child_process: typeof import('child_process');
+    fs: typeof import('fs');
+    path: typeof import('path');
+    electron: {
+        shell: {
+            openExternal(url: string): void | Promise<void>;
+            openPath(path: string): Promise<string> | string;
+            showItemInFolder(path: string): void;
+        };
+    };
+};
+
+interface ClaudeConfig {
+    mcpServers: Record<string, {
+        command: string;
+        args: string[];
+    }>;
+}
 
 export interface GetStartedTabServices {
     app: App;
@@ -107,24 +127,29 @@ export class GetStartedTab {
         // Path 1: Internal Chat
         const chatPath = paths.createDiv('nexus-setup-path');
         chatPath.createDiv('nexus-setup-path-icon').setText('💬');
-        chatPath.createDiv('nexus-setup-path-title').setText('Internal Chat');
+        chatPath.createDiv('nexus-setup-path-title').setText('Internal chat');
         chatPath.createDiv('nexus-setup-path-desc').setText('Use Nexus directly inside Obsidian');
         const chatClickHandler = () => {
             this.currentView = 'internal-chat';
             this.render();
         };
-        this.services.component!.registerDomEvent(chatPath, 'click', chatClickHandler);
+        const component = this.services.component;
+        if (component) {
+            component.registerDomEvent(chatPath, 'click', chatClickHandler);
+        }
 
         // Path 2: MCP Integration
         const mcpPath = paths.createDiv('nexus-setup-path');
         mcpPath.createDiv('nexus-setup-path-icon').setText('🔗');
-        mcpPath.createDiv('nexus-setup-path-title').setText('MCP Integration');
+        mcpPath.createDiv('nexus-setup-path-title').setText('MCP integration');
         mcpPath.createDiv('nexus-setup-path-desc').setText('Connect Claude Desktop, LM Studio, etc.');
         const mcpClickHandler = () => {
             this.currentView = 'mcp-setup';
             this.render();
         };
-        this.services.component!.registerDomEvent(mcpPath, 'click', mcpClickHandler);
+        if (component) {
+            component.registerDomEvent(mcpPath, 'click', mcpClickHandler);
+        }
     }
 
     /**
@@ -141,7 +166,7 @@ export class GetStartedTab {
             this.services.component
         );
 
-        this.container.createEl('h3', { text: 'Internal Chat Setup' });
+        this.container.createEl('h3', { text: 'Internal chat setup' });
         this.container.createEl('p', {
             text: 'Use Nexus as an AI chat assistant directly in Obsidian.',
             cls: 'setting-item-description'
@@ -149,7 +174,7 @@ export class GetStartedTab {
 
         // Step 1: Configure a provider
         const step1 = this.container.createDiv('nexus-setup-step');
-        step1.createEl('h4', { text: 'Step 1: Configure an LLM Provider' });
+        step1.createEl('h4', { text: 'Step 1: configure an LLM provider' });
         step1.createEl('p', {
             text: 'You need at least one LLM provider configured to use the chat.',
             cls: 'setting-item-description'
@@ -157,7 +182,7 @@ export class GetStartedTab {
 
         new Setting(step1)
             .addButton(btn => btn
-                .setButtonText('Configure Providers')
+                .setButtonText('Configure providers')
                 .setCta()
                 .onClick(() => {
                     this.services.onOpenProviders();
@@ -165,7 +190,7 @@ export class GetStartedTab {
 
         // Step 2: Open chat view
         const step2 = this.container.createDiv('nexus-setup-step');
-        step2.createEl('h4', { text: 'Step 2: Open the Chat View' });
+        step2.createEl('h4', { text: 'Step 2: open the chat view' });
         step2.createEl('p', {
             text: 'Once a provider is configured, you can open the chat view:',
             cls: 'setting-item-description'
@@ -173,12 +198,12 @@ export class GetStartedTab {
 
         const instructions = step2.createEl('ul', { cls: 'nexus-setup-instructions' });
         instructions.createEl('li', { text: 'Click the chat icon in the left ribbon' });
-        instructions.createEl('li', { text: 'Or use the command palette: "Nexus: Open Chat"' });
+        instructions.createEl('li', { text: 'Or use the command palette: "Nexus: open chat"' });
         instructions.createEl('li', { text: 'Or use the hotkey: Ctrl/Cmd + Shift + C' });
 
         // Step 3: Start chatting
         const step3 = this.container.createDiv('nexus-setup-step');
-        step3.createEl('h4', { text: 'Step 3: Start Chatting!' });
+        step3.createEl('h4', { text: 'Step 3: start chatting!' });
         step3.createEl('p', {
             text: 'Your AI assistant has full access to your vault. Ask questions, take notes, and get help with your writing.',
             cls: 'setting-item-description'
@@ -199,7 +224,7 @@ export class GetStartedTab {
             this.services.component
         );
 
-        this.container.createEl('h3', { text: 'Claude Desktop Setup' });
+        this.container.createEl('h3', { text: 'Claude Desktop setup' });
 
         // MCP setup requires Node.js modules (path, fs, child_process) — desktop only
         if (!Platform.isDesktop) {
@@ -221,12 +246,17 @@ export class GetStartedTab {
             const actions = nodeWarning.createDiv('nexus-mcp-actions');
             const downloadBtn = actions.createEl('button', { text: 'Install Node.js', cls: 'mod-cta' });
             const downloadHandler = () => window.open('https://nodejs.org', '_blank');
-            this.services.component!.registerDomEvent(downloadBtn, 'click', downloadHandler);
+            const component = this.services.component;
+            if (component) {
+                component.registerDomEvent(downloadBtn, 'click', downloadHandler);
+            }
             const refreshBtn = actions.createEl('button', { text: 'Refresh' });
             const refreshHandler = () => this.render();
-            this.services.component!.registerDomEvent(refreshBtn, 'click', refreshHandler);
+            if (component) {
+                component.registerDomEvent(refreshBtn, 'click', refreshHandler);
+            }
             this.container.createEl('p', {
-                text: 'Node.js is required to run the MCP connector. Install it, then click Refresh.',
+                text: 'Node.js is required to run the MCP connector. Install it, then click refresh.',
                 cls: 'nexus-mcp-help'
             });
         }
@@ -254,33 +284,43 @@ export class GetStartedTab {
             const actions = row.createDiv('nexus-mcp-actions');
             const downloadBtn = actions.createEl('button', { text: 'Download', cls: 'mod-cta' });
             const downloadHandler = () => window.open('https://claude.ai/download', '_blank');
-            this.services.component!.registerDomEvent(downloadBtn, 'click', downloadHandler);
+            const component = this.services.component;
+            if (component) {
+                component.registerDomEvent(downloadBtn, 'click', downloadHandler);
+            }
 
             const refreshBtn = actions.createEl('button', { text: 'Refresh' });
             const refreshHandler = () => this.render();
-            this.services.component!.registerDomEvent(refreshBtn, 'click', refreshHandler);
+            if (component) {
+                component.registerDomEvent(refreshBtn, 'click', refreshHandler);
+            }
 
             // Help text below
             this.container.createEl('p', {
-                text: 'Install Claude Desktop, open it once, then enable Settings → Developer → MCP Servers',
+                text: 'Install Claude Desktop, open it once, then enable settings → developer → MCP servers',
                 cls: 'nexus-mcp-help'
             });
         } else if (configStatus === 'nexus-configured') {
             // Already configured - success state
             const row = this.container.createDiv('nexus-mcp-row');
             row.createEl('span', {
-                text: '✓ Connected',
+                text: '✓ connected',
                 cls: 'nexus-mcp-status nexus-mcp-success'
             });
 
             const actions = row.createDiv('nexus-mcp-actions');
-            const openBtn = actions.createEl('button', { text: 'Open Config' });
+            const openBtn = actions.createEl('button', { text: 'Open config' });
             const openHandler = () => this.openConfigFile(configPath);
-            this.services.component!.registerDomEvent(openBtn, 'click', openHandler);
+            const component = this.services.component;
+            if (component) {
+                component.registerDomEvent(openBtn, 'click', openHandler);
+            }
 
             const revealBtn = actions.createEl('button', { text: this.getRevealButtonText() });
             const revealHandler = () => this.revealInFolder(configPath);
-            this.services.component!.registerDomEvent(revealBtn, 'click', revealHandler);
+            if (component) {
+                component.registerDomEvent(revealBtn, 'click', revealHandler);
+            }
 
             this.container.createEl('p', {
                 text: 'Restart Claude Desktop if you haven\'t already.',
@@ -290,21 +330,26 @@ export class GetStartedTab {
             // Config file exists but is invalid/empty
             const row = this.container.createDiv('nexus-mcp-row');
             row.createEl('span', {
-                text: '⚠️ Config file is invalid or empty',
+                text: '⚠️ config file is invalid or empty',
                 cls: 'nexus-mcp-status nexus-mcp-warning'
             });
 
             const actions = row.createDiv('nexus-mcp-actions');
-            const fixBtn = actions.createEl('button', { text: 'Fix Config', cls: 'mod-cta' });
+            const fixBtn = actions.createEl('button', { text: 'Fix config', cls: 'mod-cta' });
             const fixHandler = () => this.autoConfigureNexus(configPath);
-            this.services.component!.registerDomEvent(fixBtn, 'click', fixHandler);
+            const component = this.services.component;
+            if (component) {
+                component.registerDomEvent(fixBtn, 'click', fixHandler);
+            }
 
-            const openBtn = actions.createEl('button', { text: 'Open Config' });
+            const openBtn = actions.createEl('button', { text: 'Open config' });
             const openHandler = () => this.openConfigFile(configPath);
-            this.services.component!.registerDomEvent(openBtn, 'click', openHandler);
+            if (component) {
+                component.registerDomEvent(openBtn, 'click', openHandler);
+            }
 
             this.container.createEl('p', {
-                text: 'The config file exists but has invalid JSON. Click "Fix Config" to overwrite it, or manually edit.',
+                text: 'The config file exists but has invalid JSON. Click "fix config" to overwrite it, or manually edit.',
                 cls: 'nexus-mcp-help'
             });
         } else {
@@ -318,7 +363,10 @@ export class GetStartedTab {
             const actions = row.createDiv('nexus-mcp-actions');
             const configBtn = actions.createEl('button', { text: 'Add Nexus to Claude', cls: 'mod-cta' });
             const configHandler = () => this.autoConfigureNexus(configPath);
-            this.services.component!.registerDomEvent(configBtn, 'click', configHandler);
+            const component = this.services.component;
+            if (component) {
+                component.registerDomEvent(configBtn, 'click', configHandler);
+            }
         }
 
         // Always show manual copy-paste section as fallback
@@ -332,7 +380,7 @@ export class GetStartedTab {
         this.container.createEl('hr', { cls: 'nexus-divider' });
 
         const manualSection = this.container.createDiv('nexus-manual-config');
-        manualSection.createEl('h4', { text: 'Manual Configuration' });
+        manualSection.createEl('h4', { text: 'Manual configuration' });
         manualSection.createEl('p', {
             text: 'If auto-configuration doesn\'t work, copy this JSON into your Claude Desktop config:',
             cls: 'setting-item-description'
@@ -346,26 +394,31 @@ export class GetStartedTab {
         codeBlock.createEl('code', { text: configJson });
 
         // Copy button
-        const copyBtn = manualSection.createEl('button', { text: 'Copy Configuration', cls: 'mod-cta' });
+        const copyBtn = manualSection.createEl('button', { text: 'Copy configuration', cls: 'mod-cta' });
         const copyHandler = async () => {
             try {
                 await navigator.clipboard.writeText(configJson);
                 copyBtn.textContent = 'Copied!';
                 setTimeout(() => {
-                    copyBtn.textContent = 'Copy Configuration';
+                    copyBtn.textContent = 'Copy configuration';
                 }, 2000);
-            } catch (error) {
+            } catch {
                 new Notice('Failed to copy to clipboard');
             }
         };
-        this.services.component!.registerDomEvent(copyBtn, 'click', copyHandler);
+        const component = this.services.component;
+        if (component) {
+            component.registerDomEvent(copyBtn, 'click', copyHandler);
+        }
 
         // Config file path info
         const pathInfo = manualSection.createDiv('nexus-config-path');
         pathInfo.createEl('span', { text: 'Config file location: ', cls: 'setting-item-description' });
         const pathLink = pathInfo.createEl('a', { text: configPath, href: '#' });
         const pathHandler = () => this.revealInFolder(configPath);
-        this.services.component!.registerDomEvent(pathLink, 'click', pathHandler);
+        if (component) {
+            component.registerDomEvent(pathLink, 'click', pathHandler);
+        }
     }
 
     /**
@@ -381,29 +434,47 @@ export class GetStartedTab {
             this.cachedNodePath = '';
             return '';
         }
-        try {
-            const { execSync: nodeExecSync } = require('child_process') as typeof import('child_process');
-            const nodeFs = require('fs') as typeof import('fs');
-            const cmd = Platform.isWin ? 'where node' : 'which node';
-            const result = nodeExecSync(cmd, { encoding: 'utf-8', timeout: 5000 }).trim();
-            // `where` on Windows may return multiple lines; take the first
-            const firstLine = result.split('\n')[0].trim();
-            if (firstLine && nodeFs.existsSync(firstLine)) {
-                this.cachedNodePath = firstLine;
-                return firstLine;
-            }
-        } catch {
-            // Node not found in PATH
+        this.cachedNodePath = resolveDesktopBinaryPath('node') ?? '';
+        return this.cachedNodePath;
+    }
+
+    private loadDesktopModule<TModuleName extends keyof DesktopModuleMap>(
+        moduleName: TModuleName
+    ): DesktopModuleMap[TModuleName] {
+        if (!Platform.isDesktop) {
+            throw new Error(`${moduleName} is only available on desktop.`);
         }
-        this.cachedNodePath = '';
-        return '';
+
+        const maybeRequire = (globalThis as typeof globalThis & {
+            require?: (moduleId: string) => unknown;
+        }).require;
+
+        if (typeof maybeRequire !== 'function') {
+            throw new Error('Desktop module loader is unavailable.');
+        }
+
+        return maybeRequire(moduleName) as DesktopModuleMap[TModuleName];
+    }
+
+    private parseJson(text: string): unknown {
+        const parser = JSON.parse as (value: string) => unknown;
+        return parser(text);
+    }
+
+    private isClaudeConfig(value: unknown): value is ClaudeConfig {
+        if (typeof value !== 'object' || value === null) {
+            return false;
+        }
+
+        const maybeConfig = value as { mcpServers?: unknown };
+        return typeof maybeConfig.mcpServers === 'object' && maybeConfig.mcpServers !== null;
     }
 
     /**
      * Generate the configuration JSON string
      */
     private getConfigJson(): string {
-        const pathMod = require('path') as typeof import('path');
+        const pathMod = this.loadDesktopModule('path');
         const vaultName = this.services.app.vault.getName();
         const serverKey = getPrimaryServerKey(vaultName);
         const connectorPath = pathMod.normalize(pathMod.join(this.services.pluginPath, 'connector.js'));
@@ -431,21 +502,24 @@ export class GetStartedTab {
     /**
      * Auto-configure Nexus in Claude Desktop config
      */
-    private async autoConfigureNexus(configPath: string): Promise<void> {
-        const nodeFs = require('fs') as typeof import('fs');
-        const pathMod = require('path') as typeof import('path');
+    private autoConfigureNexus(configPath: string): void {
+        const nodeFs = this.loadDesktopModule('fs');
+        const pathMod = this.loadDesktopModule('path');
         try {
-            let config: any = { mcpServers: {} };
+            let config: ClaudeConfig = { mcpServers: {} };
 
             // Read existing config if it exists
             if (nodeFs.existsSync(configPath)) {
                 const content = nodeFs.readFileSync(configPath, 'utf-8');
                 try {
-                    config = JSON.parse(content);
+                    const parsed = this.parseJson(content);
+                    if (this.isClaudeConfig(parsed)) {
+                        config = parsed;
+                    }
                     if (!config.mcpServers) {
                         config.mcpServers = {};
                     }
-                } catch (e) {
+                } catch {
                     // Invalid JSON, start fresh but warn user
                     new Notice('Existing config was invalid JSON. Creating new config.');
                     config = { mcpServers: {} };
@@ -493,8 +567,8 @@ export class GetStartedTab {
     private openConfigFile(configPath: string): void {
         try {
             // Use Electron's shell to open the file
-            const { shell } = require('electron');
-            shell.openPath(configPath);
+            const { shell } = this.loadDesktopModule('electron');
+            void shell.openPath(configPath);
         } catch (error) {
             console.error('[GetStartedTab] Error opening config file:', error);
             new Notice('Failed to open config file. Please open it manually.');
@@ -506,8 +580,8 @@ export class GetStartedTab {
      */
     private revealInFolder(configPath: string): void {
         try {
-            const { shell } = require('electron');
-            shell.showItemInFolder(configPath);
+            const { shell } = this.loadDesktopModule('electron');
+            void shell.showItemInFolder(configPath);
         } catch (error) {
             console.error('[GetStartedTab] Error revealing in folder:', error);
             new Notice('Failed to reveal in folder. Please navigate manually.');

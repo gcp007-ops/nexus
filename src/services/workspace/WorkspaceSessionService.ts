@@ -6,9 +6,8 @@
 import { FileSystemService } from '../storage/FileSystemService';
 import { IndexManager } from '../storage/IndexManager';
 import { SessionData } from '../../types/storage/StorageTypes';
-import { IStorageAdapter } from '../../database/interfaces/IStorageAdapter';
 import * as HybridTypes from '../../types/storage/HybridStorageTypes';
-import { StorageAdapterOrGetter, resolveAdapter, withDualBackend } from '../helpers/DualBackendExecutor';
+import { StorageAdapterOrGetter, resolveAdapter, withDualBackend, withReadableBackend } from '../helpers/DualBackendExecutor';
 
 const GLOBAL_WORKSPACE_ID = 'default';
 const DEFAULT_WORKSPACE_NAME = 'Default Workspace';
@@ -18,10 +17,14 @@ const DEFAULT_WORKSPACE_NAME = 'Default Workspace';
  * WorkspaceSessionService needs access to workspace-level operations for
  * referential integrity checks (e.g., ensuring workspace exists before creating session).
  */
+interface WorkspaceLookup {
+  id: string;
+}
+
 export interface WorkspaceSessionDeps {
-  getWorkspace: (id: string) => Promise<any>;
-  getWorkspaceByNameOrId: (identifier: string) => Promise<any>;
-  createWorkspace: (data: any) => Promise<any>;
+  getWorkspace: (id: string) => Promise<WorkspaceLookup | null>;
+  getWorkspaceByNameOrId: (identifier: string) => Promise<WorkspaceLookup | null>;
+  createWorkspace: (data: Record<string, unknown>) => Promise<WorkspaceLookup>;
 }
 
 export class WorkspaceSessionService {
@@ -89,7 +92,7 @@ export class WorkspaceSessionService {
       throw new Error(`Workspace ${workspaceId} not found`);
     }
 
-    const sessionId = sessionData.id || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const sessionId = sessionData.id || `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     const session: SessionData = {
       id: sessionId,
       name: sessionData.name,
@@ -172,7 +175,7 @@ export class WorkspaceSessionService {
    * Get session from workspace
    */
   async getSession(workspaceId: string, sessionId: string): Promise<SessionData | null> {
-    return withDualBackend(
+    return withReadableBackend(
       this.storageAdapterOrGetter,
       async (adapter) => {
         const session = await adapter.getSession(sessionId);
@@ -213,7 +216,7 @@ export class WorkspaceSessionService {
       return byId;
     }
 
-    return withDualBackend<SessionData | null>(
+    return withReadableBackend<SessionData | null>(
       this.storageAdapterOrGetter,
       async (adapter) => {
         const result = await adapter.getSessions(workspaceId, { pageSize: 100 });

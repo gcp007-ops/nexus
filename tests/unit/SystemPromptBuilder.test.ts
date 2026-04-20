@@ -143,8 +143,9 @@ describe('SystemPromptBuilder compaction projection', () => {
     });
 
     expect(prompt).not.toBeNull();
-    const compactionIndex = prompt!.indexOf('<compaction_context>');
-    const toolsIndex = prompt!.indexOf('<tools_and_context>');
+    const promptText = prompt as string;
+    const compactionIndex = promptText.indexOf('<compaction_context>');
+    const toolsIndex = promptText.indexOf('<tools_and_context>');
 
     expect(compactionIndex).toBeGreaterThanOrEqual(0);
     expect(toolsIndex).toBeGreaterThan(compactionIndex);
@@ -153,7 +154,17 @@ describe('SystemPromptBuilder compaction projection', () => {
 
 describe('SystemPromptBuilder', () => {
   it('builds the lean prompt and escapes dynamic XML content', async () => {
-    const builder = new SystemPromptBuilder(async () => 'alpha <beta>');
+    const builder = new SystemPromptBuilder(
+      async () => 'alpha <beta>',
+      undefined,
+      async () => ({
+        id: '__system_guides__',
+        name: 'Assistant guides',
+        description: 'Built-in docs',
+        rootFolder: 'Assistant data/guides',
+        entrypoint: 'Assistant data/guides/index.md'
+      })
+    );
 
     const prompt = await builder.build({
       sessionId: 'session-123',
@@ -172,6 +183,10 @@ describe('SystemPromptBuilder', () => {
     expect(prompt).toContain('<working_strategy>');
     expect(prompt).toContain('If a workspace is selected, use it as the primary context.');
     expect(prompt).toContain('Ask before creating a new workspace.');
+    expect(prompt).toContain('<built_in_docs_workspace>');
+    expect(prompt).toContain('workspaceId: "__system_guides__"');
+    expect(prompt).toContain('entrypoint: "Assistant data/guides/index.md"');
+    expect(prompt).not.toContain('# Assistant guides');
 
     expect(prompt).toContain('Notes/Test &lt;File&gt;.md');
     expect(prompt).toContain('alpha &lt;beta&gt;');
@@ -179,6 +194,25 @@ describe('SystemPromptBuilder', () => {
     expect(prompt).toContain('<selected_workspace name="Workspace &lt;One&gt;" id="ws-1">');
     expect(prompt).toContain('"taskSummary"');
     expect(prompt).toContain('"extraField": "kept"');
+  });
+
+  it('includes a guides workspace hint in the working strategy section', async () => {
+    const builder = new SystemPromptBuilder(async () => '');
+
+    const prompt = await builder.build({
+      sessionId: 'session-1',
+      workspaceId: 'workspace-1'
+    });
+
+    expect(prompt).toContain('__system_guides__');
+    expect(prompt).toContain('Assistant guides workspace');
+
+    // Verify the hint is inside the working_strategy section
+    const strategyStart = prompt!.indexOf('<working_strategy>');
+    const strategyEnd = prompt!.indexOf('</working_strategy>');
+    const hintIndex = prompt!.indexOf('__system_guides__');
+    expect(hintIndex).toBeGreaterThan(strategyStart);
+    expect(hintIndex).toBeLessThan(strategyEnd);
   });
 
   it('escapes suggester-driven note, tool, prompt, and workspace insertions', async () => {

@@ -3,6 +3,8 @@ import { CommonParameters, CommonResult } from '../../../../types';
 import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 import { BaseAppAgent } from '../../BaseAppAgent';
 import { isDesktop, isElectron } from '../../../../utils/platform';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
+import { labelWithUrl, verbs } from '../../../utils/toolStatusLabels';
 import {
   getWebViewerContents,
   getWebViewerLeaf,
@@ -38,6 +40,10 @@ export class ExtractLinksTool extends BaseTool<ExtractLinksParams, CommonResult>
     this.agent = agent;
   }
 
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelWithUrl(verbs('Extracting links', 'Extracted links', 'Failed to extract links'), params, tense, 'page');
+  }
+
   async execute(params: ExtractLinksParams): Promise<CommonResult> {
     if (!isDesktop() || !isElectron()) {
       return this.prepareResult(false, undefined, 'Web Viewer tools are desktop-only.');
@@ -62,7 +68,7 @@ export class ExtractLinksTool extends BaseTool<ExtractLinksParams, CommonResult>
       }
 
       await app.workspace.revealLeaf(leaf);
-      await app.workspace.setActiveLeaf(leaf, { focus: true });
+      app.workspace.setActiveLeaf(leaf, { focus: true });
       const contents = await waitForWebViewerReady(leaf, timeoutMs, settleMs)
         ?? getWebViewerContents(leaf);
       if (!contents?.executeJavaScript) {

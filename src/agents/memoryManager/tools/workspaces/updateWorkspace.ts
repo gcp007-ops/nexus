@@ -11,9 +11,12 @@
 import { App } from 'obsidian';
 import { BaseTool } from '../../../baseTool';
 import { MemoryManagerAgent } from '../../memoryManager';
+import { labelWithId, verbs } from '../../../utils/toolStatusLabels';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
 import { createServiceIntegration } from '../../services/ValidationService';
 import { createErrorMessage } from '../../../../utils/errorUtils';
 import { CommonResult, CommonParameters } from '../../../../types/mcp/AgentTypes';
+import type { IndividualWorkspace } from '../../../../types/storage/StorageTypes';
 import type { WorkspaceWorkflow } from '../../../../database/types/workspace/WorkspaceTypes';
 
 // Define parameter and result types for workspace updates
@@ -95,7 +98,10 @@ export class UpdateWorkspaceTool extends BaseTool<UpdateWorkspaceParameters, Upd
             console.error('[UpdateWorkspace] Updating dedicatedAgentId to:', params.dedicatedAgentId);
 
             // Create a deep copy for updating
-            const workspaceCopy = JSON.parse(JSON.stringify(existingWorkspace));
+            const workspaceCopy: IndividualWorkspace = {
+                ...existingWorkspace,
+                context: existingWorkspace.context ? { ...existingWorkspace.context } : undefined
+            };
             const now = Date.now();
 
             // Apply top-level updates
@@ -112,7 +118,7 @@ export class UpdateWorkspaceTool extends BaseTool<UpdateWorkspaceParameters, Upd
                     if (!folder) {
                         await this.app.vault.createFolder(params.rootFolder);
                     }
-                } catch (folderError) {
+                } catch {
                     // Ignore folder creation errors
                 }
                 workspaceCopy.rootFolder = params.rootFolder;
@@ -158,6 +164,10 @@ export class UpdateWorkspaceTool extends BaseTool<UpdateWorkspaceParameters, Upd
         } catch (error) {
             return this.prepareResult(false, undefined, createErrorMessage('Error updating workspace: ', error));
         }
+    }
+
+    getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+        return labelWithId(verbs('Updating workspace', 'Updated workspace', 'Failed to update workspace'), params, tense, { keys: ['workspaceId'], fallback: 'workspace' });
     }
 
     getParameterSchema(): Record<string, unknown> {

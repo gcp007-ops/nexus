@@ -9,24 +9,24 @@ export class Setting {
   settingEl: HTMLElement;
   controlEl: HTMLElement;
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.settingEl = createMockElement('div');
     this.controlEl = createMockElement('div');
   }
 
-  setClass(cls: string): this {
+  setClass(_cls: string): this {
     return this;
   }
 
-  setName(name: string): this {
+  setName(_name: string): this {
     return this;
   }
 
-  setDesc(desc: string): this {
+  setDesc(_desc: string): this {
     return this;
   }
 
-  setTooltip(tooltip: string): this {
+  setTooltip(_tooltip: string): this {
     return this;
   }
 
@@ -55,7 +55,7 @@ export class Setting {
     return this;
   }
 
-  addSlider(callback: (slider: SliderComponent) => any): this {
+  addSlider(callback: (slider: SliderComponent) => void): this {
     callback(new SliderComponent(this.settingEl));
     return this;
   }
@@ -67,11 +67,11 @@ export class TextComponent {
   private value = '';
   private changeCallback?: (value: string) => void;
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.inputEl = createMockElement('input') as HTMLInputElement;
   }
 
-  setPlaceholder(placeholder: string): this {
+  setPlaceholder(_placeholder: string): this {
     return this;
   }
 
@@ -101,11 +101,11 @@ export class TextAreaComponent {
   inputEl: HTMLTextAreaElement;
   private value = '';
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.inputEl = createMockElement('textarea') as HTMLTextAreaElement;
   }
 
-  setPlaceholder(placeholder: string): this {
+  setPlaceholder(_placeholder: string): this {
     return this;
   }
 
@@ -118,7 +118,7 @@ export class TextAreaComponent {
     return this.value;
   }
 
-  onChange(callback: (value: string) => void): this {
+  onChange(_callback: (value: string) => void): this {
     return this;
   }
 }
@@ -128,11 +128,11 @@ export class DropdownComponent {
   selectEl: HTMLSelectElement;
   private value = '';
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.selectEl = createMockElement('select') as HTMLSelectElement;
   }
 
-  addOption(value: string, display: string): this {
+  addOption(_value: string, _display: string): this {
     return this;
   }
 
@@ -145,7 +145,7 @@ export class DropdownComponent {
     return this.value;
   }
 
-  onChange(callback: (value: string) => void): this {
+  onChange(_callback: (value: string) => void): this {
     return this;
   }
 }
@@ -155,7 +155,7 @@ export class ToggleComponent {
   toggleEl: HTMLElement;
   private value = false;
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.toggleEl = createMockElement('div');
   }
 
@@ -168,7 +168,7 @@ export class ToggleComponent {
     return this.value;
   }
 
-  onChange(callback: (value: boolean) => void): this {
+  onChange(_callback: (value: boolean) => void): this {
     return this;
   }
 }
@@ -178,11 +178,11 @@ export class SliderComponent {
   sliderEl: HTMLElement;
   private value = 0;
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.sliderEl = createMockElement('input');
   }
 
-  setLimits(min: number, max: number, step: number): this {
+  setLimits(_min: number, _max: number, _step: number): this {
     return this;
   }
 
@@ -199,7 +199,7 @@ export class SliderComponent {
     return this;
   }
 
-  onChange(callback: (value: number) => void): this {
+  onChange(_callback: (value: number) => void): this {
     return this;
   }
 }
@@ -209,23 +209,23 @@ export class ButtonComponent {
   buttonEl: HTMLButtonElement;
   private clickCallback?: () => void;
 
-  constructor(containerEl: HTMLElement) {
+  constructor(_containerEl: HTMLElement) {
     this.buttonEl = createMockElement('button') as HTMLButtonElement;
   }
 
-  setButtonText(text: string): this {
+  setButtonText(_text: string): this {
     return this;
   }
 
-  setIcon(icon: string): this {
+  setIcon(_icon: string): this {
     return this;
   }
 
-  setTooltip(tooltip: string): this {
+  setTooltip(_tooltip: string): this {
     return this;
   }
 
-  setClass(cls: string): this {
+  setClass(_cls: string): this {
     return this;
   }
 
@@ -237,7 +237,7 @@ export class ButtonComponent {
     return this;
   }
 
-  setDisabled(disabled: boolean): this {
+  setDisabled(_disabled: boolean): this {
     return this;
   }
 
@@ -254,7 +254,7 @@ export class ButtonComponent {
 
 // Notice mock
 export class Notice {
-  constructor(message: string, timeout?: number) {
+  constructor(_message: string, _timeout?: number) {
     // Mock - in tests we can spy on constructor calls
   }
 
@@ -264,6 +264,67 @@ export class Notice {
 }
 
 // setIcon mock
-export function setIcon(element: HTMLElement, iconId: string): void {
+export function setIcon(_element: HTMLElement, _iconId: string): void {
   // Mock implementation
+}
+
+// Debouncer<Args, V> — structural type matching Obsidian's public API.
+// Consumers import only for type positions, so a minimal shape is enough.
+export interface Debouncer<Args extends unknown[], V = void> {
+  (...args: Args): V | undefined;
+  cancel(): this;
+  run(): V | undefined;
+}
+
+// debounce mock — faithful implementation of Obsidian's debounce signature
+// Supports leading-edge behavior required by ToolStatusBarController.
+// Does not use fake timers — real setTimeout with real Date.now for accurate timing tests.
+type DebouncedFn<T extends (...args: unknown[]) => unknown> = T & {
+  cancel: () => void;
+};
+
+export function debounce<T extends (...args: unknown[]) => unknown>(
+  fn: T,
+  timeout: number,
+  leading = false
+): DebouncedFn<T> {
+  let pendingHandle: ReturnType<typeof setTimeout> | null = null;
+  let pendingArgs: unknown[] | null = null;
+  let lastInvokeAt = 0;
+
+  const wrapped = ((...args: unknown[]): unknown => {
+    const now = Date.now();
+
+    if (leading && (lastInvokeAt === 0 || now - lastInvokeAt >= timeout)) {
+      // Leading-edge fire
+      lastInvokeAt = now;
+      return fn(...args);
+    }
+
+    // Trailing-edge queue (or suppressed during active window for leading mode)
+    pendingArgs = args;
+    if (!pendingHandle) {
+      const delay = leading ? timeout - (now - lastInvokeAt) : timeout;
+      pendingHandle = setTimeout(() => {
+        pendingHandle = null;
+        lastInvokeAt = Date.now();
+        if (pendingArgs) {
+          const finalArgs = pendingArgs;
+          pendingArgs = null;
+          fn(...finalArgs);
+        }
+      }, Math.max(0, delay));
+    }
+    return undefined;
+  }) as DebouncedFn<T>;
+
+  wrapped.cancel = () => {
+    if (pendingHandle) {
+      clearTimeout(pendingHandle);
+      pendingHandle = null;
+    }
+    pendingArgs = null;
+  };
+
+  return wrapped;
 }

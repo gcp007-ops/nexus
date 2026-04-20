@@ -65,7 +65,7 @@ export class ResourceReadService implements IResourceReadService {
                         text: content,
                         mimeType: "text/markdown"
                     });
-                } catch (error) {
+                } catch {
                     logger.systemWarn(`ResourceReadService: Failed to read resource ${uri}`);
                     // Continue with other resources, but log the failure
                 }
@@ -119,14 +119,14 @@ export class ResourceReadService implements IResourceReadService {
      * @param uri Resource URI
      * @returns Promise resolving to boolean
      */
-    async resourceExists(uri: string): Promise<boolean> {
+    resourceExists(uri: string): Promise<boolean> {
         try {
             const path = this.parseResourceUri(uri);
             const file = this.app.vault.getAbstractFileByPath(path);
-            return file instanceof TFile;
-        } catch (error) {
+            return Promise.resolve(file instanceof TFile);
+        } catch {
             logger.systemWarn(`ResourceReadService: Resource existence check failed for ${uri}`);
-            return false;
+            return Promise.resolve(false);
         }
     }
 }

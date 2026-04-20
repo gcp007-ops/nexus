@@ -40,11 +40,11 @@ export class NexusProviderModal implements IProviderModal {
   // State
   private vramInfo: VRAMInfo | null = null;
   private adapter: WebLLMAdapter | null = null;
-  private selectedModelId: string = '';
+  private selectedModelId = '';
   private cachedModels: Map<string, boolean> = new Map();
-  private isDownloading: boolean = false;
-  private downloadProgress: number = 0;
-  private downloadStage: string = '';
+  private isDownloading = false;
+  private downloadProgress = 0;
+  private downloadStage = '';
 
   constructor(config: ProviderModalConfig, deps: ProviderModalDependencies) {
     this.config = config;
@@ -74,7 +74,7 @@ export class NexusProviderModal implements IProviderModal {
     this.modelSection.addClass('llm-provider-hidden');
 
     // Start device detection
-    this.detectDevice();
+    void this.detectDevice();
   }
 
   /**
@@ -104,7 +104,7 @@ export class NexusProviderModal implements IProviderModal {
       // Auto-enable provider
       if (!this.config.config.enabled) {
         this.config.config.enabled = true;
-        this.config.onConfigChange(this.config.config);
+        void this.config.onConfigChange(this.config.config);
       }
 
       // Show model section
@@ -212,7 +212,7 @@ export class NexusProviderModal implements IProviderModal {
         });
 
         dropdown.setValue(this.selectedModelId);
-        dropdown.onChange(async (value) => {
+        dropdown.onChange((value) => {
           this.selectedModelId = value;
           this.config.config.webllmModel = value;
 
@@ -222,7 +222,7 @@ export class NexusProviderModal implements IProviderModal {
             this.config.config.webllmQuantization = match[1] as 'q4f16' | 'q5f16' | 'q8f16';
           }
 
-          this.config.onConfigChange(this.config.config);
+          void this.config.onConfigChange(this.config.config);
           this.renderActionArea();
         });
       });

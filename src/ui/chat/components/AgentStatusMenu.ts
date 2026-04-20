@@ -11,6 +11,7 @@
  */
 
 import { setIcon, Component, Events } from 'obsidian';
+import { ManagedTimeoutTracker } from '../utils/ManagedTimeoutTracker';
 import type { SubagentExecutor } from '../../../services/chat/SubagentExecutor';
 import type { SubagentExecutorEvents } from '../../../types/branch/BranchTypes';
 
@@ -70,23 +71,29 @@ export class AgentStatusMenu {
   private element: HTMLElement | null = null;
   private badgeEl: HTMLElement | null = null;
   private iconEl: HTMLElement | null = null;
-  private lastCount: number = 0;
+  private lastCount = 0;
   private eventRef: ReturnType<Events['on']> | null = null;
-  private hasShownSuccess: boolean = false; // Track if green state was shown
-  private isShowingSpinner: boolean = false; // Track current icon state
+  private hasShownSuccess = false; // Track if green state was shown
+  private isShowingSpinner = false; // Track current icon state
+  private timeouts: ManagedTimeoutTracker;
 
   constructor(
     private container: HTMLElement,
     private subagentExecutor: SubagentExecutor | null,
     private callbacks: AgentStatusMenuCallbacks,
-    private component?: Component,
+    private component: Component,
     private insertBefore?: HTMLElement // Insert before this element (e.g., settings button)
-  ) {}
+  ) {
+    this.timeouts = new ManagedTimeoutTracker(component);
+  }
 
   /**
    * Create and render the status menu button
    */
   render(): HTMLElement {
+    // Clear any default placeholder icon in the slot
+    this.container.empty();
+
     // Create the button element
     const button = document.createElement('button');
     button.addClass('clickable-icon', 'nexus-agent-status-button');
@@ -105,17 +112,10 @@ export class AgentStatusMenu {
     this.badgeEl = badge;
 
     // Click handler - clears success state when modal opens
-    if (this.component) {
-      this.component.registerDomEvent(button, 'click', () => {
-        this.clearSuccessState();
-        this.callbacks.onOpenModal();
-      });
-    } else {
-      button.addEventListener('click', () => {
-        this.clearSuccessState();
-        this.callbacks.onOpenModal();
-      });
-    }
+    this.component.registerDomEvent(button, 'click', () => {
+      this.clearSuccessState();
+      this.callbacks.onOpenModal();
+    });
 
     this.element = button;
 
@@ -231,16 +231,13 @@ export class AgentStatusMenu {
     if (!this.element) return;
 
     this.element.addClass('nexus-agent-completion-pulse');
-    setTimeout(() => {
-      this.element?.removeClass('nexus-agent-completion-pulse');
-    }, 1000);
+    this.timeouts.setTimeout(() => this.element?.removeClass('nexus-agent-completion-pulse'), 1000);
   }
 
   /**
    * Cleanup
    */
   cleanup(): void {
-    // Unsubscribe from events
     if (this.eventRef) {
       getSubagentEventBus().offref(this.eventRef);
       this.eventRef = null;

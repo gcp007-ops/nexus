@@ -2,6 +2,12 @@ import { App, TFile } from 'obsidian';
 import { BaseTool } from '../../baseTool';
 import { SetPropertyParams, SetPropertyResult } from '../types';
 import { createErrorMessage } from '../../../utils/errorUtils';
+import type { ToolStatusTense } from '../../interfaces/ITool';
+import { labelFileOp, verbs } from '../../utils/toolStatusLabels';
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
 
 /**
  * Location: src/agents/contentManager/tools/setProperty.ts
@@ -34,6 +40,10 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
     this.app = app;
   }
 
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelFileOp(verbs('Setting property on', 'Set property on', 'Failed to set property on'), params, tense);
+  }
+
   async execute(params: SetPropertyParams): Promise<SetPropertyResult> {
     try {
       const { path, property, value, mode = 'replace' } = params;
@@ -55,15 +65,16 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
 
       let mergeError: string | null = null;
 
-      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
         if (mode === 'merge') {
           const existing = frontmatter[property];
 
           if (existing === undefined || existing === null) {
             frontmatter[property] = value;
-          } else if (Array.isArray(existing) && Array.isArray(value)) {
+          } else if (isStringArray(existing) && isStringArray(value)) {
             const merged = [...existing];
-            for (const item of value) {
+            const newList = value;
+            for (const item of newList) {
               if (!merged.includes(item)) {
                 merged.push(item);
               }

@@ -14,6 +14,12 @@ import {
   ProviderHttpResponse
 } from '../adapters/shared/ProviderHttpClient';
 
+type ValidationResponseBody = {
+  error?: {
+    message?: string;
+  };
+};
+
 // Browser-compatible hash function (djb2 algorithm)
 // Not cryptographically secure but sufficient for cache key validation
 function generateHash(input: string): string {
@@ -73,7 +79,7 @@ export class LLMValidationService {
       headers?: Record<string, string>;
       body?: string;
     }
-  ): Promise<ProviderHttpResponse<any>> {
+  ): Promise<ProviderHttpResponse<ValidationResponseBody>> {
     return ProviderHttpClient.request({
       provider,
       operation,
@@ -124,6 +130,12 @@ export class LLMValidationService {
         case 'groq':
           result = await this.validateGroq(apiKey);
           break;
+        case 'deepgram':
+          result = await this.validateDeepgram(apiKey);
+          break;
+        case 'assemblyai':
+          result = await this.validateAssemblyAI(apiKey);
+          break;
         case 'openrouter':
           result = await this.validateOpenRouter(apiKey);
           break;
@@ -173,16 +185,16 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         return {
           success: false,
           error: errorData.error?.message || `HTTP ${response.status}`
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message || 'OpenAI API key validation failed'
+        error: error instanceof Error ? error.message : 'OpenAI API key validation failed'
       };
     }
   }
@@ -208,16 +220,16 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         return { 
           success: false, 
           error: errorData.error?.message || `HTTP ${response.status}` 
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return { 
         success: false, 
-        error: error.message || 'Anthropic API key validation failed' 
+        error: error instanceof Error ? error.message : 'Anthropic API key validation failed' 
       };
     }
   }
@@ -240,16 +252,16 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         return { 
           success: false, 
           error: errorData.error?.message || `HTTP ${response.status}` 
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return { 
         success: false, 
-        error: error.message || 'Google API key validation failed' 
+        error: error instanceof Error ? error.message : 'Google API key validation failed' 
       };
     }
   }
@@ -273,16 +285,16 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         return { 
           success: false, 
           error: errorData.error?.message || `HTTP ${response.status}` 
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return { 
         success: false, 
-        error: error.message || 'Mistral API key validation failed' 
+        error: error instanceof Error ? error.message : 'Mistral API key validation failed' 
       };
     }
   }
@@ -306,16 +318,16 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         return { 
           success: false, 
           error: errorData.error?.message || `HTTP ${response.status}` 
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return { 
         success: false, 
-        error: error.message || 'Groq API key validation failed' 
+        error: error instanceof Error ? error.message : 'Groq API key validation failed' 
       };
     }
   }
@@ -343,7 +355,7 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         const errorMessage = errorData.error?.message || JSON.stringify(errorData) || `HTTP ${response.status}`;
         console.error('OpenRouter validation error:', errorMessage);
         return { 
@@ -351,11 +363,65 @@ export class LLMValidationService {
           error: errorMessage
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('OpenRouter validation exception:', error);
       return { 
         success: false, 
-        error: error.message || 'OpenRouter API key validation failed' 
+        error: error instanceof Error ? error.message : 'OpenRouter API key validation failed' 
+      };
+    }
+  }
+
+  private static async validateDeepgram(apiKey: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.requestWithTimeout('deepgram', 'Deepgram validation', {
+        url: 'https://api.deepgram.com/v1/projects',
+        method: 'GET',
+        headers: {
+          Authorization: `Token ${apiKey}`
+        }
+      });
+
+      if (response.status >= 200 && response.status < 300) {
+        return { success: true };
+      }
+
+      const errorData = (response.json ?? {}) as { err_msg?: string; error?: string };
+      return {
+        success: false,
+        error: errorData.err_msg || errorData.error || `HTTP ${response.status}`
+      };
+    } catch (error: unknown) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Deepgram API key validation failed'
+      };
+    }
+  }
+
+  private static async validateAssemblyAI(apiKey: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await this.requestWithTimeout('assemblyai', 'AssemblyAI validation', {
+        url: 'https://api.assemblyai.com/v2/transcript',
+        method: 'GET',
+        headers: {
+          Authorization: apiKey
+        }
+      });
+
+      if (response.status >= 200 && response.status < 300) {
+        return { success: true };
+      }
+
+      const errorData = (response.json ?? {}) as { error?: string };
+      return {
+        success: false,
+        error: errorData.error || `HTTP ${response.status}`
+      };
+    } catch (error: unknown) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'AssemblyAI API key validation failed'
       };
     }
   }
@@ -379,16 +445,16 @@ export class LLMValidationService {
       if (response.status >= 200 && response.status < 300) {
         return { success: true };
       } else {
-        const errorData = response.json || {};
+        const errorData = (response.json ?? {});
         return { 
           success: false, 
           error: errorData.error?.message || `HTTP ${response.status}` 
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return { 
         success: false, 
-        error: error.message || 'Perplexity API key validation failed' 
+        error: error instanceof Error ? error.message : 'Perplexity API key validation failed' 
       };
     }
   }
@@ -418,10 +484,10 @@ export class LLMValidationService {
           error: errorData.error?.message || `HTTP ${response.status}` 
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       return { 
         success: false, 
-        error: error.message || 'Requesty API key validation failed' 
+        error: error instanceof Error ? error.message : 'Requesty API key validation failed' 
       };
     }
   }

@@ -2,6 +2,9 @@ import { JSONSchema } from '../../../types/schema/JSONSchemaTypes';
 import { BaseTool } from '../../baseTool';
 import { ArchivePromptParams, ArchivePromptResult } from '../types';
 import { CustomPromptStorageService } from '../services/CustomPromptStorageService';
+import { getErrorMessage } from '../../../utils/errorUtils';
+import { ToolStatusTense } from '../../interfaces/ITool';
+import { verbs, labelNamed } from '../../utils/toolStatusLabels';
 
 /**
  * Tool for archiving a custom prompt
@@ -60,7 +63,7 @@ export class ArchivePromptTool extends BaseTool<ArchivePromptParams, ArchiveProm
       // Success - LLM already knows what it archived
       return this.prepareResult(true);
     } catch (error) {
-      return this.prepareResult(false, undefined, `Failed to archive prompt: ${error}`);
+      return this.prepareResult(false, undefined, `Failed to archive prompt: ${getErrorMessage(error)}`);
     }
   }
 
@@ -82,6 +85,11 @@ export class ArchivePromptTool extends BaseTool<ArchivePromptParams, ArchiveProm
     };
 
     return this.getMergedSchema(toolSchema);
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    const v = verbs('Archiving prompt', 'Archived prompt', 'Failed to archive prompt');
+    return labelNamed(v, params, tense, ['name']);
   }
 
   getResultSchema(): Record<string, unknown> {

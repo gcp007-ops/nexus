@@ -14,7 +14,6 @@
 import { BranchManager } from '../../src/ui/chat/services/BranchManager';
 import {
   createAssistantMessage,
-  createUserMessage,
   createBranch,
   createEmptyBranch,
   createConversation,
@@ -22,6 +21,11 @@ import {
   createCompletedToolCall
 } from '../fixtures/chatBugs';
 import { createMockConversationRepo } from '../mocks/chatService';
+
+function expectDefined<T>(value: T | null | undefined): T {
+  expect(value).toBeDefined();
+  return value as T;
+}
 
 describe('BranchManager', () => {
   let branchManager: BranchManager;
@@ -73,7 +77,7 @@ describe('BranchManager', () => {
 
       const result = branchManager.getActiveBranch(message);
       expect(result).not.toBeNull();
-      expect(result!.id).toBe('branch_active');
+      expect(expectDefined(result).id).toBe('branch_active');
     });
 
     it('should return null when activeAlternativeIndex is out of range', () => {
@@ -146,7 +150,7 @@ describe('BranchManager', () => {
 
       const result = branchManager.getActiveMessageToolCalls(message);
       expect(result).toBeDefined();
-      expect(result![0].id).toBe('tc_original');
+      expect(expectDefined(result)[0].id).toBe('tc_original');
     });
 
     it('should return branch tool calls when a branch is active', () => {
@@ -162,7 +166,7 @@ describe('BranchManager', () => {
 
       const result = branchManager.getActiveMessageToolCalls(message);
       expect(result).toBeDefined();
-      expect(result![0].id).toBe('tc_branch');
+      expect(expectDefined(result)[0].id).toBe('tc_branch');
     });
 
     it('should return undefined (not original data) when active branch has no messages', () => {
@@ -240,7 +244,7 @@ describe('BranchManager', () => {
 
       expect(branchId).toBeDefined();
       expect(aiMsg.branches).toBeDefined();
-      expect(aiMsg.branches!.length).toBe(1);
+      expect(expectDefined(aiMsg.branches).length).toBe(1);
       expect(aiMsg.activeAlternativeIndex).toBe(1); // Points to new branch
     });
 
@@ -267,6 +271,74 @@ describe('BranchManager', () => {
       );
 
       expect(mockEvents.onBranchCreated).toHaveBeenCalledWith(aiMsg.id, branchId);
+    });
+
+    it('should persist a branch conversation when unified branch storage is available', async () => {
+      const conversation = createConversation();
+      const aiMsg = conversation.messages[1];
+      const altResponse = createAssistantMessage({
+        id: 'alt_new',
+        content: 'Persisted alternative',
+        reasoning: 'Stored reasoning'
+      });
+      const unifiedRepo = {
+        ...mockRepo,
+        createBranchConversation: jest.fn(async () => ({
+          id: 'branch_unified',
+          title: 'Alternative response 1',
+          created: 1000,
+          updated: 1000
+        })),
+        addMessage: jest.fn(async () => ({ success: true })),
+        updateMessage: jest.fn(async () => ({ success: true }))
+      };
+      const manager = new BranchManager(unifiedRepo, mockEvents);
+
+      const branchId = await manager.createHumanBranch(conversation, aiMsg.id, altResponse);
+
+      expect(branchId).toBe('branch_unified');
+      expect(unifiedRepo.createBranchConversation).toHaveBeenCalledWith(
+        conversation.id,
+        aiMsg.id,
+        'alternative',
+        'Alternative response 1'
+      );
+      expect(unifiedRepo.addMessage).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: 'branch_unified',
+        id: 'alt_new',
+        role: 'assistant',
+        content: 'Persisted alternative'
+      }));
+      expect(unifiedRepo.updateMessage).toHaveBeenCalledWith(
+        'branch_unified',
+        'alt_new',
+        expect.objectContaining({ reasoning: 'Stored reasoning' })
+      );
+      expect(expectDefined(aiMsg.branches)[0].id).toBe('branch_unified');
+    });
+
+    it('should persist continuation messages into unified branch storage', async () => {
+      const continuation = createAssistantMessage({
+        id: 'follow_up',
+        content: 'Follow-up content'
+      });
+      const unifiedRepo = {
+        ...mockRepo,
+        createBranchConversation: jest.fn(),
+        addMessage: jest.fn(async () => ({ success: true })),
+        updateMessage: jest.fn(async () => ({ success: true }))
+      };
+      const manager = new BranchManager(unifiedRepo, mockEvents);
+
+      const result = await manager.addMessagesToBranch('branch_unified', [continuation]);
+
+      expect(result).toBe(true);
+      expect(unifiedRepo.addMessage).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: 'branch_unified',
+        id: 'follow_up',
+        role: 'assistant',
+        content: 'Follow-up content'
+      }));
     });
 
     it('should return null if message is not found', async () => {

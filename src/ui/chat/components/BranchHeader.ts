@@ -37,7 +37,7 @@ export class BranchHeader {
   constructor(
     private container: HTMLElement,
     private callbacks: BranchHeaderCallbacks,
-    private component?: Component
+    private component: Component
   ) {}
 
   /**
@@ -64,7 +64,9 @@ export class BranchHeader {
    */
   update(context: Partial<BranchViewContext>): void {
     if (!this.context) return;
-    this.context = { ...this.context, ...context };
+    const merged = { ...this.context, ...context };
+    if (JSON.stringify(merged) === JSON.stringify(this.context)) return;
+    this.context = merged;
     this.render();
   }
 
@@ -99,6 +101,7 @@ export class BranchHeader {
     // Back button
     const backBtn = header.createEl('button', {
       cls: 'nexus-branch-back clickable-icon',
+      attr: { 'aria-label': 'Back to parent conversation' },
     });
     const backIcon = backBtn.createSpan('nexus-branch-back-icon');
     setIcon(backIcon, 'arrow-left');
@@ -108,11 +111,7 @@ export class BranchHeader {
       this.callbacks.onNavigateToParent();
     };
 
-    if (this.component) {
-      this.component.registerDomEvent(backBtn, 'click', handleBack);
-    } else {
-      backBtn.addEventListener('click', handleBack);
-    }
+    this.component.registerDomEvent(backBtn, 'click', handleBack);
 
     // Branch info container
     const info = header.createDiv('nexus-branch-info');
@@ -145,34 +144,26 @@ export class BranchHeader {
         const cancelBtn = header.createEl('button', {
           cls: 'nexus-branch-action-btn nexus-branch-cancel-btn clickable-icon',
           text: 'Cancel',
+          attr: { 'aria-label': 'Cancel subagent' },
         });
         const subagentId = metadata.subagentId;
-        if (this.component) {
-          this.component.registerDomEvent(cancelBtn, 'click', () => {
-            this.callbacks.onCancel!(subagentId);
-          });
-        } else {
-          cancelBtn.addEventListener('click', () => {
-            this.callbacks.onCancel!(subagentId);
-          });
-        }
+        const onCancel = this.callbacks.onCancel;
+        this.component.registerDomEvent(cancelBtn, 'click', () => {
+          onCancel(subagentId);
+        });
       }
 
       if (metadata.state === 'max_iterations' && this.callbacks.onContinue) {
         const continueBtn = header.createEl('button', {
           cls: 'nexus-branch-action-btn nexus-branch-continue-btn mod-cta',
           text: 'Continue',
+          attr: { 'aria-label': 'Continue subagent' },
         });
         const branchId = this.context.branchId;
-        if (this.component) {
-          this.component.registerDomEvent(continueBtn, 'click', () => {
-            this.callbacks.onContinue!(branchId);
-          });
-        } else {
-          continueBtn.addEventListener('click', () => {
-            this.callbacks.onContinue!(branchId);
-          });
-        }
+        const onContinue = this.callbacks.onContinue;
+        this.component.registerDomEvent(continueBtn, 'click', () => {
+          onContinue(branchId);
+        });
       }
     } else {
       // Human branch
@@ -189,7 +180,7 @@ export class BranchHeader {
   /**
    * Truncate long task descriptions
    */
-  private truncateTask(task: string, maxLength: number = 50): string {
+  private truncateTask(task: string, maxLength = 50): string {
     if (task.length <= maxLength) return task;
     return task.substring(0, maxLength - 3) + '...';
   }

@@ -1,10 +1,12 @@
 /**
  * ConversationManager - Handles all conversation CRUD operations
+ * with pagination and search state management
  */
 
 import { App } from 'obsidian';
 import { ChatService } from '../../../services/chat/ChatService';
 import { ConversationData } from '../../../types/chat/ChatTypes';
+import type { PaginatedResult } from '../../../types/pagination/PaginationTypes';
 import { BranchManager } from './BranchManager';
 import { ConversationTitleModal } from '../components/ConversationTitleModal';
 
@@ -14,9 +16,22 @@ export interface ConversationManagerEvents {
   onError: (message: string) => void;
 }
 
+/** Default number of conversations per page */
+const PAGE_SIZE = 20;
+
 export class ConversationManager {
   private currentConversation: ConversationData | null = null;
   private conversations: ConversationData[] = [];
+
+  // Pagination state
+  private currentPage = 0;
+  private _hasMore = false;
+  private _isLoading = false;
+  private _isSearchActive = false;
+
+  // Race condition guard: incremented on every new load/search request.
+  // Stale responses (whose captured generation doesn't match) are discarded.
+  private generation = 0;
 
   constructor(
     private app: App,
@@ -24,6 +39,21 @@ export class ConversationManager {
     private branchManager: BranchManager,
     private events: ConversationManagerEvents
   ) {}
+
+  /** Whether more conversations can be loaded */
+  get hasMore(): boolean {
+    return this._hasMore;
+  }
+
+  /** Whether a load or search is in progress */
+  get isLoading(): boolean {
+    return this._isLoading;
+  }
+
+  /** Whether the list is showing search results */
+  get isSearchActive(): boolean {
+    return this._isSearchActive;
+  }
 
   /**
    * Get current conversation
@@ -40,21 +70,140 @@ export class ConversationManager {
   }
 
   /**
-   * Load conversations from the chat service
+   * Load conversations from the chat service (page 0, resets state)
    */
   async loadConversations(): Promise<void> {
-    try {
-      this.conversations = await this.chatService.listConversations({ limit: 50 });
+    const gen = ++this.generation;
+    this._isLoading = true;
+    this._isSearchActive = false;
+    this.currentPage = 0;
 
+    try {
+      const result = await this.chatService.listConversations({
+        limit: PAGE_SIZE,
+        page: 0
+      });
+
+      // Discard stale response
+      if (gen !== this.generation) return;
+
+      this.applyPaginatedResult(result, false);
+      this._isLoading = false;
       this.events.onConversationsChanged();
 
       // Auto-select the most recent conversation
       if (this.conversations.length > 0 && !this.currentConversation) {
         await this.selectConversation(this.conversations[0]);
       }
-    } catch (error) {
+    } catch {
+      if (gen !== this.generation) return;
+      this._isLoading = false;
       this.events.onError('Failed to load conversations');
+    } finally {
+      if (gen === this.generation) {
+        this._isLoading = false;
+      }
     }
+  }
+
+  /**
+   * Load next page of conversations, appending to existing list
+   */
+  async loadMoreConversations(): Promise<void> {
+    if (this._isLoading || !this._hasMore || this._isSearchActive) return;
+
+    const gen = ++this.generation;
+    this._isLoading = true;
+    const nextPage = this.currentPage + 1;
+
+    try {
+      const result = await this.chatService.listConversations({
+        limit: PAGE_SIZE,
+        page: nextPage
+      });
+
+      // Discard stale response
+      if (gen !== this.generation) return;
+
+      this.applyPaginatedResult(result, true);
+      this.currentPage = nextPage;
+      this._isLoading = false;
+      this.events.onConversationsChanged();
+    } catch {
+      if (gen !== this.generation) return;
+      this._isLoading = false;
+      this.events.onError('Failed to load more conversations');
+    } finally {
+      if (gen === this.generation) {
+        this._isLoading = false;
+      }
+    }
+  }
+
+  /**
+   * Search conversations by title (FTS). Replaces the paginated list.
+   */
+  async searchConversations(query: string): Promise<void> {
+    if (!query.trim()) {
+      await this.clearSearch();
+      return;
+    }
+
+    const gen = ++this.generation;
+    this._isLoading = true;
+    this._isSearchActive = true;
+    this._hasMore = false;
+
+    try {
+      const results = await this.chatService.searchConversations(query);
+
+      // Discard stale response
+      if (gen !== this.generation) return;
+
+      // searchConversations returns ConversationListItem[] — map to ConversationData
+      this.conversations = results.map(item => ({
+        id: item.id,
+        title: item.title,
+        messages: [],
+        created: item.created,
+        updated: item.lastUpdated,
+      }));
+
+      this._isLoading = false;
+      this.events.onConversationsChanged();
+    } catch {
+      if (gen !== this.generation) return;
+      this._isLoading = false;
+      this.events.onError('Failed to search conversations');
+    } finally {
+      if (gen === this.generation) {
+        this._isLoading = false;
+      }
+    }
+  }
+
+  /**
+   * Clear search and return to paginated browse at page 0
+   */
+  async clearSearch(): Promise<void> {
+    if (!this._isSearchActive) return;
+    this._isSearchActive = false;
+    await this.loadConversations();
+  }
+
+  /**
+   * Apply a PaginatedResult, replacing or appending to the conversation list
+   */
+  private applyPaginatedResult(
+    result: PaginatedResult<ConversationData>,
+    append: boolean
+  ): void {
+    if (append) {
+      this.conversations = [...this.conversations, ...result.items];
+    } else {
+      this.conversations = result.items;
+    }
+    this._hasMore = result.hasNextPage;
   }
 
   /**
@@ -71,7 +220,7 @@ export class ConversationManager {
         this.currentConversation = fullConversation;
         this.events.onConversationSelected(fullConversation);
       }
-    } catch (error) {
+    } catch {
       this.events.onError('Failed to load conversation');
     }
   }
@@ -97,7 +246,7 @@ export class ConversationManager {
       } else {
         this.events.onError(result.error || 'Failed to create conversation');
       }
-    } catch (error) {
+    } catch {
       this.events.onError('Failed to create conversation');
     }
   }
@@ -145,13 +294,13 @@ export class ConversationManager {
       } else {
         this.events.onError(result.error || 'Failed to create conversation');
       }
-    } catch (error) {
+    } catch {
       this.events.onError('Failed to create conversation');
     }
   }
 
   /**
-   * Delete a conversation
+   * Delete a conversation (optimistic removal from local list)
    */
   async deleteConversation(conversationId: string): Promise<void> {
     try {
@@ -163,12 +312,13 @@ export class ConversationManager {
           this.currentConversation = null;
         }
 
-        // Reload conversation list
-        await this.loadConversations();
+        // Optimistic removal from local list
+        this.conversations = this.conversations.filter(c => c.id !== conversationId);
+        this.events.onConversationsChanged();
       } else {
         this.events.onError('Failed to delete conversation');
       }
-    } catch (error) {
+    } catch {
       this.events.onError('Failed to delete conversation');
     }
   }
@@ -197,7 +347,7 @@ export class ConversationManager {
       } else {
         this.events.onError('Failed to rename conversation');
       }
-    } catch (error) {
+    } catch {
       this.events.onError('Failed to rename conversation');
     }
   }

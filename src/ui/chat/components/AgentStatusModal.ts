@@ -10,7 +10,7 @@
  * Fixed height (~200px) with scroll for many agents.
  */
 
-import { App, Modal, setIcon, Events } from 'obsidian';
+import { App, Component, Modal, setIcon, Events } from 'obsidian';
 import type { SubagentExecutor } from '../../../services/chat/SubagentExecutor';
 import type { BranchService } from '../../../services/chat/BranchService';
 import type { AgentStatusItem, SubagentBranchMetadata } from '../../../types/branch/BranchTypes';
@@ -30,6 +30,7 @@ export class AgentStatusModal extends Modal {
   private callbacks: AgentStatusModalCallbacks;
   private eventRef: ReturnType<Events['on']> | null = null;
   private cachedCompletedAgents: AgentStatusItem[] = [];
+  private renderEvents: Component | null = null;
 
   constructor(
     app: App,
@@ -45,7 +46,11 @@ export class AgentStatusModal extends Modal {
     this.callbacks = callbacks;
   }
 
-  async onOpen(): Promise<void> {
+  onOpen(): void {
+    void this.initializeModal();
+  }
+
+  private async initializeModal(): Promise<void> {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass('nexus-agent-status-modal');
@@ -69,13 +74,14 @@ export class AgentStatusModal extends Modal {
    * These persist across conversation switches and app restarts
    */
   private async loadCompletedAgentsFromStorage(): Promise<void> {
-    if (!this.branchService || !this.conversationId) {
+    const conversationId = this.conversationId;
+    if (!this.branchService || !conversationId) {
       this.cachedCompletedAgents = [];
       return;
     }
 
     try {
-      const subagentBranches = await this.branchService.getSubagentBranches(this.conversationId);
+      const subagentBranches = await this.branchService.getSubagentBranches(conversationId);
 
       this.cachedCompletedAgents = subagentBranches
         .filter(info => {
@@ -88,7 +94,7 @@ export class AgentStatusModal extends Modal {
           return {
             subagentId: metadata.subagentId,
             branchId: info.branch.id,
-            conversationId: this.conversationId!,
+            conversationId,
             parentMessageId: info.parentMessageId,
             task: metadata.task,
             state: metadata.state,
@@ -107,6 +113,8 @@ export class AgentStatusModal extends Modal {
 
   private renderContent(): void {
     const { contentEl } = this;
+    this.renderEvents?.unload();
+    this.renderEvents = new Component();
     contentEl.empty();
 
     // Get running agents from executor (in-memory, has lastToolUsed)
@@ -153,6 +161,11 @@ export class AgentStatusModal extends Modal {
    * Layout: [Task description + iterations] | [Tool badge] | [View + Stop/Icon]
    */
   private renderCompactRow(container: HTMLElement, agent: AgentStatusItem, isRunning: boolean): void {
+    const renderEvents = this.renderEvents;
+    if (!renderEvents) {
+      return;
+    }
+
     const row = container.createDiv({ cls: 'nexus-agent-row-compact' });
 
     // Left: Task description with iterations inline
@@ -176,7 +189,7 @@ export class AgentStatusModal extends Modal {
       attr: { 'aria-label': 'View agent conversation' },
     });
     setIcon(viewBtn, 'eye');
-    viewBtn.addEventListener('click', () => {
+    renderEvents.registerDomEvent(viewBtn, 'click', () => {
       this.close();
       this.callbacks.onViewBranch(agent.branchId);
     });
@@ -187,7 +200,7 @@ export class AgentStatusModal extends Modal {
         attr: { 'aria-label': 'Stop agent' },
       });
       setIcon(stopBtn, 'square');
-      stopBtn.addEventListener('click', () => {
+      renderEvents.registerDomEvent(stopBtn, 'click', () => {
         this.subagentExecutor.cancelSubagent(agent.subagentId);
         this.renderContent();
       });
@@ -211,6 +224,8 @@ export class AgentStatusModal extends Modal {
       getSubagentEventBus().offref(this.eventRef);
       this.eventRef = null;
     }
+    this.renderEvents?.unload();
+    this.renderEvents = null;
     this.contentEl.empty();
   }
 }

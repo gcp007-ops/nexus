@@ -109,18 +109,18 @@ export class LRUCache<T> extends BaseCache<T> {
   private accessOrder = new Map<string, number>();
   private accessCounter = 0;
 
-  async get(key: string): Promise<T | null> {
+  get(key: string): Promise<T | null> {
     const entry = this.cache.get(key);
 
     if (!entry) {
       this.metrics.misses++;
-      return null;
+      return Promise.resolve(null);
     }
 
     if (this.isExpired(entry)) {
-      await this.delete(key);
+      void this.delete(key);
       this.metrics.misses++;
-      return null;
+      return Promise.resolve(null);
     }
 
     // Update access order for LRU
@@ -128,13 +128,13 @@ export class LRUCache<T> extends BaseCache<T> {
     entry.hits++;
     this.metrics.hits++;
 
-    return entry.value;
+    return Promise.resolve(entry.value);
   }
 
   async set(key: string, value: T, ttl?: number): Promise<void> {
     // Check if we need to evict
     if (this.cache.size >= this.config.maxSize && !this.cache.has(key)) {
-      await this.evictLRU();
+      this.evictLRU();
     }
 
     const entry: CacheEntry<T> = {
@@ -154,7 +154,7 @@ export class LRUCache<T> extends BaseCache<T> {
     }
   }
 
-  async delete(key: string): Promise<boolean> {
+  delete(key: string): Promise<boolean> {
     const deleted = this.cache.delete(key);
     this.accessOrder.delete(key);
 
@@ -162,21 +162,22 @@ export class LRUCache<T> extends BaseCache<T> {
       this.metrics.size = this.cache.size;
     }
 
-    return deleted;
+    return Promise.resolve(deleted);
   }
 
-  async clear(): Promise<void> {
+  clear(): Promise<void> {
     this.cache.clear();
     this.accessOrder.clear();
     this.accessCounter = 0;
     this.metrics.size = 0;
+    return Promise.resolve();
   }
 
   size(): number {
     return this.cache.size;
   }
 
-  private async evictLRU(): Promise<void> {
+  private evictLRU(): void {
     let lruKey: string | null = null;
     let lruOrder = Infinity;
 
@@ -188,7 +189,7 @@ export class LRUCache<T> extends BaseCache<T> {
     }
 
     if (lruKey) {
-      await this.delete(lruKey);
+      void this.delete(lruKey);
       this.metrics.evictions++;
     }
   }
@@ -220,7 +221,7 @@ export class FileCache<T> extends BaseCache<T> {
   constructor(config: Partial<CacheConfig> = {}) {
     super({ ...config, persistToDisk: true });
     this.baseDir = CacheManager.vaultAdapterConfig?.baseDir || config.cacheDir || '.cache';
-    this.initializeCache();
+    void this.initializeCache();
   }
 
   async get(key: string): Promise<T | null> {
@@ -312,8 +313,11 @@ export class FileCache<T> extends BaseCache<T> {
       const exists = await adapter.exists(filePath);
       if (!exists) return null;
       const data = await adapter.read(filePath);
-      const parsed = JSON.parse(data);
-      return parsed.entry;
+      const parsed: unknown = JSON.parse(data);
+      if (isCacheRecord<T>(parsed)) {
+        return parsed.entry;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -383,12 +387,23 @@ export class FileCache<T> extends BaseCache<T> {
   }
 }
 
+function isCacheRecord<T>(value: unknown): value is { key?: string; entry: CacheEntry<T> } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const entry = (value as { entry?: unknown }).entry;
+  return typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+    && typeof (entry as { timestamp?: unknown }).timestamp === 'number'
+    && typeof (entry as { hits?: unknown }).hits === 'number';
+}
+
 /**
  * CacheManager singleton
  * Manages multiple cache instances and provides centralized configuration
  */
 export class CacheManager {
-  private static instances = new Map<string, BaseCache<any>>();
+  private static instances = new Map<string, BaseCache<unknown>>();
   static vaultAdapterConfig: { adapter: VaultAdapter; baseDir: string } | null = null;
 
   static getLRUCache<T>(name: string, config?: Partial<CacheConfig>): LRUCache<T> {
@@ -423,7 +438,7 @@ export class CacheManager {
    * Configure a vault adapter so cache persistence uses Obsidian API.
    * Must be called before creating file-based caches for disk persistence to work.
    */
-  static configureVaultAdapter(adapter: VaultAdapter, baseDir: string = '.nexus/cache') {
+  static configureVaultAdapter(adapter: VaultAdapter, baseDir = '.nexus/cache'): void {
     this.vaultAdapterConfig = { adapter, baseDir };
   }
 }

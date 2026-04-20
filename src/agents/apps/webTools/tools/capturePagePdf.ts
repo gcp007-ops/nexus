@@ -3,6 +3,8 @@ import { CommonParameters, CommonResult } from '../../../../types';
 import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 import { BaseAppAgent } from '../../BaseAppAgent';
 import { isDesktop, isElectron } from '../../../../utils/platform';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
+import { labelWithUrl, verbs } from '../../../utils/toolStatusLabels';
 import {
   ensureParentFolderExists,
   getWebViewerContents,
@@ -36,6 +38,10 @@ export class CapturePagePdfTool extends BaseTool<CapturePagePdfParams, CommonRes
     this.agent = agent;
   }
 
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelWithUrl(verbs('Capturing PDF', 'Captured PDF', 'Failed to capture PDF'), params, tense, 'page');
+  }
+
   async execute(params: CapturePagePdfParams): Promise<CommonResult> {
     if (!isDesktop() || !isElectron()) {
       return this.prepareResult(false, undefined, 'Web Viewer tools are desktop-only.');
@@ -59,7 +65,7 @@ export class CapturePagePdfTool extends BaseTool<CapturePagePdfParams, CommonRes
       }
 
       await app.workspace.revealLeaf(leaf);
-      await app.workspace.setActiveLeaf(leaf, { focus: true });
+      app.workspace.setActiveLeaf(leaf, { focus: true });
       const contents = await waitForWebViewerReady(leaf, timeoutMs, settleMs)
         ?? getWebViewerContents(leaf);
       if (!contents?.printToPDF) {

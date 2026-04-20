@@ -6,6 +6,7 @@
 import { CustomPromptsSettings } from '../mcp/CustomPromptTypes';
 import { LLMProviderSettings } from '../llm/ProviderTypes';
 import { AppsSettings } from '../apps/AppTypes';
+import type { PluginScopedStorageState } from '../../database/migration/PluginScopedStorageCoordinator';
 
 // Forward declarations for service types to avoid circular imports
 // Actual types are imported where needed
@@ -14,6 +15,20 @@ type WorkspaceServiceType = import('../../services/WorkspaceService').WorkspaceS
 type SessionServiceType = import('../../services/session/SessionService').SessionService;
 type ConversationServiceType = import('../../services/ConversationService').ConversationService;
 type CustomPromptStorageServiceType = import('../../agents/promptManager/services/CustomPromptStorageService').CustomPromptStorageService;
+
+export interface MCPStorageSettings {
+  schemaVersion?: number;
+  rootPath: string;
+  maxShardBytes: number;
+  /** Root paths from previous configurations, used as legacy read sources on next startup */
+  previousRootPaths?: string[];
+}
+
+export const DEFAULT_STORAGE_SETTINGS: MCPStorageSettings = {
+  schemaVersion: 2,
+  rootPath: 'Nexus',
+  maxShardBytes: 4 * 1024 * 1024
+};
 
 /**
  * Plugin services registry type
@@ -30,9 +45,7 @@ export interface PluginServices {
 }
 
 // Memory management settings
-interface MemorySettings {
-  // Workspace management interface
-}
+type MemorySettings = Record<string, never>;
 
 interface ProcessedFileState {
   filePath: string;
@@ -62,6 +75,7 @@ export interface MCPSettings {
   autoIngestion?: boolean; // Automatically convert newly added supported binary files to Markdown
   configFilePath?: string;
   memory?: MemorySettings;
+  storage?: MCPStorageSettings;
   customPrompts?: CustomPromptsSettings;
   llmProviders?: LLMProviderSettings;
   apps?: AppsSettings;
@@ -75,6 +89,7 @@ export interface MCPSettings {
   availableUpdateVersion?: string;
   lastUpdateCheckDate?: string;
   processedFiles?: ProcessedFilesData;
+  pluginStorage?: PluginScopedStorageState;
   workflowScheduler?: {
     lastCheckAt?: number;
   };

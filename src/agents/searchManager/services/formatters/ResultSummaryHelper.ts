@@ -20,7 +20,7 @@ export class ResultSummaryHelper {
   /**
    * Build result summary statistics
    */
-  async buildSummary(results: MemorySearchResult[]): Promise<MemoryResultSummary> {
+  buildSummary(results: MemorySearchResult[]): MemoryResultSummary {
     const totalResults = results.length;
     const totalScore = results.reduce((sum, r) => sum + r.score, 0);
     const averageScore = totalResults > 0 ? totalScore / totalResults : 0;
@@ -44,7 +44,7 @@ export class ResultSummaryHelper {
         if (timestamp > newestTimestamp) {
           newestTimestamp = timestamp;
         }
-      } catch (error) {
+      } catch {
         // Ignore invalid dates
       }
     }

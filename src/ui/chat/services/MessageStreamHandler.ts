@@ -14,11 +14,31 @@
  */
 
 import { ChatService } from '../../../services/chat/ChatService';
-import { ConversationData } from '../../../types/chat/ChatTypes';
+import { ConversationData, ToolCall as ConversationToolCall } from '../../../types/chat/ChatTypes';
+
+interface StreamToolCall {
+  id: string;
+  type?: string;
+  name?: string;
+  displayName?: string;
+  technicalName?: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+  result?: unknown;
+  success?: boolean;
+  error?: string;
+  status?: string;
+  isVirtual?: boolean;
+  providerExecuted?: boolean;
+  isComplete?: boolean;
+  parameters?: unknown;
+}
 
 export interface StreamHandlerEvents {
   onStreamingUpdate: (messageId: string, content: string, isComplete: boolean, isIncremental?: boolean) => void;
-  onToolCallsDetected: (messageId: string, toolCalls: any[]) => void;
+  onToolCallsDetected: (messageId: string, toolCalls: StreamToolCall[]) => void;
 }
 
 export interface StreamOptions {
@@ -32,24 +52,33 @@ export interface StreamOptions {
   abortSignal?: AbortSignal;
   enableThinking?: boolean;
   thinkingEffort?: 'low' | 'medium' | 'high';
+  temperature?: number;
+  imageProvider?: 'google' | 'openrouter';
+  imageModel?: string;
+  transcriptionProvider?: string;
+  transcriptionModel?: string;
 }
 
 export interface StreamResult {
   streamedContent: string;
-  toolCalls?: any[];
+  toolCalls?: StreamToolCall[];
   reasoning?: string;  // Accumulated reasoning text
+  metadata?: Record<string, unknown>;
   usage?: {            // Token usage for context tracking
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
   };
+  provider?: string;   // Resolved provider from final chunk
+  model?: string;      // Resolved model from final chunk
+  cost?: { totalCost: number; currency: string };
 }
 
 /**
- * Create a synthetic tool call to represent reasoning/thinking in the UI
- * This allows reasoning to be displayed in the ProgressiveToolAccordion
+ * Create a synthetic tool call to represent reasoning/thinking in the UI.
+ * This keeps reasoning visible to the status bar and inspection history.
  */
-function createReasoningToolCall(messageId: string, reasoningText: string, isComplete: boolean): any {
+function createReasoningToolCall(messageId: string, reasoningText: string, isComplete: boolean): StreamToolCall {
   return {
     id: `reasoning_${messageId}`,
     type: 'reasoning',  // Special type for reasoning display
@@ -64,6 +93,27 @@ function createReasoningToolCall(messageId: string, reasoningText: string, isCom
     status: isComplete ? 'completed' : 'streaming',
     success: true,
     isVirtual: true  // Flag to indicate this is not a real tool
+  };
+}
+
+function toConversationToolCall(toolCall: StreamToolCall): ConversationToolCall {
+  return {
+    id: toolCall.id,
+    type: 'function',
+    name: toolCall.name,
+    displayName: toolCall.displayName,
+    technicalName: toolCall.technicalName,
+    function: {
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments
+    },
+    result: toolCall.result,
+    success: toolCall.success,
+    error: toolCall.error,
+    providerExecuted: toolCall.providerExecuted,
+    parameters: toolCall.parameters && typeof toolCall.parameters === 'object'
+      ? (toolCall.parameters as Record<string, unknown>)
+      : undefined
   };
 }
 
@@ -87,9 +137,13 @@ export class MessageStreamHandler {
     options: StreamOptions
   ): Promise<StreamResult> {
     let streamedContent = '';
-    let toolCalls: any[] | undefined = undefined;
+    let toolCalls: StreamToolCall[] | undefined = undefined;
     let hasStartedStreaming = false;
     let finalUsage: StreamResult['usage'] | undefined = undefined;
+    let finalMetadata: Record<string, unknown> | undefined = undefined;
+    let resolvedProvider: string | undefined = undefined;
+    let resolvedModel: string | undefined = undefined;
+    let finalCost: StreamResult['cost'] | undefined = undefined;
 
     // Reasoning accumulation
     let reasoningAccumulator = '';
@@ -152,7 +206,7 @@ export class MessageStreamHandler {
 
       // Extract tool calls when available
       if (chunk.toolCalls) {
-        toolCalls = chunk.toolCalls;
+        toolCalls = chunk.toolCalls as StreamToolCall[];
 
         // Emit tool calls event for final chunk
         if (chunk.complete) {
@@ -169,28 +223,47 @@ export class MessageStreamHandler {
         };
       }
 
+      if (chunk.metadata) {
+        finalMetadata = {
+          ...(finalMetadata || {}),
+          ...chunk.metadata
+        };
+      }
+
+      // Capture provider/model/cost from final chunk (yielded by StreamingResponseService)
+      if (chunk.complete) {
+        if (chunk.provider) resolvedProvider = chunk.provider;
+        if (chunk.model) resolvedModel = chunk.model;
+        if (chunk.cost) finalCost = chunk.cost;
+      }
+
       // Handle completion
       if (chunk.complete) {
         // Check if this is TRULY the final complete
         const hasToolCalls = toolCalls && toolCalls.length > 0;
-        const toolCallsHaveResults = hasToolCalls && toolCalls!.some((tc) =>
+        const toolCallsHaveResults = !!toolCalls?.length && toolCalls.some((tc) =>
           tc.result !== undefined || tc.success !== undefined
         );
         const isFinalComplete = !hasToolCalls || toolCallsHaveResults;
 
         if (isFinalComplete) {
-          // Update conversation with final content
+          // Update conversation with final content + provider/model/cost
           const placeholderMessageIndex = conversation.messages.findIndex(msg => msg.id === aiMessageId);
           if (placeholderMessageIndex >= 0) {
             conversation.messages[placeholderMessageIndex] = {
               ...conversation.messages[placeholderMessageIndex],
-              content: streamedContent,
-              state: 'complete',
-              toolCalls: toolCalls,
-              // Persist reasoning for re-render from storage
-              reasoning: reasoningAccumulator || undefined
-            };
-          }
+            content: streamedContent,
+            state: 'complete',
+            toolCalls: toolCalls?.map(toConversationToolCall),
+            // Persist reasoning for re-render from storage
+            reasoning: reasoningAccumulator || undefined,
+            metadata: finalMetadata,
+            provider: resolvedProvider,
+            model: resolvedModel,
+            cost: finalCost,
+            usage: finalUsage,
+          };
+        }
 
           // Send final complete content
           this.events.onStreamingUpdate(aiMessageId, streamedContent, true, false);
@@ -213,8 +286,13 @@ export class MessageStreamHandler {
           ...finalMsg,
           content: streamedContent,
           state: 'complete',
-          toolCalls: toolCalls,
-          reasoning: reasoningAccumulator || undefined
+          toolCalls: toolCalls?.map(toConversationToolCall),
+          reasoning: reasoningAccumulator || undefined,
+          metadata: finalMetadata,
+          provider: resolvedProvider,
+          model: resolvedModel,
+          cost: finalCost,
+          usage: finalUsage,
         };
       }
     }
@@ -223,7 +301,11 @@ export class MessageStreamHandler {
       streamedContent,
       toolCalls,
       reasoning: reasoningAccumulator || undefined,
-      usage: finalUsage
+      metadata: finalMetadata,
+      usage: finalUsage,
+      provider: resolvedProvider,
+      model: resolvedModel,
+      cost: finalCost,
     };
   }
 

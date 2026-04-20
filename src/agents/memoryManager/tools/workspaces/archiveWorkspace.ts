@@ -8,9 +8,17 @@
 import { App } from 'obsidian';
 import { BaseTool } from '../../../baseTool';
 import { MemoryManagerAgent } from '../../memoryManager';
+import { labelNamed, verbs } from '../../../utils/toolStatusLabels';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
 import { createServiceIntegration } from '../../services/ValidationService';
 import { createErrorMessage } from '../../../../utils/errorUtils';
 import { CommonResult, CommonParameters } from '../../../../types/mcp/AgentTypes';
+import type { IndividualWorkspace } from '../../../../types/storage/StorageTypes';
+
+interface WorkspaceServiceLike {
+    getWorkspaceByNameOrId(identifier: string): Promise<IndividualWorkspace | null>;
+    updateWorkspace(id: string, updates: Partial<IndividualWorkspace>): Promise<void>;
+}
 
 // Define parameter and result types for workspace archival
 export interface ArchiveWorkspaceParameters extends CommonParameters {
@@ -54,7 +62,7 @@ export class ArchiveWorkspaceTool extends BaseTool<ArchiveWorkspaceParameters, A
                 return this.prepareResult(false, undefined, `Workspace service not available: ${serviceResult.error}`);
             }
 
-            const workspaceService = serviceResult.service;
+            const workspaceService = serviceResult.service as WorkspaceServiceLike;
 
             // Validate workspace exists
             const existingWorkspace = await workspaceService.getWorkspaceByNameOrId(params.name);
@@ -73,9 +81,11 @@ export class ArchiveWorkspaceTool extends BaseTool<ArchiveWorkspaceParameters, A
             }
 
             // Create a copy and toggle isArchived flag
-            const workspaceCopy = JSON.parse(JSON.stringify(existingWorkspace));
-            workspaceCopy.isArchived = !isRestore;
-            workspaceCopy.lastAccessed = Date.now();
+            const workspaceCopy: Partial<IndividualWorkspace> = {
+                ...existingWorkspace,
+                isArchived: !isRestore,
+                lastAccessed: Date.now()
+            };
 
             // Perform the update
             await workspaceService.updateWorkspace(existingWorkspace.id, workspaceCopy);
@@ -100,6 +110,14 @@ export class ArchiveWorkspaceTool extends BaseTool<ArchiveWorkspaceParameters, A
         } catch (error) {
             return this.prepareResult(false, undefined, createErrorMessage('Error archiving workspace: ', error));
         }
+    }
+
+    getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+        const isRestore = params?.restore === true;
+        const v = isRestore
+            ? verbs('Restoring workspace', 'Restored workspace', 'Failed to restore workspace')
+            : verbs('Archiving workspace', 'Archived workspace', 'Failed to archive workspace');
+        return labelNamed(v, params, tense, ['name']);
     }
 
     getParameterSchema(): Record<string, unknown> {

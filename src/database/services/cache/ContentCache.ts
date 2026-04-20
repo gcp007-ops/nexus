@@ -26,7 +26,7 @@ export interface ContentCacheOptions {
 export interface FileContent extends CachedEntry {
   filePath: string;
   content: string;
-  metadata?: any;
+  metadata?: unknown;
   hash?: string;
 }
 
@@ -39,7 +39,7 @@ export interface EmbeddingContent extends CachedEntry {
 
 export interface SearchResult extends CachedEntry {
   query: string;
-  results: any[];
+  results: unknown[];
   type: string;
 }
 
@@ -131,14 +131,14 @@ export class ContentCache extends Events {
   /**
    * Cache file content with metadata
    */
-  async cacheFileContent(
+  cacheFileContent(
     filePath: string,
     content: string,
-    metadata?: any,
+    metadata?: unknown,
     ttl?: number
   ): Promise<void> {
     if (!this.options.enableFileContentCache) {
-      return;
+      return Promise.resolve();
     }
 
     const size = this.estimateSize(content);
@@ -160,6 +160,7 @@ export class ContentCache extends Events {
 
     this.trigger('cached', { type: 'file', filePath, size });
     this.enforceMemoryLimits();
+    return Promise.resolve();
   }
 
   /**
@@ -261,7 +262,7 @@ export class ContentCache extends Events {
    */
   cacheSearchResults(
     query: string,
-    results: any[],
+    results: unknown[],
     searchType: string,
     ttl?: number
   ): void {
@@ -314,7 +315,7 @@ export class ContentCache extends Events {
   /**
    * Cache computed value with custom key
    */
-  cacheValue(key: string, value: any, ttl?: number): void {
+  cacheValue<T>(key: string, value: T, ttl?: number): void {
     const size = this.estimateSize(value);
 
     const cacheEntry: CachedEntry = {
@@ -336,7 +337,7 @@ export class ContentCache extends Events {
   /**
    * Get cached computed value
    */
-  getCachedValue(key: string): any | null {
+  getCachedValue<T = unknown>(key: string): T | null {
     const cached = this.computedStrategy.get(key);
 
     if (!cached) {
@@ -345,7 +346,7 @@ export class ContentCache extends Events {
     }
 
     this.hits++;
-    return cached.data;
+    return cached.data as T;
   }
 
   // =============================================================================
@@ -489,7 +490,7 @@ export class ContentCache extends Events {
            this.metadataStrategy.getStatistics().count;
   }
 
-  private estimateSize(data: any): number {
+  private estimateSize(data: unknown): number {
     // Rough estimation of object size in bytes
     try {
       const jsonString = JSON.stringify(data);

@@ -8,6 +8,7 @@
  */
 import { App, Platform } from 'obsidian';
 import { CliProcessResult } from '../../utils/cliProcessRunner';
+import { desktopRequire } from '../../utils/desktopRequire';
 import { resolveGeminiCliRuntime } from '../../utils/geminiCli';
 
 export interface GeminiCliAuthStatus {
@@ -35,7 +36,7 @@ export class GeminiCliAuthService {
             };
         }
 
-        const runtime = resolveGeminiCliRuntime(this.app.vault);
+        const runtime = await Promise.resolve(resolveGeminiCliRuntime(this.app.vault));
         if (!runtime.geminiPath) {
             return {
                 available: false,
@@ -46,7 +47,7 @@ export class GeminiCliAuthService {
             };
         }
 
-        const probe = await this.runAuthProbe();
+        const probe = await Promise.resolve(this.runAuthProbe());
         return {
             available: true,
             loggedIn: probe.exitCode === 0,
@@ -94,10 +95,10 @@ export class GeminiCliAuthService {
      * Returns exitCode 0 if credentials exist and contain an access token,
      * non-zero otherwise.
      */
-    private async runAuthProbe(): Promise<CliProcessResult> {
-        const fs = require('fs') as typeof import('fs');
-        const osMod = require('os') as typeof import('os');
-        const pathMod = require('path') as typeof import('path');
+    private runAuthProbe(): CliProcessResult {
+        const fs = desktopRequire<typeof import('node:fs')>('node:fs');
+        const osMod = desktopRequire<typeof import('node:os')>('node:os');
+        const pathMod = desktopRequire<typeof import('node:path')>('node:path');
 
         const credsPath = pathMod.join(osMod.homedir(), '.gemini', 'oauth_creds.json');
 
@@ -134,8 +135,8 @@ export class GeminiCliAuthService {
 
         // Parse and confirm an access token is present
         try {
-            const creds = JSON.parse(raw) as Record<string, unknown>;
-            const hasToken = typeof creds['access_token'] === 'string' && (creds['access_token'] as string).length > 0;
+            const creds = JSON.parse(raw) as unknown;
+            const hasToken = isRecord(creds) && typeof creds.access_token === 'string' && creds.access_token.length > 0;
             if (!hasToken) {
                 return {
                     stdout: '',
@@ -153,4 +154,8 @@ export class GeminiCliAuthService {
 
         return { stdout: 'ok', stderr: '', exitCode: 0 };
     }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

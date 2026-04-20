@@ -11,6 +11,12 @@
 
 import { normalizePath } from 'obsidian';
 
+interface VaultAdapterLike {
+  read(path: string): Promise<string>;
+  write(path: string, contents: string): Promise<void>;
+  mkdir(path: string): Promise<unknown>;
+}
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface LogEntry {
@@ -37,7 +43,7 @@ export interface LoggerConfig {
 export class Logger {
   private static instance: Logger;
   private config: LoggerConfig;
-  private static vaultAdapterConfig: { adapter: any; baseDir: string } | null = null;
+  private static vaultAdapterConfig: { adapter: VaultAdapterLike; baseDir: string } | null = null;
   private logLevels: Record<LogLevel, number> = {
     debug: 0,
     info: 1,
@@ -256,6 +262,11 @@ export class Logger {
       case 'error':
         console.error(output);
         break;
+      case 'warn':
+      case 'info':
+      case 'debug':
+        console.warn(output);
+        break;
     }
   }
 
@@ -275,7 +286,7 @@ export class Logger {
     // File logging only works with vault adapter (mobile compatible)
     if (Logger.vaultAdapterConfig) {
       const dir = normalizePath(Logger.vaultAdapterConfig.baseDir || '.nexus/logs');
-      Logger.vaultAdapterConfig.adapter.mkdir(dir).catch(() => {});
+      Logger.vaultAdapterConfig.adapter.mkdir(dir).catch(() => undefined);
       this.config.logDirectory = dir;
     } else {
       // No vault adapter - disable file logging on mobile
@@ -284,7 +295,8 @@ export class Logger {
   }
 
   private getDateString(): string {
-    return new Date().toISOString().split('T')[0]!;
+    const [date] = new Date().toISOString().split('T');
+    return date ?? new Date().toISOString();
   }
 
   // Log rotation not supported on mobile - rely on manual cleanup or vault sync
@@ -300,7 +312,7 @@ export class Logger {
   /**
    * Configure vault adapter-backed logging (uses Obsidian vault adapter for writes).
    */
-  static setVaultAdapter(adapter: any, baseDir: string = '.nexus/logs') {
+  static setVaultAdapter(adapter: VaultAdapterLike, baseDir = '.nexus/logs'): void {
     Logger.vaultAdapterConfig = { adapter, baseDir };
     if (Logger.instance) {
       Logger.instance.config.logDirectory = baseDir;
@@ -308,7 +320,7 @@ export class Logger {
     }
   }
 
-  private writeViaVaultAdapter(logFile: string, line: string) {
+  private writeViaVaultAdapter(logFile: string, line: string): void {
     const adapter = Logger.vaultAdapterConfig?.adapter;
     if (!adapter) return;
     const normalizedPath = normalizePath(logFile);

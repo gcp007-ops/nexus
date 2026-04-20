@@ -159,6 +159,25 @@ export class ProjectsManagerView {
         }
     }
 
+    async openNewProject(): Promise<boolean> {
+        const workspace = this.callbacks.getCurrentWorkspace();
+        if (!workspace?.id) {
+            new Notice('Save this workspace before creating a project');
+            return false;
+        }
+
+        if (!await this.getTaskService()) {
+            new Notice('Task service is not available yet');
+            return false;
+        }
+
+        this.currentProject = this.createProjectEditorState();
+        this.currentTasks = [];
+        this.editingTaskOriginal = null;
+        this.currentTask = null;
+        return true;
+    }
+
     openTaskDetail(task?: TaskMetadata): void {
         const workspace = this.callbacks.getCurrentWorkspace();
         if (!this.currentProject?.id || !workspace?.id) {
@@ -313,7 +332,8 @@ export class ProjectsManagerView {
                 adapter.tasks,
                 new DAGService(),
                 undefined,
-                TaskBoardEvents
+                TaskBoardEvents,
+                async () => typeof adapter.waitForQueryReady === 'function' ? adapter.waitForQueryReady() : adapter.isReady()
             );
             return this.taskService;
         } catch {

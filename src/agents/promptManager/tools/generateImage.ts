@@ -5,15 +5,15 @@ import { JSONSchema } from '../../../types/schema/JSONSchemaTypes';
  */
 
 import { BaseTool } from '../../baseTool';
+import { ToolStatusTense } from '../../interfaces/ITool';
+import { verbs, labelNamed } from '../../utils/toolStatusLabels';
 import { CommonResult, CommonParameters } from '../../../types';
 import { createResult } from '../../../utils/schemaUtils';
 import { ImageGenerationService } from '../../../services/llm/ImageGenerationService';
 import { 
-  ImageGenerationParams,
-  ImageGenerationResult,
   AspectRatio
 } from '../../../services/llm/types/ImageTypes';
-import { SchemaBuilder, SchemaType } from '../../../utils/schemas/SchemaBuilder';
+import { SchemaBuilder } from '../../../utils/schemas/SchemaBuilder';
 import { Vault } from 'obsidian';
 import { LLMProviderSettings } from '../../../types/llm/ProviderTypes';
 
@@ -122,7 +122,7 @@ export class GenerateImageTool extends BaseTool<GenerateImageParams, GenerateIma
       const { provider, model } = this.resolveDefaults(params.provider, params.model);
 
       // Validate parameters
-      const validation = await this.imageService.validateParams({
+      const validation = this.imageService.validateParams({
         prompt: params.prompt,
         provider,
         model,
@@ -203,7 +203,7 @@ export class GenerateImageTool extends BaseTool<GenerateImageParams, GenerateIma
       if (initializedProviders.length > 0 && !initializedProviders.includes(provider)) {
         const available = initializedProviders.find(p => p === 'google' || p === 'openrouter');
         if (available) {
-          provider = available as 'google' | 'openrouter';
+          provider = available;
         }
       }
     }
@@ -325,6 +325,11 @@ export class GenerateImageTool extends BaseTool<GenerateImageParams, GenerateIma
     };
 
     return this.getMergedSchema(toolSchema);
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    const v = verbs('Generating image', 'Generated image', 'Failed to generate image');
+    return labelNamed(v, params, tense, ['prompt']);
   }
 
   /**

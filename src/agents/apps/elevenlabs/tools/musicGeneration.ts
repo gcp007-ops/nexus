@@ -10,6 +10,30 @@ import { CommonParameters, CommonResult } from '../../../../types';
 import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 import { BaseAppAgent } from '../../BaseAppAgent';
 import { requestUrl, normalizePath, TFolder } from 'obsidian';
+import { labelNamed, verbs } from '../../../utils/toolStatusLabels';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
+
+type UnknownRecord = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is UnknownRecord =>
+  typeof value === 'object' && value !== null;
+
+const getStatusCode = (value: unknown): number | undefined => {
+  if (!isRecord(value)) return undefined;
+  return typeof value.status === 'number' ? value.status : undefined;
+};
+
+const getErrorMessage = (value: unknown): string => {
+  if (isRecord(value)) {
+    const text = value.text;
+    if (typeof text === 'string') return text;
+
+    const message = value.message;
+    if (typeof message === 'string') return message;
+  }
+
+  return String(value);
+};
 
 interface MusicGenerationParams extends CommonParameters {
   prompt: string;
@@ -39,7 +63,12 @@ export class MusicGenerationTool extends BaseTool<MusicGenerationParams, CommonR
         `ElevenLabs not configured. Missing: ${missing.join(', ')}. Set up in Nexus Settings → Apps.`);
     }
 
-    const apiKey = this.agent.getCredential('apiKey')!;
+    const apiKey = this.agent.getCredential('apiKey');
+    if (!apiKey) {
+      const missing = this.agent.getMissingCredentials().map(c => c.label);
+      return this.prepareResult(false, undefined,
+        `ElevenLabs not configured. Missing: ${missing.join(', ')}. Set up in Nexus Settings → Apps.`);
+    }
 
     const body: Record<string, unknown> = {
       prompt: params.prompt,
@@ -67,8 +96,9 @@ export class MusicGenerationTool extends BaseTool<MusicGenerationParams, CommonR
       });
 
       if (response.status !== 200) {
+        const errorText = typeof response.text === 'string' ? response.text : 'Unknown error';
         return this.prepareResult(false, undefined,
-          `ElevenLabs API error (${response.status}): ${response.text || 'Unknown error'}`);
+          `ElevenLabs API error (${response.status}): ${errorText}`);
       }
 
       const vault = this.agent.getVault();
@@ -98,13 +128,15 @@ export class MusicGenerationTool extends BaseTool<MusicGenerationParams, CommonR
         audioSize: response.arrayBuffer.byteLength,
       });
     } catch (error: unknown) {
-      const status = (error as Record<string, unknown>)?.status;
-      const body = (error as Record<string, unknown>)?.text
-        ?? (error as Record<string, unknown>)?.message
-        ?? String(error);
+      const status = getStatusCode(error);
+      const body = getErrorMessage(error);
       return this.prepareResult(false, undefined,
-        `Music generation failed${status ? ` (${status})` : ''}: ${body}`);
+        `Music generation failed${status !== undefined ? ` (${status})` : ''}: ${body}`);
     }
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelNamed(verbs('Generating music', 'Generated music', 'Failed to generate music'), params, tense, ['prompt']);
   }
 
   getParameterSchema(): JSONSchema {

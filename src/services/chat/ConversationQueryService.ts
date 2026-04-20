@@ -11,7 +11,11 @@
  */
 
 import { ConversationData, ChatMessage } from '../../types/chat/ChatTypes';
-import { PaginationParams, PaginatedResult } from '../../types/pagination/PaginationTypes';
+import { PaginationParams, PaginatedResult, calculatePaginationMetadata, createEmptyPaginatedResult } from '../../types/pagination/PaginationTypes';
+import type { ToolCallMessageHistoryOptions } from '../../database/repositories/interfaces/IMessageRepository';
+
+/** Default number of conversations per page */
+const DEFAULT_PAGE_SIZE = 50;
 
 /** Conversation metadata from list operations */
 interface ConversationMetadata {
@@ -26,9 +30,13 @@ interface ConversationMetadata {
 /** Conversation service interface for queries */
 interface ConversationServiceLike {
   getConversation: (id: string, pagination?: PaginationParams) => Promise<ConversationData | null>;
-  listConversations: (vaultName?: string, limit?: number) => Promise<ConversationMetadata[]>;
+  listConversations: (vaultName?: string, limit?: number, page?: number) => Promise<ConversationMetadata[]>;
   searchConversations: (query: string, limit?: number) => Promise<ConversationMetadata[]>;
   getMessages?: (conversationId: string, options?: PaginationParams) => Promise<PaginatedResult<ChatMessage>>;
+  getToolCallMessagesForConversation?: (
+    conversationId: string,
+    options?: ToolCallMessageHistoryOptions
+  ) => Promise<PaginatedResult<ChatMessage>>;
   getRepository?: () => unknown;
   count?: () => Promise<number>;
 }
@@ -99,22 +107,45 @@ export class ConversationQueryService {
   }
 
   /**
-   * List all conversations
+   * Get conversation-wide tool call history using the conversation-service facade.
+   */
+  async getToolCallMessagesForConversation(
+    conversationId: string,
+    options?: ToolCallMessageHistoryOptions
+  ): Promise<PaginatedResult<ChatMessage>> {
+    try {
+      if (!this.conversationService.getToolCallMessagesForConversation) {
+        return createEmptyPaginatedResult<ChatMessage>(0, options?.pageSize ?? 50);
+      }
+
+      return await this.conversationService.getToolCallMessagesForConversation(conversationId, options);
+    } catch (error) {
+      console.error('Failed to get tool call messages for conversation:', error);
+      return createEmptyPaginatedResult<ChatMessage>(0, options?.pageSize ?? 50);
+    }
+  }
+
+  /**
+   * List all conversations with optional pagination
+   *
+   * @param options - Pagination and sorting options
+   * @returns PaginatedResult containing conversation data and pagination metadata
    */
   async listConversations(options?: {
     limit?: number;
-    offset?: number;
+    page?: number;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
-  }): Promise<ConversationData[]> {
+  }): Promise<PaginatedResult<ConversationData>> {
     try {
-      // ConversationService.listConversations expects (vaultName?: string, limit?: number)
-      // We pass undefined for vaultName to get all conversations, and extract limit from options
-      const metadataList = await this.conversationService.listConversations(undefined, options?.limit);
+      const pageSize = options?.limit ?? DEFAULT_PAGE_SIZE;
+      const page = options?.page ?? 0;
+
+      const metadataList = await this.conversationService.listConversations(undefined, pageSize, page);
 
       // Convert ConversationMetadata to ConversationData format
       // Note: messages array is empty since we're only using the index (lightweight)
-      return metadataList.map((metadata: ConversationMetadata) => ({
+      const items = metadataList.map((metadata: ConversationMetadata) => ({
         id: metadata.id,
         title: metadata.title,
         messages: [], // Empty for list view - messages loaded when conversation is selected
@@ -125,9 +156,17 @@ export class ConversationQueryService {
           message_count: metadata.message_count
         }
       }));
+
+      // Get total count for pagination metadata
+      const totalItems = await this.conversationService.count?.() ?? items.length;
+
+      return {
+        items,
+        ...calculatePaginationMetadata(page, pageSize, totalItems)
+      };
     } catch (error) {
       console.error('Failed to list conversations:', error);
-      return [];
+      return createEmptyPaginatedResult<ConversationData>(options?.page ?? 0, options?.limit ?? DEFAULT_PAGE_SIZE);
     }
   }
 

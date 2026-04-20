@@ -18,6 +18,14 @@ import { ModelRegistry } from '../ModelRegistry';
 import { getPrimaryServerKey } from '../../../../constants/branding';
 
 type ClaudeCodeToolCall = NonNullable<StreamChunk['toolCalls']>[number];
+type ClaudeCodeDesktopModuleMap = {
+  'fs/promises': typeof import('fs/promises');
+  os: typeof import('os');
+  path: typeof import('path');
+  child_process: typeof import('child_process');
+  readline: typeof import('readline');
+};
+
 const MAX_SAFE_WINDOWS_ARGV_CHARS = 24_000;
 
 export class AnthropicClaudeCodeAdapter extends BaseAdapter {
@@ -56,7 +64,7 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
   }
 
   async* generateStreamAsync(prompt: string, options?: GenerateOptions): AsyncGenerator<StreamChunk, void, unknown> {
-    const runtime = await this.getRuntime();
+    const runtime = this.getRuntime();
     if (!runtime.claudePath) {
       throw new LLMProviderError('Claude Code was not found on PATH.', this.name, 'CONFIGURATION_ERROR');
     }
@@ -76,11 +84,11 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
       );
     }
 
-    const fsPromises = require('fs/promises') as typeof import('fs/promises');
-    const osMod = require('os') as typeof import('os');
-    const pathMod = require('path') as typeof import('path');
-    const childProcess = require('child_process') as typeof import('child_process');
-    const readline = require('readline') as typeof import('readline');
+    const fsPromises = this.loadDesktopModule('fs/promises');
+    const osMod = this.loadDesktopModule('os');
+    const pathMod = this.loadDesktopModule('path');
+    const childProcess = this.loadDesktopModule('child_process');
+    const readline = this.loadDesktopModule('readline');
 
     const tempDir = await fsPromises.mkdtemp(pathMod.join(osMod.tmpdir(), 'nexus-claude-code-adapter-'));
     const mcpConfigPath = pathMod.join(tempDir, 'mcp.json');
@@ -250,9 +258,9 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
     }
   }
 
-  async listModels(): Promise<ModelInfo[]> {
+  listModels(): Promise<ModelInfo[]> {
     const models = ModelRegistry.getProviderModels('anthropic-claude-code');
-    return models.map(model => ModelRegistry.toModelInfo(model));
+    return Promise.resolve(models.map(model => ModelRegistry.toModelInfo(model)));
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -268,25 +276,25 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
     };
   }
 
-  async getModelPricing(modelId: string): Promise<ModelPricing | null> {
+  getModelPricing(modelId: string): Promise<ModelPricing | null> {
     const model = ModelRegistry.findModel('anthropic-claude-code', modelId);
     if (!model) {
-      return null;
+      return Promise.resolve(null);
     }
 
-    return {
+    return Promise.resolve({
       rateInputPerMillion: model.inputCostPerMillion,
       rateOutputPerMillion: model.outputCostPerMillion,
       currency: 'USD'
-    };
+    });
   }
 
-  private async getRuntime(): Promise<{
+  private getRuntime(): {
     claudePath: string | null;
     nodePath: string | null;
     connectorPath: string | null;
     vaultPath: string | null;
-  }> {
+  } {
     const claudePath = resolveDesktopBinaryPath('claude');
     const nodePath = resolveDesktopBinaryPath('node');
     const vaultPath = getVaultBasePath(this.vault);
@@ -298,9 +306,27 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
     return {
       claudePath,
       nodePath,
-      connectorPath: getConnectorPath(vaultPath),
+      connectorPath: getConnectorPath(vaultPath, this.vault.configDir),
       vaultPath
     };
+  }
+
+  private loadDesktopModule<TModuleName extends keyof ClaudeCodeDesktopModuleMap>(
+    moduleName: TModuleName
+  ): ClaudeCodeDesktopModuleMap[TModuleName] {
+    if (!Platform.isDesktop) {
+      throw new Error(`${moduleName} is only available on desktop.`);
+    }
+
+    const maybeRequire = (globalThis as typeof globalThis & {
+      require?: (moduleId: string) => unknown;
+    }).require;
+
+    if (typeof maybeRequire !== 'function') {
+      throw new Error('Desktop module loader is unavailable.');
+    }
+
+    return maybeRequire(moduleName) as ClaudeCodeDesktopModuleMap[TModuleName];
   }
 
   private parseStreamJsonLine(line: string): Record<string, unknown> | null {
@@ -443,7 +469,8 @@ export class AnthropicClaudeCodeAdapter extends BaseAdapter {
       return content;
     }
 
-    const normalized = content.map((block) => {
+    const blocks = content as unknown[];
+    const normalized = blocks.map((block: unknown) => {
       if (!block || typeof block !== 'object') {
         return block;
       }

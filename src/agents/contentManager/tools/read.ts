@@ -3,9 +3,17 @@ import { BaseTool } from '../../baseTool';
 import { ReadParams, ReadResult } from '../types';
 import { ContentOperations } from '../utils/ContentOperations';
 import { createErrorMessage } from '../../../utils/errorUtils';
-import { addRecommendations, Recommendation } from '../../../utils/recommendationUtils';
+import { Recommendation } from '../../../utils/recommendationUtils';
 import { NudgeHelpers } from '../../../utils/nudgeHelpers';
 import { JSONSchema } from '../../../types/schema/JSONSchemaTypes';
+import type { ToolStatusTense } from '../../interfaces/ITool';
+import { labelFileOp, verbs } from '../../utils/toolStatusLabels';
+
+type ReadResultWithRecommendations = ReadResult & { recommendations: Recommendation[] };
+
+function addReadRecommendations(result: ReadResult, recommendations: Recommendation[]): ReadResultWithRecommendations {
+  return { ...result, recommendations };
+}
 
 /**
  * Location: src/agents/contentManager/tools/read.ts
@@ -38,6 +46,10 @@ export class ReadTool extends BaseTool<ReadParams, ReadResult> {
     );
 
     this.app = app;
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelFileOp(verbs('Reading', 'Read', 'Failed to read'), params, tense);
   }
 
   /**
@@ -83,7 +95,7 @@ export class ReadTool extends BaseTool<ReadParams, ReadResult> {
 
       // Generate nudges based on content
       const nudges = this.generateReadNudges(resultData);
-      const resultWithNudges = addRecommendations(result, nudges);
+      const resultWithNudges = addReadRecommendations(result, nudges);
 
       return resultWithNudges;
     } catch (error) {

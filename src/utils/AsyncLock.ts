@@ -17,7 +17,7 @@ export class AsyncLock {
     const result = this.promise.then(() => task());
     
     // Update the promise to wait for this task (handling errors)
-    this.promise = result.then(() => {}, () => {});
+    this.promise = result.then(() => undefined, () => undefined);
     
     return result;
   }
@@ -28,14 +28,33 @@ export class AsyncLock {
  */
 export class NamedLocks {
   private locks: Map<string, AsyncLock> = new Map();
+  private refCounts: Map<string, number> = new Map();
 
   /**
-   * Acquire a lock for a specific name/path
+   * Acquire a lock for a specific name/path.
+   * Cleans up the map entry when no more waiters exist.
    */
   async acquire<T>(name: string, task: () => Promise<T>): Promise<T> {
     if (!this.locks.has(name)) {
       this.locks.set(name, new AsyncLock());
     }
-    return this.locks.get(name)!.acquire(task);
+    this.refCounts.set(name, (this.refCounts.get(name) ?? 0) + 1);
+
+    const lock = this.locks.get(name);
+    if (!lock) {
+      throw new Error(`Failed to acquire async lock for ${name}`);
+    }
+
+    try {
+      return await lock.acquire(task);
+    } finally {
+      const remaining = (this.refCounts.get(name) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.locks.delete(name);
+        this.refCounts.delete(name);
+      } else {
+        this.refCounts.set(name, remaining);
+      }
+    }
   }
 }

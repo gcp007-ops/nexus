@@ -10,9 +10,24 @@ import { MemoryService } from "../memoryManager/services/MemoryService";
 import { WorkspaceService } from '../../services/WorkspaceService';
 import { IStorageAdapter } from '../../database/interfaces/IStorageAdapter';
 import { EmbeddingService } from '../../services/embeddings/EmbeddingService';
-import { getErrorMessage } from '../../utils/errorUtils';
 import { getNexusPlugin } from '../../utils/pluginLocator';
 import { ServiceManager } from '../../core/ServiceManager';
+
+const noop = (): void => {
+  return;
+};
+
+const noopAsync = async (): Promise<void> => Promise.resolve();
+
+const createFallbackElement = (): HTMLDivElement => document.createElement('div');
+
+const createFallbackCommand = () => ({ id: '', name: '', callback: noop });
+
+const returnZero = (): number => 0;
+
+const returnEmptyObject = (): Promise<Record<string, never>> => Promise.resolve({});
+
+const returnComponent = <T>(component: T): T => component;
 
 /**
  * Interface for accessing NexusPlugin services
@@ -49,7 +64,7 @@ export class SearchManagerAgent extends BaseAgent {
    */
   constructor(
     app: App,
-    enableVectorModes = false,
+    _enableVectorModes = false,
     memoryService?: MemoryService | null,
     workspaceService?: WorkspaceService | null
   ) {
@@ -99,7 +114,8 @@ export class SearchManagerAgent extends BaseAgent {
             }
           }
         }
-      } catch (error) {
+      } catch {
+        noop();
       }
     }
 
@@ -109,7 +125,8 @@ export class SearchManagerAgent extends BaseAgent {
       if (app.plugins) {
         pluginRef = getNexusPlugin(app);
       }
-    } catch (error) {
+    } catch {
+      noop();
     }
 
     // Create minimal plugin fallback if plugin not found
@@ -172,34 +189,34 @@ export class SearchManagerAgent extends BaseAgent {
         isDesktopOnly: false
       },
       // Stub implementations for Plugin methods
-      onload: () => {},
-      addCommand: () => ({ id: '', name: '', callback: () => {} }),
-      removeCommand: () => {},
-      addRibbonIcon: () => document.createElement('div'),
-      loadData: async () => ({}),
-      saveData: async () => {},
-      registerView: () => {},
-      registerHoverLinkSource: () => {},
-      registerExtensions: () => {},
-      registerMarkdownPostProcessor: () => {},
-      registerMarkdownCodeBlockProcessor: () => {},
-      registerEditorExtension: () => {},
-      registerObsidianProtocolHandler: () => {},
-      registerEditorSuggest: () => {},
-      onExternalSettingsChange: () => {},
-      addStatusBarItem: () => document.createElement('div'),
-      addSettingTab: () => {},
-      registerDomEvent: () => {},
-      registerScopeEvent: () => {},
-      registerInterval: () => 0,
-      register: () => {},
-      onUserEnable: () => {},
+      onload: noop,
+      addCommand: createFallbackCommand,
+      removeCommand: noop,
+      addRibbonIcon: createFallbackElement,
+      loadData: returnEmptyObject,
+      saveData: noopAsync,
+      registerView: noop,
+      registerHoverLinkSource: noop,
+      registerExtensions: noop,
+      registerMarkdownPostProcessor: noop,
+      registerMarkdownCodeBlockProcessor: noop,
+      registerEditorExtension: noop,
+      registerObsidianProtocolHandler: noop,
+      registerEditorSuggest: noop,
+      onExternalSettingsChange: noop,
+      addStatusBarItem: createFallbackElement,
+      addSettingTab: noop,
+      registerDomEvent: noop,
+      registerScopeEvent: noop,
+      registerInterval: returnZero,
+      register: noop,
+      onUserEnable: noop,
       // Component methods (Plugin extends Component)
-      load: () => {},
-      unload: () => {},
-      addChild: <T>(component: T): T => component,
-      removeChild: () => {},
-      registerEvent: () => {}
+      load: noop,
+      unload: noop,
+      addChild: returnComponent,
+      removeChild: noop,
+      registerEvent: noop
     } as unknown as Plugin;
   }
 
@@ -207,7 +224,7 @@ export class SearchManagerAgent extends BaseAgent {
    * Update the agent settings
    * @param settings New memory settings
    */
-  async updateSettings(settings: MemorySettings): Promise<void> {
+  updateSettings(settings: MemorySettings): void {
     this.settings = settings;
   }
 
@@ -219,15 +236,15 @@ export class SearchManagerAgent extends BaseAgent {
     await super.initialize();
 
     // Initialize search service in background - non-blocking
-    this.initializeSearchService().catch(error => {
-    });
+    this.initializeSearchService().catch(() => undefined);
   }
 
   /**
    * Initialize the search service
    */
-  async initializeSearchService(): Promise<void> {
+  initializeSearchService(): Promise<void> {
     // Search service initialization for JSON-based storage
+    return Promise.resolve();
   }
 
 
@@ -238,7 +255,8 @@ export class SearchManagerAgent extends BaseAgent {
     try {
       // Call parent class onunload if it exists
       super.onunload?.();
-    } catch (error) {
+    } catch {
+      return;
     }
   }
 }

@@ -10,7 +10,7 @@
 import { TaskService } from '../../src/agents/taskManager/services/TaskService';
 import { DAGService } from '../../src/agents/taskManager/services/DAGService';
 import type { IProjectRepository, ProjectMetadata } from '../../src/database/repositories/interfaces/IProjectRepository';
-import type { ITaskRepository, TaskMetadata, NoteLink } from '../../src/database/repositories/interfaces/ITaskRepository';
+import type { ITaskRepository, TaskMetadata } from '../../src/database/repositories/interfaces/ITaskRepository';
 import { PaginatedResult } from '../../src/types/pagination/PaginationTypes';
 
 // ============================================================================
@@ -97,12 +97,32 @@ describe('TaskService', () => {
   let projectRepo: jest.Mocked<IProjectRepository>;
   let taskRepo: jest.Mocked<ITaskRepository>;
   let dagService: DAGService;
+  let waitForQueryReady: jest.Mock<Promise<boolean>, []>;
 
   beforeEach(() => {
     projectRepo = createMockProjectRepo();
     taskRepo = createMockTaskRepo();
     dagService = new DAGService();
-    service = new TaskService(projectRepo, taskRepo, dagService);
+    waitForQueryReady = jest.fn().mockResolvedValue(true);
+    service = new TaskService(projectRepo, taskRepo, dagService, undefined, undefined, waitForQueryReady);
+  });
+
+  describe('query readiness gating', () => {
+    it('waits for query readiness before reads', async () => {
+      projectRepo.getByWorkspace.mockResolvedValue(paginatedResult([]));
+
+      await service.listProjects('ws-1');
+
+      expect(waitForQueryReady).toHaveBeenCalled();
+      expect(projectRepo.getByWorkspace).toHaveBeenCalledWith('ws-1', expect.any(Object));
+    });
+
+    it('throws when query readiness does not complete', async () => {
+      waitForQueryReady.mockResolvedValue(false);
+
+      await expect(service.listProjects('ws-1')).rejects.toThrow('Task storage is not ready yet');
+      expect(projectRepo.getByWorkspace).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================================================
@@ -865,6 +885,23 @@ describe('TaskService', () => {
       const result = await service.getWorkspaceSummary('ws-1');
       expect(result.projects.active).toBe(1);
       expect(result.projects.items).toHaveLength(1);
+    });
+
+    it('should not count completed projects as active', async () => {
+      const projects = [
+        createMockProject({ id: 'p1', status: 'active' }),
+        createMockProject({ id: 'p2', status: 'completed' }),
+        createMockProject({ id: 'p3', status: 'archived' })
+      ];
+
+      projectRepo.getByWorkspace.mockResolvedValue(paginatedResult(projects));
+      taskRepo.getByWorkspace.mockResolvedValue(paginatedResult([]));
+      taskRepo.getAllDependencyEdges.mockResolvedValue([]);
+
+      const result = await service.getWorkspaceSummary('ws-1');
+      expect(result.projects.total).toBe(3);          // all projects including archived
+      expect(result.projects.active).toBe(1);          // only status === 'active'
+      expect(result.projects.items).toHaveLength(2);   // active + completed visible, archived excluded
     });
 
     it('should limit next actions to 5', async () => {

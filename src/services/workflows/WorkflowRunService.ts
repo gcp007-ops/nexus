@@ -2,10 +2,11 @@ import type { App, Plugin, WorkspaceLeaf } from 'obsidian';
 import { generateSessionId } from '../../utils/sessionUtils';
 import { ModelSelectionUtility } from '../../ui/chat/utils/ModelSelectionUtility';
 import { WorkspaceIntegrationService } from '../../ui/chat/services/WorkspaceIntegrationService';
-import { SystemPromptBuilder, type PromptSummary, type ToolAgentInfo } from '../../ui/chat/services/SystemPromptBuilder';
+import { SystemPromptBuilder } from '../../ui/chat/services/SystemPromptBuilder';
 import type { ChatService } from '../chat/ChatService';
 import type { WorkspaceService } from '../WorkspaceService';
 import type { CustomPromptStorageService } from '../../agents/promptManager/services/CustomPromptStorageService';
+import type { CustomPrompt } from '../../types';
 import type { WorkspaceWorkflow } from '../../database/types/workspace/WorkspaceTypes';
 import {
   buildWorkflowKickoffMessage,
@@ -22,6 +23,11 @@ export interface WorkflowRunServiceDeps {
   customPromptStorage?: CustomPromptStorageService | null;
 }
 
+interface WorkflowModelOption {
+  providerId?: string;
+  modelId?: string;
+}
+
 export class WorkflowRunService {
   private workspaceIntegration: WorkspaceIntegrationService;
   private systemPromptBuilder: SystemPromptBuilder;
@@ -30,7 +36,8 @@ export class WorkflowRunService {
     this.workspaceIntegration = new WorkspaceIntegrationService(deps.app);
     this.systemPromptBuilder = new SystemPromptBuilder(
       this.workspaceIntegration.readNoteContent.bind(this.workspaceIntegration),
-      this.workspaceIntegration.loadWorkspace.bind(this.workspaceIntegration)
+      this.workspaceIntegration.loadWorkspace.bind(this.workspaceIntegration),
+      this.workspaceIntegration.getBuiltInDocsWorkspaceInfo.bind(this.workspaceIntegration)
     );
   }
 
@@ -123,14 +130,14 @@ export class WorkflowRunService {
     };
   }
 
-  private resolvePrompt(promptId?: string) {
+  private resolvePrompt(promptId?: string): CustomPrompt | undefined {
     if (!promptId || !this.deps.customPromptStorage) {
       return undefined;
     }
     return this.deps.customPromptStorage.getPromptByNameOrId(promptId);
   }
 
-  private async resolveDefaultModel() {
+  private async resolveDefaultModel(): Promise<WorkflowModelOption | null> {
     const availableModels = await ModelSelectionUtility.getAvailableModels(this.deps.app);
     if (availableModels.length === 0) {
       return null;
@@ -145,52 +152,13 @@ export class WorkflowRunService {
     loadedWorkspaceData: Record<string, unknown>;
     providerId?: string;
   }): Promise<string | null> {
-    const availablePrompts: PromptSummary[] = (this.deps.customPromptStorage?.getEnabledPrompts() || []).map(prompt => ({
-      id: prompt.id,
-      name: prompt.name,
-      description: prompt.description || 'Custom prompt'
-    }));
-
     return this.systemPromptBuilder.build({
       sessionId: params.sessionId,
       workspaceId: params.workspaceId,
       customPrompt: params.customPrompt,
       loadedWorkspaceData: params.loadedWorkspaceData,
-      vaultStructure: this.workspaceIntegration.getVaultStructure(),
-      availableWorkspaces: await this.workspaceIntegration.listAvailableWorkspaces(),
-      availablePrompts,
-      toolAgents: await this.getToolAgentInfo(),
       skipToolsSection: params.providerId === 'webllm'
     });
-  }
-
-  private async getToolAgentInfo(): Promise<ToolAgentInfo[]> {
-    const plugin = this.deps.plugin as Plugin & {
-      serviceManager?: { getServiceIfReady?: (name: string) => any };
-      connector?: { agentRegistry?: { getAllAgents: () => Map<string, any> } };
-    };
-
-    const agentService = plugin.serviceManager?.getServiceIfReady?.('agentRegistrationService');
-    if (agentService) {
-      const agents = agentService.getAllAgents();
-      const agentMap = agents instanceof Map ? agents : new Map(agents.map((agent: { name: string }) => [agent.name, agent]));
-      return Array.from(agentMap.entries()).map(([name, agent]: [string, any]) => ({
-        name,
-        description: agent.description || '',
-        tools: (agent.getTools?.() || []).map((tool: { slug?: string; name?: string }) => tool.slug || tool.name || 'unknown')
-      }));
-    }
-
-    const agents = plugin.connector?.agentRegistry?.getAllAgents?.();
-    if (!agents) {
-      return [];
-    }
-
-    return Array.from(agents.entries()).map(([name, agent]: [string, any]) => ({
-      name,
-      description: agent.description || '',
-      tools: (agent.getTools?.() || []).map((tool: { slug?: string; name?: string }) => tool.slug || tool.name || 'unknown')
-    }));
   }
 
   private findWorkflowDefinition(loadedWorkspaceData: Record<string, unknown>, workflowId: string): WorkspaceWorkflow | undefined {
@@ -226,7 +194,7 @@ export class WorkflowRunService {
       });
     }
 
-    this.deps.app.workspace.revealLeaf(leaf);
+    await this.deps.app.workspace.revealLeaf(leaf);
     return await this.waitForChatViewReady(leaf, conversationId, kickoffMessage, options);
   }
 

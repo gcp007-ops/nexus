@@ -13,7 +13,7 @@
  * - Configuration file handling
  */
 
-import { Vault, TFile, TFolder, normalizePath } from 'obsidian';
+import { App, Vault, TFile, TFolder } from 'obsidian';
 import { ObsidianPathManager } from './ObsidianPathManager';
 import { StructuredLogger } from './StructuredLogger';
 
@@ -42,6 +42,7 @@ export class VaultOperations {
   private fileCache = new Map<string, { content: string; mtime: number }>();
 
   constructor(
+    private app: App,
     private vault: Vault,
     private pathManager: ObsidianPathManager,
     private logger: StructuredLogger
@@ -50,7 +51,7 @@ export class VaultOperations {
   /**
    * Get file by path with proper error handling
    */
-  async getFile(path: string): Promise<TFile | null> {
+  getFile(path: string): TFile | null {
     try {
       const normalizedPath = this.pathManager.normalizePath(path);
       const file = this.vault.getFileByPath(normalizedPath);
@@ -64,7 +65,7 @@ export class VaultOperations {
   /**
    * Get folder by path with proper error handling
    */
-  async getFolder(path: string): Promise<TFolder | null> {
+  getFolder(path: string): TFolder | null {
     try {
       const normalizedPath = this.pathManager.normalizePath(path);
       const folder = this.vault.getFolderByPath(normalizedPath);
@@ -113,7 +114,7 @@ export class VaultOperations {
    * Read file content with caching support
    * Uses adapter.read() for hidden files since Obsidian doesn't index them
    */
-  async readFile(path: string, useCache: boolean = true): Promise<string | null> {
+  async readFile(path: string, useCache = true): Promise<string | null> {
     try {
       const normalizedPath = this.pathManager.normalizePath(path);
 
@@ -130,7 +131,7 @@ export class VaultOperations {
       }
 
       if (useCache) {
-        const file = await this.getFile(normalizedPath);
+        const file = this.getFile(normalizedPath);
         if (file) {
           const cached = this.fileCache.get(normalizedPath);
           if (cached && cached.mtime === file.stat.mtime) {
@@ -140,7 +141,7 @@ export class VaultOperations {
         }
       }
 
-      const file = await this.getFile(normalizedPath);
+      const file = this.getFile(normalizedPath);
       if (!file) {
         this.logger.warn(`File not found: ${normalizedPath}`);
         return null;
@@ -188,7 +189,7 @@ export class VaultOperations {
 
       await this.pathManager.ensureParentExists(normalizedPath);
 
-      const existingFile = await this.getFile(normalizedPath);
+      const existingFile = this.getFile(normalizedPath);
       if (existingFile) {
         await this.vault.modify(existingFile, content);
       } else {
@@ -224,7 +225,7 @@ export class VaultOperations {
         return true;
       }
 
-      const existingFolder = await this.getFolder(normalizedPath);
+      const existingFolder = this.getFolder(normalizedPath);
 
       if (!existingFolder) {
         try {
@@ -251,10 +252,10 @@ export class VaultOperations {
   async deleteFile(path: string): Promise<boolean> {
     try {
       const normalizedPath = this.pathManager.normalizePath(path);
-      const file = await this.getFile(normalizedPath);
+      const file = this.getFile(normalizedPath);
       
       if (file) {
-        await this.vault.delete(file);
+        await this.app.fileManager.trashFile(file);
         this.fileCache.delete(normalizedPath);
         this.logger.debug(`Deleted file: ${normalizedPath}`);
         return true;
@@ -274,10 +275,10 @@ export class VaultOperations {
   async deleteFolder(path: string): Promise<boolean> {
     try {
       const normalizedPath = this.pathManager.normalizePath(path);
-      const folder = await this.getFolder(normalizedPath);
+      const folder = this.getFolder(normalizedPath);
       
       if (folder) {
-        await this.vault.delete(folder);
+        await this.app.fileManager.trashFile(folder);
         this.logger.debug(`Deleted folder: ${normalizedPath}`);
         return true;
       }
@@ -303,7 +304,7 @@ export class VaultOperations {
           size: stat.size || 0,
           mtime: stat.mtime || 0,
           ctime: stat.ctime || 0,
-          type: stat.type as 'file' | 'folder'
+          type: stat.type
         };
       }
       
@@ -424,7 +425,7 @@ export class VaultOperations {
       const normalizedSource = this.pathManager.normalizePath(sourcePath);
       const normalizedTarget = this.pathManager.normalizePath(targetPath);
       
-      const sourceFile = await this.getFile(normalizedSource);
+      const sourceFile = this.getFile(normalizedSource);
       if (!sourceFile) {
         this.logger.error(`Source file not found: ${sourcePath}`);
         return false;

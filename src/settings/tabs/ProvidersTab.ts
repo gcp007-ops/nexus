@@ -125,6 +125,18 @@ export class ProvidersTab {
             signupUrl: 'https://console.groq.com/keys',
             category: 'cloud'
         },
+        deepgram: {
+            name: 'Deepgram',
+            keyFormat: 'dg_...',
+            signupUrl: 'https://console.deepgram.com/project/api-keys',
+            category: 'cloud'
+        },
+        assemblyai: {
+            name: 'AssemblyAI',
+            keyFormat: '...API key...',
+            signupUrl: 'https://www.assemblyai.com/dashboard/api-keys',
+            category: 'cloud'
+        },
         openrouter: {
             name: 'OpenRouter',
             keyFormat: 'sk-or-...',
@@ -333,6 +345,51 @@ export class ProvidersTab {
         }
     }
 
+    private async persistSecondaryProviderConfig(
+        settings: LLMProviderSettings,
+        providerId: string,
+        updatedConfig: LLMProviderConfig
+    ): Promise<void> {
+        try {
+            settings.providers[providerId] = updatedConfig;
+            await this.saveSettings();
+        } catch (error) {
+            console.error(`[ProvidersTab] Failed to save secondary provider config for ${providerId}:`, error);
+            new Notice('Failed to save provider settings. Please try again.');
+            throw error;
+        }
+    }
+
+    private async persistProviderConfig(
+        settings: LLMProviderSettings,
+        providerId: string,
+        updatedConfig: LLMProviderConfig,
+        displayName: string
+    ): Promise<void> {
+        try {
+            settings.providers[providerId] = updatedConfig;
+
+            // Handle Ollama model update
+            if (providerId === 'ollama' && '__ollamaModel' in updatedConfig) {
+                const ollamaModel = (updatedConfig as LLMProviderConfig & { __ollamaModel: string }).__ollamaModel;
+                if (ollamaModel) {
+                    delete (updatedConfig as LLMProviderConfig & { __ollamaModel?: string }).__ollamaModel;
+                    if (settings.defaultModel.provider === 'ollama') {
+                        settings.defaultModel.model = ollamaModel;
+                    }
+                }
+            }
+
+            await this.saveSettings();
+            this.render();
+            new Notice(`${displayName} settings saved`);
+        } catch (error) {
+            console.error(`[ProvidersTab] Failed to save provider config for ${providerId}:`, error);
+            new Notice(`Failed to save ${displayName} settings. Please try again.`);
+            throw error;
+        }
+    }
+
     /**
      * Main render method
      */
@@ -380,7 +437,7 @@ export class ProvidersTab {
         if (!isDesktop()) {
             this.container.createEl('p', {
                 cls: 'setting-item-description',
-                text: 'On mobile, only OpenRouter, Requesty, and Perplexity are supported. Configure local providers and SDK-based providers on desktop.'
+                text: 'On mobile, only fetch-based providers are supported. Configure local providers and SDK-based providers on desktop.'
             });
 
             const items = [...MOBILE_COMPATIBLE_PROVIDERS]
@@ -430,7 +487,7 @@ export class ProvidersTab {
             groups.push({ title: 'LOCAL PROVIDERS', items: localItems });
         }
 
-        const cloudIds = ['openai', 'anthropic', 'google', 'mistral', 'groq', 'openrouter', 'requesty', 'perplexity', 'github-copilot'];
+        const cloudIds = ['openai', 'anthropic', 'google', 'mistral', 'groq', 'deepgram', 'assemblyai', 'openrouter', 'requesty', 'perplexity', 'github-copilot'];
         const cloudItems = cloudIds
             .map(id => this.buildProviderCardItem(id, settings))
             .filter((item): item is ProviderCardItem => item !== null);
@@ -508,13 +565,11 @@ export class ProvidersTab {
                     config: { ...codexConfig },
                     oauthConfig: codexDisplay.oauthConfig,
                     onConfigChange: async (updatedCodexConfig: LLMProviderConfig) => {
-                        settings.providers['openai-codex'] = updatedCodexConfig;
-                        await this.saveSettings();
+                        await this.persistSecondaryProviderConfig(settings, 'openai-codex', updatedCodexConfig);
                     },
                 };
             }
         } else if (providerId === 'anthropic') {
-            const claudeCodeDisplay = this.providerConfigs['anthropic-claude-code'];
             const claudeCodeConfig = settings.providers['anthropic-claude-code'] || {
                 apiKey: '',
                 enabled: false,
@@ -530,8 +585,7 @@ export class ProvidersTab {
                     startFlow: () => this.startClaudeCodeConnectFlow(),
                 },
                 onConfigChange: async (updatedClaudeCodeConfig: LLMProviderConfig) => {
-                    settings.providers['anthropic-claude-code'] = updatedClaudeCodeConfig;
-                    await this.saveSettings();
+                    await this.persistSecondaryProviderConfig(settings, 'anthropic-claude-code', updatedClaudeCodeConfig);
                 },
                 statusOnly: true,
                 statusHint: 'run `claude auth login` in your terminal',
@@ -552,8 +606,7 @@ export class ProvidersTab {
                     startFlow: () => this.startGeminiCliConnectFlow(),
                 },
                 onConfigChange: async (updatedGeminiCliConfig: LLMProviderConfig) => {
-                    settings.providers['google-gemini-cli'] = updatedGeminiCliConfig;
-                    await this.saveSettings();
+                    await this.persistSecondaryProviderConfig(settings, 'google-gemini-cli', updatedGeminiCliConfig);
                 },
                 statusOnly: true,
                 statusHint: 'run `gemini auth` in your terminal',
@@ -570,22 +623,7 @@ export class ProvidersTab {
             secondaryOAuthProvider,
             oauthOnly: providerId === 'github-copilot',
             onSave: async (updatedConfig: LLMProviderConfig) => {
-                settings.providers[providerId] = updatedConfig;
-
-                // Handle Ollama model update
-                if (providerId === 'ollama' && '__ollamaModel' in updatedConfig) {
-                    const ollamaModel = (updatedConfig as LLMProviderConfig & { __ollamaModel: string }).__ollamaModel;
-                    if (ollamaModel) {
-                        delete (updatedConfig as LLMProviderConfig & { __ollamaModel?: string }).__ollamaModel;
-                        if (settings.defaultModel.provider === 'ollama') {
-                            settings.defaultModel.model = ollamaModel;
-                        }
-                    }
-                }
-
-                await this.saveSettings();
-                this.render(); // Refresh the view
-                new Notice(`${displayConfig.name} settings saved`);
+                await this.persistProviderConfig(settings, providerId, updatedConfig, displayConfig.name);
             }
         };
 

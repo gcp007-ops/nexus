@@ -23,6 +23,8 @@ const PROVIDER_NAMES: Record<string, string> = {
   'google-gemini-cli': 'Gemini CLI',
   mistral: 'Mistral AI',
   groq: 'Groq',
+  deepgram: 'Deepgram',
+  assemblyai: 'AssemblyAI',
   openrouter: 'OpenRouter',
   requesty: 'Requesty',
   perplexity: 'Perplexity',
@@ -33,7 +35,7 @@ const PROVIDER_NAMES: Record<string, string> = {
 export { PROVIDER_NAMES };
 
 export interface ModelDropdownConfig {
-  /** Section header text (e.g., "Chat Model", "Agent Model") */
+  /** Section header text (e.g., "Chat model", "Subagent model") */
   sectionTitle: string;
 
   /** Optional description text below the header */
@@ -213,7 +215,7 @@ function renderModelDropdown(
       .addText(text => text
         .setValue(config.getOllamaModel?.() || '')
         .setDisabled(true)
-        .setPlaceholder('Configure in Ollama settings'));
+        .setPlaceholder('Configure in settings'));
     return;
   }
 
@@ -278,6 +280,7 @@ function renderModelDropdown(
             const firstOptionKey = buildModelOptionKey(models[0].provider, models[0].id);
             const firstEntry = config.modelOptionMap.get(firstOptionKey);
             config.onModelChange(models[0].id, firstEntry?.provider);
+            config.notifyChange();
             dropdown.setValue(firstOptionKey);
           }
         }

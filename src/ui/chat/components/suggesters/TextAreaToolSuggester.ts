@@ -49,7 +49,7 @@ export class TextAreaToolSuggester extends ContentEditableSuggester<ToolSuggesti
   /**
    * Load tools from plugin
    */
-  private async loadTools(): Promise<void> {
+  private loadTools(): void {
     try {
       const plugin = getNexusPlugin<PluginWithConnector>(this.app);
       if (!plugin) {
@@ -88,16 +88,16 @@ export class TextAreaToolSuggester extends ContentEditableSuggester<ToolSuggesti
           });
         }
       }
-    } catch (error) {
+    } catch {
       // Failed to load tools
     }
   }
 
-  async getSuggestions(query: string): Promise<SuggestionItem<ToolSuggestionItem>[]> {
+  getSuggestions(query: string): SuggestionItem<ToolSuggestionItem>[] {
 
     // Wait for tools to load if not yet loaded
     if (!this.cachedTools) {
-      await this.loadTools();
+      this.loadTools();
     }
 
     if (!this.cachedTools || this.cachedTools.length === 0) {

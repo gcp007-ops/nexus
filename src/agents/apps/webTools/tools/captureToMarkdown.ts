@@ -4,6 +4,8 @@ import { CommonParameters, CommonResult } from '../../../../types';
 import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 import { BaseAppAgent } from '../../BaseAppAgent';
 import { isDesktop, isElectron } from '../../../../utils/platform';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
+import { labelWithUrl, verbs } from '../../../utils/toolStatusLabels';
 import {
   ensureParentFolderExists,
   findCreatedMarkdownFile,
@@ -36,6 +38,10 @@ export class CaptureToMarkdownTool extends BaseTool<CaptureToMarkdownParams, Com
       '1.0.0'
     );
     this.agent = agent;
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelWithUrl(verbs('Capturing to markdown', 'Captured to markdown', 'Failed to capture to markdown'), params, tense, 'page');
   }
 
   async execute(params: CaptureToMarkdownParams): Promise<CommonResult> {
@@ -73,7 +79,7 @@ export class CaptureToMarkdownTool extends BaseTool<CaptureToMarkdownParams, Com
       }
 
       await app.workspace.revealLeaf(leaf);
-      await app.workspace.setActiveLeaf(leaf, { focus: true });
+      app.workspace.setActiveLeaf(leaf, { focus: true });
       await waitForWebViewerReady(leaf, timeoutMs, settleMs);
 
       const beforePaths = new Set(app.vault.getMarkdownFiles().map((file) => file.path));

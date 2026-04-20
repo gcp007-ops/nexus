@@ -21,12 +21,15 @@
  * Related Files:
  * - src/database/interfaces/StorageEvents.ts - Event type definitions
  * - src/database/services/cache/EntityCache.ts - In-memory cache layer
+ * - src/database/storage/StorageRouter.ts - Dual-path routing (vault-root vs legacy)
  */
 
-import { App } from 'obsidian';
+import { App, normalizePath } from 'obsidian';
 import { StorageEvent, BaseStorageEvent } from '../interfaces/StorageEvents';
 import { v4 as uuidv4 } from '../../utils/uuid';
 import { NamedLocks } from '../../utils/AsyncLock';
+import { VaultEventStore } from './vaultRoot/VaultEventStore';
+import { StorageRouter } from './StorageRouter';
 
 /**
  * Configuration options for JSONLWriter
@@ -36,7 +39,23 @@ export interface JSONLWriterOptions {
   app: App;
   /** Base path for storage (default: '.nexus') */
   basePath: string;
+  /** Ordered read roots for verified/fallback lookups */
+  readBasePaths?: string[];
+  /** Optional vault-root event store for sharded storage routing */
+  vaultEventStore?: VaultEventStore | null;
 }
+
+/**
+ * Optional callback invoked just before `JSONLWriter` writes to a logical
+ * JSONL path. Used by `JsonlVaultWatcher` to suppress the echo modify
+ * event that would otherwise round-trip back through `vault.on('modify')`
+ * and trigger a pointless self-triggered sync.
+ *
+ * The callback receives the LOGICAL path (e.g. `conversations/conv_X.jsonl`),
+ * not the physical shard path — the watcher maps it to `(category, streamId)`
+ * and suppresses all shards for that stream for a short TTL.
+ */
+export type JSONLWriterBeforeWriteHook = (logicalPath: string) => void;
 
 /**
  * JSONL Writer for sync-safe append-only storage
@@ -70,13 +89,73 @@ export class JSONLWriter {
   private app: App;
   private basePath: string;
   private deviceId: string;
-  private locks: NamedLocks;
+  private router: StorageRouter;
+  private beforeWriteHook?: JSONLWriterBeforeWriteHook;
+  private readonly deviceIdStorageKey = 'claudesidian-device-id';
 
   constructor(options: JSONLWriterOptions) {
     this.app = options.app;
     this.basePath = options.basePath;
     this.deviceId = this.getOrCreateDeviceId();
-    this.locks = new NamedLocks();
+
+    const readBasePaths = this.normalizeReadBasePaths(options.readBasePaths ?? [options.basePath]);
+    const vaultEventStore = options.vaultEventStore ?? null;
+
+    this.router = new StorageRouter({
+      app: this.app,
+      basePath: this.basePath,
+      readBasePaths,
+      vaultEventStore,
+      vaultEventStoreReadEnabled: true,
+      locks: new NamedLocks(),
+      normalizeLogicalRelativePath: this.normalizeLogicalRelativePath.bind(this),
+      normalizeStableLogicalPath: this.normalizeStableLogicalPath.bind(this),
+      getLogicalPathVariants: this.getLogicalPathVariants.bind(this),
+      parseLogicalPath: this.parseLogicalPath.bind(this),
+      getVaultEventLogicalPath: this.getVaultEventLogicalPath.bind(this),
+      getCategoryFromSubPath: this.getCategoryFromSubPath.bind(this),
+    });
+  }
+
+  setBasePath(basePath: string): void {
+    this.basePath = basePath;
+    this.router.setBasePath(basePath);
+  }
+
+  setReadBasePaths(basePaths: string[]): void {
+    this.router.setReadBasePaths(this.normalizeReadBasePaths(basePaths));
+  }
+
+  setVaultEventStore(vaultEventStore: VaultEventStore | null): void {
+    this.router.setVaultEventStore(vaultEventStore);
+  }
+
+  setVaultEventStoreReadEnabled(enabled: boolean): void {
+    this.router.setVaultEventStoreReadEnabled(enabled);
+  }
+
+  /**
+   * Register (or clear) a callback fired just before each append. Used by
+   * the vault-event watcher to suppress echo modify events from the plugin's
+   * own writes. Pass `undefined` to remove a previously-registered hook.
+   */
+  setBeforeWriteHook(hook: JSONLWriterBeforeWriteHook | undefined): void {
+    this.beforeWriteHook = hook;
+  }
+
+  /**
+   * Invoke the registered before-write hook if any. Swallows errors from
+   * the hook so a misbehaving watcher never blocks a JSONL write.
+   */
+  private notifyBeforeWrite(logicalPath: string): void {
+    if (!this.beforeWriteHook) {
+      return;
+    }
+    try {
+      this.beforeWriteHook(logicalPath);
+    } catch (error) {
+      console.error('[JSONLWriter] beforeWrite hook threw:', error);
+    }
   }
 
   // ============================================================================
@@ -92,12 +171,13 @@ export class JSONLWriter {
    * @returns Persistent device UUID
    */
   private getOrCreateDeviceId(): string {
-    const storageKey = 'claudesidian-device-id';
-    let deviceId = localStorage.getItem(storageKey);
-    if (!deviceId) {
-      deviceId = uuidv4();
-      localStorage.setItem(storageKey, deviceId);
+    const storedDeviceId = this.app.loadLocalStorage(this.deviceIdStorageKey) as unknown;
+    if (typeof storedDeviceId === 'string' && storedDeviceId.length > 0) {
+      return storedDeviceId;
     }
+
+    const deviceId = uuidv4();
+    this.app.saveLocalStorage(this.deviceIdStorageKey, deviceId);
     return deviceId;
   }
 
@@ -111,6 +191,102 @@ export class JSONLWriter {
   }
 
   // ============================================================================
+  // Path Normalization (used by StorageRouter via bound callbacks)
+  // ============================================================================
+
+  private normalizeReadBasePaths(basePaths: string[]): string[] {
+    const ordered = basePaths.length > 0 ? basePaths : [this.basePath];
+    return Array.from(new Set(ordered));
+  }
+
+  private normalizeLogicalRelativePath(relativePath: string): string {
+    return normalizePath(relativePath).replace(/^\/+|\/+$/g, '');
+  }
+
+  private parseLogicalPath(relativePath: string): {
+    category: 'conversations' | 'workspaces' | 'tasks';
+    fileName: string;
+    fileStem: string;
+  } | null {
+    const normalizedPath = this.normalizeLogicalRelativePath(relativePath);
+    const match = normalizedPath.match(/^(conversations|workspaces|tasks)\/(.+)\.jsonl$/);
+    if (!match) {
+      return null;
+    }
+
+    const fileName = `${match[2]}.jsonl`;
+    return {
+      category: match[1] as 'conversations' | 'workspaces' | 'tasks',
+      fileName,
+      fileStem: match[2]
+    };
+  }
+
+  private normalizeConversationStem(fileStem: string): string {
+    let normalized = this.normalizeLogicalRelativePath(fileStem);
+
+    while (normalized.startsWith('conv_conv_')) {
+      normalized = normalized.slice('conv_'.length);
+    }
+
+    return normalized;
+  }
+
+  private normalizeStableLogicalPath(relativePath: string): string {
+    const parsed = this.parseLogicalPath(relativePath);
+    if (!parsed) {
+      return this.normalizeLogicalRelativePath(relativePath);
+    }
+
+    if (parsed.category !== 'conversations') {
+      return `${parsed.category}/${parsed.fileName}`;
+    }
+
+    return `conversations/${this.normalizeConversationStem(parsed.fileStem)}.jsonl`;
+  }
+
+  private getLogicalPathVariants(relativePath: string): string[] {
+    const parsed = this.parseLogicalPath(relativePath);
+    if (!parsed) {
+      return [this.normalizeLogicalRelativePath(relativePath)];
+    }
+
+    if (parsed.category !== 'conversations') {
+      return [`${parsed.category}/${parsed.fileName}`];
+    }
+
+    const normalizedStem = this.normalizeConversationStem(parsed.fileStem);
+    const variants = new Set<string>([`conversations/${normalizedStem}.jsonl`]);
+
+    if (normalizedStem.startsWith('conv_')) {
+      variants.add(`conversations/conv_${normalizedStem}.jsonl`);
+    }
+
+    return Array.from(variants);
+  }
+
+  private getVaultEventLogicalPath(relativePath: string): string | null {
+    const parsed = this.parseLogicalPath(relativePath);
+    if (!parsed) {
+      return null;
+    }
+
+    if (parsed.category !== 'conversations') {
+      return `${parsed.category}/${parsed.fileName}`;
+    }
+
+    return `conversations/${this.normalizeConversationStem(parsed.fileStem)}.jsonl`;
+  }
+
+  private getCategoryFromSubPath(subPath: string): 'conversations' | 'workspaces' | 'tasks' | null {
+    const normalizedSubPath = this.normalizeLogicalRelativePath(subPath);
+    if (normalizedSubPath === 'conversations' || normalizedSubPath === 'workspaces' || normalizedSubPath === 'tasks') {
+      return normalizedSubPath;
+    }
+    return null;
+  }
+
+  // ============================================================================
   // Directory Management
   // ============================================================================
 
@@ -121,22 +297,7 @@ export class JSONLWriter {
    * @throws Error if directory creation fails
    */
   async ensureDirectory(subPath?: string): Promise<void> {
-    const fullPath = subPath ? `${this.basePath}/${subPath}` : this.basePath;
-    const folder = this.app.vault.getAbstractFileByPath(fullPath);
-
-    if (!folder) {
-      try {
-        await this.app.vault.createFolder(fullPath);
-      } catch (error) {
-        // Ignore "already exists" errors (race condition with metadata cache)
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (!errorMessage.includes('already exists')) {
-          console.error(`[JSONLWriter] Failed to ensure directory: ${subPath}`, error);
-          throw new Error(`Failed to create directory: ${errorMessage}`);
-        }
-        // Folder exists on disk but wasn't in metadata cache - that's fine
-      }
-    }
+    await this.router.ensureDirectory(subPath, this.basePath);
   }
 
   // ============================================================================
@@ -168,9 +329,6 @@ export class JSONLWriter {
     eventData: Omit<T, 'id' | 'deviceId' | 'timestamp'>
   ): Promise<T> {
     try {
-      const fullPath = `${this.basePath}/${relativePath}`;
-
-      // Create the full event with metadata
       const event: T = {
         ...eventData,
         id: uuidv4(),
@@ -178,32 +336,8 @@ export class JSONLWriter {
         timestamp: Date.now(),
       } as T;
 
-      const line = JSON.stringify(event) + '\n';
-
-      // Ensure parent directory exists
-      const lastSlashIndex = fullPath.lastIndexOf('/');
-      if (lastSlashIndex > 0) {
-        const parentPath = fullPath.substring(0, lastSlashIndex);
-        const relativeParent = parentPath.replace(this.basePath + '/', '');
-        await this.ensureDirectory(relativeParent);
-      }
-
-      // Use adapter methods for hidden folder support (.nexus/)
-      // Use lock to prevent race conditions
-      await this.locks.acquire(fullPath, async () => {
-        const exists = await this.app.vault.adapter.exists(fullPath);
-
-        if (exists) {
-          // Use atomic append (DataAdapter always has append method)
-          // Blind append: Safety first -> always add newline prefix to ensure separation
-          // This might result in double newlines (harmless), but prevents merged lines (fatal)
-          await this.app.vault.adapter.append(fullPath, '\n' + line);
-        } else {
-          // Create new file with this line
-          await this.app.vault.adapter.write(fullPath, line);
-        }
-      });
-
+      this.notifyBeforeWrite(relativePath);
+      await this.router.appendEvent(relativePath, event);
       return event;
     } catch (error) {
       console.error(`[JSONLWriter] Failed to append event to ${relativePath}:`, error);
@@ -231,9 +365,6 @@ export class JSONLWriter {
     }
 
     try {
-      const fullPath = `${this.basePath}/${relativePath}`;
-
-      // Create all events with metadata
       const events: T[] = eventsData.map(eventData => ({
         ...eventData,
         id: uuidv4(),
@@ -241,31 +372,8 @@ export class JSONLWriter {
         timestamp: Date.now(),
       } as T));
 
-      const lines = events.map(event => JSON.stringify(event)).join('\n') + '\n';
-
-      // Ensure parent directory exists
-      const lastSlashIndex = fullPath.lastIndexOf('/');
-      if (lastSlashIndex > 0) {
-        const parentPath = fullPath.substring(0, lastSlashIndex);
-        const relativeParent = parentPath.replace(this.basePath + '/', '');
-        await this.ensureDirectory(relativeParent);
-      }
-
-      // Use adapter methods for hidden folder support (.nexus/)
-      // Use lock to prevent race conditions
-      await this.locks.acquire(fullPath, async () => {
-        const exists = await this.app.vault.adapter.exists(fullPath);
-
-        if (exists) {
-          // Use atomic append (DataAdapter always has append method)
-          // Blind append: Safety first -> always add newline prefix
-          await this.app.vault.adapter.append(fullPath, '\n' + lines);
-        } else {
-          // Create new file with all lines
-          await this.app.vault.adapter.write(fullPath, lines);
-        }
-      });
-
+      this.notifyBeforeWrite(relativePath);
+      await this.router.appendEvents(relativePath, events);
       return events;
     } catch (error) {
       console.error(`[JSONLWriter] Failed to append ${eventsData.length} events to ${relativePath}:`, error);
@@ -294,27 +402,7 @@ export class JSONLWriter {
    */
   async readEvents<T extends StorageEvent>(relativePath: string): Promise<T[]> {
     try {
-      const fullPath = `${this.basePath}/${relativePath}`;
-
-      // Use adapter.exists and adapter.read for hidden folder support (.nexus/)
-      const exists = await this.app.vault.adapter.exists(fullPath);
-      if (!exists) {
-        return [];
-      }
-
-      const content = await this.app.vault.adapter.read(fullPath);
-      const lines = content.split('\n').filter(line => line.trim());
-
-      const events: T[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        try {
-          const event = JSON.parse(lines[i]) as T;
-          events.push(event);
-        } catch (e) {
-        }
-      }
-
-      return events;
+      return await this.router.readEvents<T>(relativePath);
     } catch (error) {
       console.error(`[JSONLWriter] Failed to read events from ${relativePath}:`, error);
       return [];
@@ -413,18 +501,7 @@ export class JSONLWriter {
    */
   async listFiles(subPath: string): Promise<string[]> {
     try {
-      const fullPath = `${this.basePath}/${subPath}`;
-
-      // Use adapter.list for hidden folder support (.nexus/)
-      const exists = await this.app.vault.adapter.exists(fullPath);
-      if (!exists) {
-        return [];
-      }
-
-      const listing = await this.app.vault.adapter.list(fullPath);
-      return listing.files
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => f.replace(`${this.basePath}/`, ''));
+      return await this.router.listFiles(subPath);
     } catch (error) {
       console.error(`[JSONLWriter] Failed to list files in ${subPath}:`, error);
       return [];
@@ -438,9 +515,7 @@ export class JSONLWriter {
    * @returns True if file exists
    */
   async fileExists(relativePath: string): Promise<boolean> {
-    const fullPath = `${this.basePath}/${relativePath}`;
-    // Use adapter.exists for hidden folder support (.nexus/)
-    return await this.app.vault.adapter.exists(fullPath);
+    return this.router.fileExists(relativePath);
   }
 
   /**
@@ -454,12 +529,7 @@ export class JSONLWriter {
    */
   async deleteFile(relativePath: string): Promise<void> {
     try {
-      const fullPath = `${this.basePath}/${relativePath}`;
-      // Use adapter for hidden folder support (.nexus/)
-      const exists = await this.app.vault.adapter.exists(fullPath);
-      if (exists) {
-        await this.app.vault.adapter.remove(fullPath);
-      }
+      await this.router.deleteFile(relativePath, this.basePath);
     } catch (error) {
       console.error(`[JSONLWriter] Failed to delete file ${relativePath}:`, error);
       const message = error instanceof Error ? error.message : String(error);
@@ -475,14 +545,7 @@ export class JSONLWriter {
    */
   async getFileModTime(relativePath: string): Promise<number | null> {
     try {
-      const fullPath = `${this.basePath}/${relativePath}`;
-      // Use adapter for hidden folder support (.nexus/)
-      const exists = await this.app.vault.adapter.exists(fullPath);
-      if (!exists) {
-        return null;
-      }
-      const stat = await this.app.vault.adapter.stat(fullPath);
-      return stat?.mtime ?? null;
+      return await this.router.getFileModTime(relativePath);
     } catch (error) {
       console.error(`[JSONLWriter] Failed to get mod time for ${relativePath}:`, error);
       return null;
@@ -497,14 +560,7 @@ export class JSONLWriter {
    */
   async getFileSize(relativePath: string): Promise<number | null> {
     try {
-      const fullPath = `${this.basePath}/${relativePath}`;
-      // Use adapter for hidden folder support (.nexus/)
-      const exists = await this.app.vault.adapter.exists(fullPath);
-      if (!exists) {
-        return null;
-      }
-      const stat = await this.app.vault.adapter.stat(fullPath);
-      return stat?.size ?? null;
+      return await this.router.getFileSize(relativePath);
     } catch (error) {
       console.error(`[JSONLWriter] Failed to get size for ${relativePath}:`, error);
       return null;

@@ -7,6 +7,7 @@
  */
 
 import { ToolCall as ChatToolCall } from '../../../types/chat/ChatTypes';
+import { splitTopLevelSegments, tokenize } from '../../../agents/toolManager/services/ToolCliNormalizer';
 
 export interface TerminalToolResult {
   message: string;
@@ -18,6 +19,76 @@ export interface TerminalToolResult {
  * These tools spawn background processes and the parent should not continue
  */
 const TERMINAL_TOOLS = ['subagent', 'promptManager_subagent', 'promptManager.subagent'];
+
+interface WrappedToolCallParams {
+  task?: string;
+  tools?: Record<string, string[]>;
+  tool?: string;
+}
+
+interface WrappedToolCall {
+  agent?: string;
+  tool?: string;
+  params?: WrappedToolCallParams;
+}
+
+interface TerminalSubagentResult {
+  success?: boolean;
+  data?: {
+    subagentId?: string;
+    branchId?: string;
+    status?: string;
+    message?: string;
+  };
+}
+
+interface UseToolResult {
+  success?: boolean;
+  data?: {
+    results?: TerminalSubagentResult[];
+  };
+}
+
+function isWrappedToolCallParams(value: unknown): value is { calls?: WrappedToolCall[]; tool?: string } {
+  return typeof value === 'object' && value !== null;
+}
+
+const PROMPT_AGENT_ALIASES = new Set(['prompt', 'prompt-manager', 'promptmanager']);
+
+/**
+ * Locate the subagent command inside a CLI `tool` string.
+ * Returns the zero-based segment index matching `results[i]` from the
+ * executor, or -1 if no subagent segment is present. Uses the shared
+ * `splitTopLevelSegments` + `tokenize` helpers so quoted commas inside
+ * flag values don't break segmentation.
+ */
+function findCliSubagentSegmentIndex(toolValue: unknown): number {
+  if (typeof toolValue !== 'string') {
+    return -1;
+  }
+
+  const segments = splitTopLevelSegments(toolValue);
+  for (let i = 0; i < segments.length; i += 1) {
+    const tokens = tokenize(segments[i]);
+    if (tokens.length < 2) continue;
+    const agentAlias = tokens[0].toLowerCase();
+    const toolName = tokens[1].toLowerCase();
+    if (PROMPT_AGENT_ALIASES.has(agentAlias) && toolName === 'subagent') {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+function extractCliTask(segment: string): string | undefined {
+  const tokens = tokenize(segment);
+  const taskIndex = tokens.findIndex(token => token === '--task');
+  if (taskIndex === -1 || taskIndex + 1 >= tokens.length) {
+    return undefined;
+  }
+  return tokens[taskIndex + 1];
+}
 
 /**
  * Check if any executed tool is a "terminal" tool that should stop the pingpong loop
@@ -33,18 +104,20 @@ export function checkForTerminalTool(toolCalls: ChatToolCall[]): TerminalToolRes
 
     // Check for subagent wrapped in toolManager_useTool
     let isWrappedSubagent = false;
-    let wrappedResult: any = null;
-    let wrappedParams: any = null;
+    let wrappedResult: TerminalSubagentResult | null = null;
+    let wrappedParams: WrappedToolCallParams | undefined;
 
-    if (toolName === 'toolManager_useTool' || toolName.endsWith('useTool')) {
+    if (toolName === 'toolManager_useTool' || toolName === 'toolManager_useTools' || toolName.endsWith('useTool') || toolName.endsWith('useTools')) {
       // Try to get params from multiple sources
-      let params = toolCall.parameters as { calls?: Array<{ agent?: string; tool?: string; params?: any }> } | undefined;
+      let params = toolCall.parameters as { calls?: WrappedToolCall[]; tool?: string } | undefined;
 
       // If parameters is empty, try parsing from function.arguments
       if (!params?.calls && toolCall.function?.arguments) {
         try {
-          const parsed = JSON.parse(toolCall.function.arguments);
-          params = parsed;
+          const parsed = JSON.parse(toolCall.function.arguments) as unknown;
+          if (isWrappedToolCallParams(parsed)) {
+            params = parsed;
+          }
         } catch {
           // Ignore parse errors
         }
@@ -52,45 +125,46 @@ export function checkForTerminalTool(toolCalls: ChatToolCall[]): TerminalToolRes
 
       const calls = params?.calls || [];
 
-      for (const call of calls) {
-        if (call.tool === 'subagent' || (call.agent === 'promptManager' && call.tool === 'subagent')) {
-          isWrappedSubagent = true;
-          wrappedParams = call.params;
+      if (calls.length > 0) {
+        for (const call of calls) {
+          if (call.tool === 'subagent' || (call.agent === 'promptManager' && call.tool === 'subagent')) {
+            isWrappedSubagent = true;
+            wrappedParams = call.params;
 
-          // Extract result from useTool's results array
-          // Structure is: { success, data: { results: [...] } }
-          const useToolResult = toolCall.result as {
-            success?: boolean;
-            data?: { results?: Array<{ success?: boolean; data?: any; agent?: string; tool?: string }> };
-          } | undefined;
-          const resultsArray = useToolResult?.data?.results;
+            // Extract result from useTool's results array
+            // Structure is: { success, data: { results: [...] } }
+            const useToolResult = toolCall.result as UseToolResult | undefined;
+            const resultsArray = useToolResult?.data?.results;
 
-          // Find the subagent result by index (matching position in calls array)
-          const callIndex = calls.indexOf(call);
-          if (resultsArray?.[callIndex]) {
-            wrappedResult = resultsArray[callIndex];
-          } else if (resultsArray?.[0]) {
-            // Fallback to first result
-            wrappedResult = resultsArray[0];
+            // Find the subagent result by index (matching position in calls array)
+            const callIndex = calls.indexOf(call);
+            if (resultsArray?.[callIndex]) {
+              wrappedResult = resultsArray[callIndex];
+            } else if (resultsArray?.[0]) {
+              // Fallback to first result
+              wrappedResult = resultsArray[0];
+            }
+            break;
           }
-          break;
+        }
+      } else if (typeof params?.tool === 'string') {
+        const cliSubagentIndex = findCliSubagentSegmentIndex(params.tool);
+        if (cliSubagentIndex !== -1) {
+          isWrappedSubagent = true;
+          const segments = splitTopLevelSegments(params.tool);
+          const subagentSegment = segments[cliSubagentIndex] || '';
+          wrappedParams = { task: extractCliTask(subagentSegment), tool: params.tool };
+          const useToolResult = toolCall.result as UseToolResult | undefined;
+          wrappedResult = useToolResult?.data?.results?.[cliSubagentIndex] || null;
         }
       }
     }
 
     if (isDirectSubagent || isWrappedSubagent) {
       // Get the appropriate result and params
-      const result = isWrappedSubagent ? wrappedResult : toolCall.result as {
-        success?: boolean;
-        data?: {
-          subagentId?: string;
-          branchId?: string;
-          status?: string;
-          message?: string;
-        };
-      } | undefined;
+      const result = isWrappedSubagent ? wrappedResult : toolCall.result as TerminalSubagentResult | undefined;
 
-      const params = isWrappedSubagent ? wrappedParams : toolCall.parameters as { task?: string; tools?: Record<string, string[]> } | undefined;
+      const params = isWrappedSubagent ? wrappedParams : toolCall.parameters as WrappedToolCallParams | undefined;
 
       if (result?.success && result?.data) {
         const { branchId } = result.data;
@@ -99,10 +173,10 @@ export function checkForTerminalTool(toolCalls: ChatToolCall[]): TerminalToolRes
         let terminalMessage = `\n\n✅ **Subagent Started**\n\n`;
         terminalMessage += `**Task:** ${params?.task || 'Task assigned'}\n\n`;
 
-        const toolsParam = params?.tools as Record<string, string[]> | undefined;
+        const toolsParam = params?.tools;
         if (toolsParam && Object.keys(toolsParam).length > 0) {
           const toolsList = Object.entries(toolsParam)
-            .map(([agent, tools]) => `- ${agent}: ${(tools as string[]).join(', ')}`)
+            .map(([agent, tools]) => `- ${agent}: ${tools.join(', ')}`)
             .join('\n');
           terminalMessage += `**Tools Handed Off:**\n${toolsList}\n\n`;
         }

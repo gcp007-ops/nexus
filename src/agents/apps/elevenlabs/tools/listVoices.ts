@@ -10,6 +10,36 @@ import { CommonParameters, CommonResult } from '../../../../types';
 import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 import { BaseAppAgent } from '../../BaseAppAgent';
 import { requestUrl } from 'obsidian';
+import { verbs } from '../../../utils/toolStatusLabels';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
+
+type UnknownRecord = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is UnknownRecord =>
+  typeof value === 'object' && value !== null;
+
+const getRecord = (value: unknown): UnknownRecord | undefined =>
+  isRecord(value) ? value : undefined;
+
+const getString = (value: unknown, fallback = ''): string =>
+  typeof value === 'string' ? value : fallback;
+
+const getStatusCode = (value: unknown): number | undefined => {
+  const record = getRecord(value);
+  return typeof record?.status === 'number' ? record.status : undefined;
+};
+
+const getErrorMessage = (value: unknown): string => {
+  if (isRecord(value)) {
+    const text = value.text;
+    if (typeof text === 'string') return text;
+
+    const message = value.message;
+    if (typeof message === 'string') return message;
+  }
+
+  return String(value);
+};
 
 interface ListVoicesParams extends CommonParameters {
   category?: string;
@@ -44,7 +74,12 @@ export class ListVoicesTool extends BaseTool<ListVoicesParams, CommonResult> {
         `ElevenLabs not configured. Missing: ${missing.join(', ')}. Set up in Nexus Settings → Apps.`);
     }
 
-    const apiKey = this.agent.getCredential('apiKey')!;
+    const apiKey = this.agent.getCredential('apiKey');
+    if (!apiKey) {
+      const missing = this.agent.getMissingCredentials().map(c => c.label);
+      return this.prepareResult(false, undefined,
+        `ElevenLabs not configured. Missing: ${missing.join(', ')}. Set up in Nexus Settings → Apps.`);
+    }
 
     try {
       const response = await requestUrl({
@@ -57,11 +92,22 @@ export class ListVoicesTool extends BaseTool<ListVoicesParams, CommonResult> {
 
       if (response.status !== 200) {
         return this.prepareResult(false, undefined,
-          `ElevenLabs API error (${response.status}): ${response.text || 'Unknown error'}`);
+          `ElevenLabs API error (${response.status}): ${typeof response.text === 'string' ? response.text : 'Unknown error'}`);
       }
 
-      const data = response.json;
-      let voices: VoiceInfo[] = data.voices || [];
+      const responseData = getRecord(response.json as unknown);
+      const rawVoices = Array.isArray(responseData?.voices) ? responseData.voices : [];
+      let voices: VoiceInfo[] = rawVoices.map((voice): VoiceInfo => {
+        const voiceRecord = getRecord(voice);
+        return {
+          voice_id: getString(voiceRecord?.voice_id),
+          name: getString(voiceRecord?.name),
+          category: getString(voiceRecord?.category),
+          description: getString(voiceRecord?.description),
+          labels: isRecord(voiceRecord?.labels) ? voiceRecord.labels as Record<string, string> : undefined,
+          preview_url: getString(voiceRecord?.preview_url),
+        };
+      });
 
       // Filter by category if specified
       if (params.category) {
@@ -82,13 +128,16 @@ export class ListVoicesTool extends BaseTool<ListVoicesParams, CommonResult> {
         total: voiceList.length,
       });
     } catch (error: unknown) {
-      const status = (error as Record<string, unknown>)?.status;
-      const body = (error as Record<string, unknown>)?.text
-        ?? (error as Record<string, unknown>)?.message
-        ?? String(error);
+      const status = getStatusCode(error);
+      const body = getErrorMessage(error);
       return this.prepareResult(false, undefined,
-        `Failed to list voices${status ? ` (${status})` : ''}: ${body}`);
+        `Failed to list voices${status !== undefined ? ` (${status})` : ''}: ${body}`);
     }
+  }
+
+  getStatusLabel(_params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    const v = verbs('Listing voices', 'Listed voices', 'Failed to list voices');
+    return v[tense];
   }
 
   getParameterSchema(): JSONSchema {

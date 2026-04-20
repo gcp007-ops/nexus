@@ -25,6 +25,21 @@ Nexus can be used in two ways:
 
 Native chat works on desktop and mobile. MCP clients, local desktop providers, and semantic search are desktop-only.
 
+## Mobile Support (Experimental)
+
+Native chat works on mobile (iOS and Android). Desktop-only features gracefully skip loading on mobile -- they will not appear or cause errors.
+
+| Feature | Mobile | Desktop |
+|---------|--------|---------|
+| Native chat | Yes | Yes |
+| Workspace memory and tasks | Yes | Yes |
+| MCP clients (Claude Desktop, Cursor, etc.) | No | Yes |
+| Semantic search (local embeddings) | No | Yes |
+| Ingestion (PDF, audio, DOCX) | No | Yes |
+| Composer and Web Tools | No | Yes |
+
+Mobile support is new and may have bugs. Please [report issues on GitHub](https://github.com/ProfSynapse/nexus/issues).
+
 ## Use Cases
 
 | If you want to... | Start here |

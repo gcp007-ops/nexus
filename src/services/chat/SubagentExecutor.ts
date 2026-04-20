@@ -31,6 +31,8 @@ import type {
 import type { BranchService } from './BranchService';
 import type { MessageQueueService } from './MessageQueueService';
 import type { DirectToolExecutor } from './DirectToolExecutor';
+import { formatWorkspaceDataForPrompt } from '../../utils/WorkspaceDataFormatter';
+import { isPerplexityProvider } from '../llm/utils/ToolSchemaSupport';
 
 export interface SubagentExecutorDependencies {
   branchService: BranchService;
@@ -129,7 +131,7 @@ export class SubagentExecutor {
     this.events.onSubagentStarted?.(subagentId, params.task, branchId);
 
     // Fire and forget - don't await
-    this.runSubagentLoop(subagentId, branchId, params, abortController.signal)
+    void this.runSubagentLoop(subagentId, branchId, params, abortController.signal)
       .then(result => {
         this.activeSubagents.delete(subagentId);
         this.updateStatus(subagentId, { state: result.success ? 'complete' : 'max_iterations' });
@@ -262,7 +264,7 @@ export class SubagentExecutor {
     }
 
     // 3. Build system prompt WITH tool schemas + context files included
-    const systemPrompt = await this.buildSystemPrompt(params, toolSchemasText, contextFilesContent);
+    const systemPrompt = this.buildSystemPrompt(params, toolSchemasText, contextFilesContent);
 
     // 4. Build initial user message (just task + any additional context string)
     const initialMessage = this.buildInitialMessage(params.task, params.context || '');
@@ -459,16 +461,17 @@ export class SubagentExecutor {
    * @param toolSchemas Pre-fetched tool schemas to include (optional)
    * @param contextFilesContent Content from context files to include (optional)
    */
-  private async buildSystemPrompt(
+  private buildSystemPrompt(
     params: SubagentParams,
     toolSchemas?: string,
     contextFilesContent?: string
-  ): Promise<string> {
+  ): string {
     // Determine if tools were pre-loaded by parent
     const hasPreloadedTools = toolSchemas && toolSchemas.length > 0;
+    const toolsUnavailable = isPerplexityProvider(params.provider);
 
     // Start with inherited agent prompt if available
-    let promptParts: string[] = [];
+    const promptParts: string[] = [];
 
     // 1. Add inherited agent persona/prompt if parent had a custom agent selected
     if (params.agentPrompt) {
@@ -482,7 +485,7 @@ export class SubagentExecutor {
     // 2. Add core subagent instructions
     promptParts.push(`## Subagent Instructions
 
-You are an AUTONOMOUS subagent. You MUST complete tasks independently using tools.
+You are an AUTONOMOUS subagent. You MUST complete tasks independently${toolsUnavailable ? ' without Nexus tool calls for this run' : ' using tools'}.
 
 ### Your Task
 ${params.task}
@@ -491,7 +494,9 @@ ${params.task}
 
 1. **NEVER ask questions or seek clarification** - You are autonomous. Make reasonable assumptions and proceed.
 
-2. **ALWAYS use tools** - Your first response MUST include tool calls.
+2. **${toolsUnavailable ? 'Do not attempt Nexus tool calls' : 'ALWAYS use tools'}** - ${toolsUnavailable
+    ? 'The selected Perplexity model cannot execute Nexus tools in subagent mode. Work in text only and clearly report any tool-dependent step you could not perform.'
+    : 'Your first response MUST include tool calls.'}
 
 3. **Text-only response = Task complete** - Only respond with plain text (no tool calls) when you have FINISHED the task and are reporting results.
 
@@ -513,7 +518,15 @@ ${params.task}
     }
 
     // 5. Add tool section based on whether tools were pre-loaded
-    if (hasPreloadedTools) {
+    if (toolsUnavailable) {
+      promptParts.push(`## Tool Availability
+
+The selected Perplexity model cannot call Nexus tools in subagent mode.
+
+- Do not call toolManager_getTools or toolManager_useTool
+- Complete the task as a text-only research or analysis pass
+- If a vault action is required, state exactly what action is needed in your final response`);
+    } else if (hasPreloadedTools) {
       promptParts.push(`## Pre-loaded Tools (Ready to Use)
 
 The parent agent has equipped you with these specific tools. Use them via toolManager_useTool:
@@ -523,15 +536,11 @@ ${toolSchemas}
 **To call a tool**, use toolManager_useTool with:
 \`\`\`json
 {
-  "context": {
-    "workspaceId": "${params.workspaceId || 'default'}",
-    "sessionId": "${params.sessionId || 'subagent'}",
-    "memory": "Subagent working on: ${params.task.substring(0, 50)}...",
-    "goal": "Complete the assigned task"
-  },
-  "calls": [
-    { "agent": "agentName", "tool": "toolName", "params": { ... } }
-  ]
+  "workspaceId": "${params.workspaceId || 'default'}",
+  "sessionId": "${params.sessionId || 'subagent'}",
+  "memory": "Subagent working on: ${params.task.substring(0, 50)}...",
+  "goal": "Complete the assigned task",
+  "tool": "agent tool-name --flag value, another-agent another-tool --flag value"
 }
 \`\`\`
 
@@ -543,7 +552,7 @@ Call toolManager_getTools first to discover available tools, then toolManager_us
 
 Example flow:
 1. Call getTools to see what's available
-2. Call useTool with the appropriate agent/tool/params
+2. Call useTool with the appropriate CLI-style tool string
 3. Continue until task is complete
 4. Respond with final results (no tool calls)
 
@@ -558,8 +567,6 @@ BEGIN - Start by calling getTools to discover available tools.`);
    * Uses shared utility for consistency with SystemPromptBuilder
    */
   private formatWorkspaceData(workspaceData: Record<string, unknown>): string {
-    // Import dynamically to avoid circular dependencies
-    const { formatWorkspaceDataForPrompt } = require('../../utils/WorkspaceDataFormatter');
     return formatWorkspaceDataForPrompt(workspaceData, { maxStates: 3 });
   }
 
@@ -668,7 +675,7 @@ BEGIN - Start by calling getTools to discover available tools.`);
       queuedAt: Date.now(),
     };
 
-    this.dependencies.messageQueueService.enqueue(message);
+    void this.dependencies.messageQueueService.enqueue(message);
   }
 
   /**

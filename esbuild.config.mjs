@@ -1,8 +1,14 @@
 import esbuild from "esbuild";
 import process from "process";
-import builtins from "builtin-modules";
+import { builtinModules, createRequire } from "node:module";
 import { copyFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
+
+const require = createRequire(import.meta.url);
+const sqlite3VecPackageRoot = dirname(require.resolve("@dao-xyz/sqlite3-vec/package.json"));
+const sqlite3VecWasmEntry = join(sqlite3VecPackageRoot, "index.mjs");
+const sqlite3VecBrowserEntry = join(sqlite3VecPackageRoot, "dist", "unified-browser.js");
+const sqlite3VecWasmBinary = join(sqlite3VecPackageRoot, "sqlite-wasm", "jswasm", "sqlite3.wasm");
 
 const banner =
 `/*
@@ -14,7 +20,7 @@ If you want to view the source, please visit the github repository
 const prod = process.argv[2] === "production";
 
 // Node.js built-ins with 'node:' prefix for packages that use modern syntax
-const nodeBuiltinsWithPrefix = builtins.map(mod => `node:${mod}`);
+const nodeBuiltinsWithPrefix = builtinModules.map(mod => `node:${mod}`);
 
 // Copy WASM files plugin
 const copyWasmPlugin = {
@@ -22,7 +28,7 @@ const copyWasmPlugin = {
   setup(build) {
     build.onEnd(() => {
       // Copy sqlite3 WASM file to output directory
-      const wasmSrc = 'node_modules/@dao-xyz/sqlite3-vec/sqlite-wasm/jswasm/sqlite3.wasm';
+      const wasmSrc = sqlite3VecWasmBinary;
       const wasmDest = 'sqlite3.wasm';
       if (existsSync(wasmSrc)) {
         copyFileSync(wasmSrc, wasmDest);
@@ -53,7 +59,7 @@ const context = await esbuild.context({
     "@codemirror/state",
     "@codemirror/view",
     // Node.js built-ins (both with and without node: prefix)
-    ...builtins,
+    ...builtinModules,
     ...nodeBuiltinsWithPrefix,
     "sharp",             // Image processing - not needed for embeddings
   ],
@@ -73,8 +79,8 @@ const context = await esbuild.context({
   alias: {
     // Force browser/WASM version of sqlite3-vec (avoids native better-sqlite3)
     // Use the raw WASM module to get access to sqlite3.capi for serialize/deserialize
-    "@dao-xyz/sqlite3-vec/wasm": "./node_modules/@dao-xyz/sqlite3-vec/index.mjs",
-    "@dao-xyz/sqlite3-vec": "./node_modules/@dao-xyz/sqlite3-vec/dist/unified-browser.js",
+    "@dao-xyz/sqlite3-vec/wasm": sqlite3VecWasmEntry,
+    "@dao-xyz/sqlite3-vec": sqlite3VecBrowserEntry,
     // Note: @xenova/transformers is NOT bundled - loaded via iframe from CDN
     // This avoids all Electron/Node.js environment conflicts
   },

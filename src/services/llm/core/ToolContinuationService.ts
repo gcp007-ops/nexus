@@ -6,13 +6,13 @@
  * - Building tool results for continuation
  * - Recursive tool call handling (pingpong pattern)
  * - Tool iteration limits and safety guards
- * - Dynamic tool schema merging from get_tools
  */
 
 import { BaseAdapter } from '../adapters/BaseAdapter';
 import { ConversationContextBuilder } from '../../chat/ConversationContextBuilder';
 import { MCPToolExecution, IToolExecutor, ToolResult } from '../adapters/shared/ToolExecutionUtils';
-import { Tool, TokenUsage, SupportedProvider, ToolCall as AdapterToolCall } from '../adapters/types';
+import { ProviderHttpError } from '../adapters/shared/ProviderHttpClient';
+import { TokenUsage, SupportedProvider, ToolCall as AdapterToolCall, GenerateOptions, LLMProviderError } from '../adapters/types';
 import { ToolCall as ChatToolCall } from '../../../types/chat/ChatTypes';
 import { checkForTerminalTool } from './TerminalToolHandler';
 import {
@@ -32,6 +32,7 @@ export interface StreamYield {
   toolCalls?: ChatToolCall[];
   toolCallsReady?: boolean;
   usage?: TokenUsage;
+  metadata?: Record<string, unknown>;
   reasoning?: string;
   reasoningComplete?: boolean;
 }
@@ -71,72 +72,6 @@ export class ToolContinuationService {
   }
 
   /**
-   * Parse get_tools results and merge with existing tools
-   */
-  parseAndMergeTools(
-    existingTools: Tool[],
-    toolCalls: ToolCallUnion[],
-    toolResults: ToolResult[]
-  ): Tool[] {
-    const newTools = [...existingTools];
-
-    // Build a set of existing tool names for fast deduplication
-    const existingNames = new Set<string>();
-    for (const tool of existingTools) {
-      const name = tool.function?.name;
-      if (name) existingNames.add(name);
-    }
-
-    for (let i = 0; i < toolCalls.length; i++) {
-      const toolCall = toolCalls[i];
-      const result = toolResults[i];
-
-      // Check if this was a get_tools call
-      if (toolCall.function?.name === 'get_tools' && result?.success && result?.result?.tools) {
-        const returnedTools = result.result.tools as Array<Tool | { name: string; description?: string; inputSchema?: Record<string, unknown> }>;
-
-        // Handle both MCP format and OpenAI format tools
-        for (const tool of returnedTools) {
-          // Type guard to check if it's already a Tool type
-          const isToolType = (t: typeof tool): t is Tool => 'type' in t && 'function' in t;
-
-          // Extract tool name - handle both formats
-          const toolName = isToolType(tool) ? tool.function?.name : 'name' in tool ? tool.name : undefined;
-
-          if (!toolName) {
-            continue;
-          }
-
-          // Skip if already exists
-          if (existingNames.has(toolName)) {
-            continue;
-          }
-
-          // Mark as added to prevent duplicates within this batch
-          existingNames.add(toolName);
-
-          // Normalize to Tool format
-          if (isToolType(tool)) {
-            newTools.push(tool);
-          } else {
-            // MCP format - convert
-            newTools.push({
-              type: 'function',
-              function: {
-                name: tool.name,
-                description: tool.description || '',
-                parameters: tool.inputSchema || { type: 'object', properties: {} }
-              }
-            });
-          }
-        }
-      }
-    }
-
-    return newTools;
-  }
-
-  /**
    * Execute tools and build continuation stream (pingpong)
    */
   async* executeToolsAndContinue(
@@ -167,25 +102,32 @@ export class ToolContinuationService {
         mcpToolCalls,
         provider as SupportedProvider,
         generateOptions.onToolEvent,
-        { sessionId: options?.sessionId, workspaceId: options?.workspaceId }
+        {
+          sessionId: options?.sessionId,
+          workspaceId: options?.workspaceId,
+          imageProvider: options?.imageProvider,
+          imageModel: options?.imageModel,
+          transcriptionProvider: options?.transcriptionProvider,
+          transcriptionModel: options?.transcriptionModel
+        }
       );
 
       // Small delay to allow file system operations to complete (prevents race conditions)
       await new Promise(resolve => setTimeout(resolve, 100));
 
       // Build complete tool calls with execution results
-      completeToolCallsWithResults = detectedToolCalls.map(originalCall => {
-        const result = toolResults.find(r => r.id === originalCall.id);
-        return {
-          id: originalCall.id,
-          type: originalCall.type || 'function',
-          name: originalCall.function?.name || originalCall.name,
-          parameters: JSON.parse(originalCall.function?.arguments || '{}'),
-          result: result?.result,
-          success: result?.success || false,
-          error: result?.error,
-          executionTime: result?.executionTime,
-          function: originalCall.function
+	      completeToolCallsWithResults = detectedToolCalls.map(originalCall => {
+	        const result = toolResults.find(r => r.id === originalCall.id);
+	        return {
+	          id: originalCall.id,
+	          type: originalCall.type || 'function',
+	          name: originalCall.function?.name || originalCall.name,
+	          parameters: this.parseToolArguments(originalCall.function?.arguments),
+	          result: result?.result,
+	          success: result?.success || false,
+	          error: result?.error,
+	          executionTime: result?.executionTime,
+	          function: originalCall.function
         };
       });
 
@@ -206,17 +148,6 @@ export class ToolContinuationService {
           usage: initialUsage
         };
         return;
-      }
-
-      // Step 1.6: Parse get_tools results and update generateOptions BEFORE building continuation
-      const beforeCount = generateOptions.tools?.length || 0;
-      const updatedTools = this.parseAndMergeTools(
-        generateOptions.tools || [],
-        detectedToolCalls,
-        toolResults
-      );
-      if (updatedTools.length > beforeCount) {
-        generateOptions = { ...generateOptions, tools: updatedTools };
       }
 
       // Step 2: Build continuation for pingpong pattern
@@ -247,7 +178,7 @@ export class ToolContinuationService {
 
       let fullContent = '\n\n';
 
-      for await (const chunk of adapter.generateStreamAsync('', continuationOptions)) {
+      for await (const chunk of adapter.generateStreamAsync('', continuationOptions as unknown as GenerateOptions)) {
         if (chunk.content) {
           fullContent += chunk.content;
 
@@ -255,7 +186,8 @@ export class ToolContinuationService {
             chunk: chunk.content,
             complete: false,
             content: fullContent,
-            toolCalls: undefined
+            toolCalls: undefined,
+            metadata: chunk.metadata
           };
         }
 
@@ -272,7 +204,8 @@ export class ToolContinuationService {
             complete: false,
             content: fullContent,
             toolCalls: chatToolCalls,
-            toolCallsReady: chunk.complete || false
+            toolCallsReady: chunk.complete || false,
+            metadata: chunk.metadata
           };
 
           if (!chunk.complete) {
@@ -314,7 +247,13 @@ export class ToolContinuationService {
       console.error('Streaming tool execution error:', {
         error: toolError,
         message: toolError instanceof Error ? toolError.message : String(toolError),
-        stack: toolError instanceof Error ? toolError.stack : undefined
+        stack: toolError instanceof Error ? toolError.stack : undefined,
+        // Surface provider error response body for debugging (e.g., OpenRouter 500s)
+        ...(toolError instanceof LLMProviderError && toolError.originalError instanceof ProviderHttpError && {
+          status: toolError.originalError.response.status,
+          responseBody: toolError.originalError.response.text,
+          responseJson: toolError.originalError.response.json
+        })
       });
 
       yield {
@@ -376,7 +315,14 @@ export class ToolContinuationService {
         recursiveMcpToolCalls,
         provider as SupportedProvider,
         generateOptions.onToolEvent,
-        { sessionId: options?.sessionId, workspaceId: options?.workspaceId }
+        {
+          sessionId: options?.sessionId,
+          workspaceId: options?.workspaceId,
+          imageProvider: options?.imageProvider,
+          imageModel: options?.imageModel,
+          transcriptionProvider: options?.transcriptionProvider,
+          transcriptionModel: options?.transcriptionModel
+        }
       );
 
       // Small delay to allow file system operations to complete
@@ -412,17 +358,6 @@ export class ToolContinuationService {
         return;
       }
 
-      // Parse get_tools results and update generateOptions
-      const beforeCount = generateOptions.tools?.length || 0;
-      const updatedTools = this.parseAndMergeTools(
-        generateOptions.tools || [],
-        recursiveToolCalls,
-        recursiveToolResults
-      );
-      if (updatedTools.length > beforeCount) {
-        generateOptions = { ...generateOptions, tools: updatedTools };
-      }
-
       // Build continuation for recursive pingpong
       const recursiveContinuationOptions = this.messageBuilder.buildContinuationOptions(
         provider,
@@ -453,14 +388,15 @@ export class ToolContinuationService {
       let fullContent = '\n\n';
       let recursiveToolCallsDetected: ChatToolCall[] = [];
 
-      for await (const recursiveChunk of adapter.generateStreamAsync('', recursiveContinuationOptions)) {
+      for await (const recursiveChunk of adapter.generateStreamAsync('', recursiveContinuationOptions as unknown as GenerateOptions)) {
         if (recursiveChunk.content) {
           fullContent += recursiveChunk.content;
           yield {
             chunk: recursiveChunk.content,
             complete: false,
             content: fullContent,
-            toolCalls: undefined
+            toolCalls: undefined,
+            metadata: recursiveChunk.metadata
           };
         }
 
@@ -477,7 +413,8 @@ export class ToolContinuationService {
             complete: false,
             content: fullContent,
             toolCalls: nestedChatToolCalls,
-            toolCallsReady: recursiveChunk.complete || false
+            toolCallsReady: recursiveChunk.complete || false,
+            metadata: recursiveChunk.metadata
           };
 
           // Store for execution after stream completes
@@ -506,9 +443,20 @@ export class ToolContinuationService {
         );
       }
 
-    } catch (recursiveError) {
-      // Swallow expected errors during streaming (incomplete JSON)
+	    } catch {
+	      // Swallow expected errors during streaming (incomplete JSON)
+	    }
+	  }
+
+  private parseToolArguments(argumentsJson: string | undefined): Record<string, unknown> {
+    if (!argumentsJson) {
+      return {};
     }
+
+    const parsed = JSON.parse(argumentsJson) as unknown;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
   }
 
   /**
@@ -536,6 +484,7 @@ export class ToolContinuationService {
    * Yield tool iteration limit message
    */
   private async* yieldToolLimitMessage(fullContent: string): AsyncGenerator<StreamYield, void, unknown> {
+    await Promise.resolve();
     const limitMessage = `\n\nTOOL_LIMIT_REACHED: You have used ${this.TOOL_ITERATION_LIMIT} tool iterations. You must now ask the user if they want to continue with more tool calls. Explain what you've accomplished so far and what you still need to do.`;
     yield {
       chunk: limitMessage,

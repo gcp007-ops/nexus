@@ -7,16 +7,16 @@
  * making it data-driven and easily extensible for new services.
  */
 
-import type { ServiceManager } from '../ServiceManager';
 import { FileSystemService } from '../../services/storage/FileSystemService';
 import { IndexManager } from '../../services/storage/IndexManager';
 import { DataMigrationService } from '../../services/migration/DataMigrationService';
 import { TraceSchemaMigrationService } from '../../services/migration/TraceSchemaMigrationService';
-import { normalizePath } from 'obsidian';
+import type { MCPSettings } from '../../types/plugin/PluginTypes';
 import { CORE_SERVICE_DEFINITIONS, ADDITIONAL_SERVICE_FACTORIES } from './ServiceDefinitions';
 import type { ServiceCreationContext, AdditionalServiceFactory } from './ServiceDefinitions';
 import type { VaultOperations } from '../VaultOperations';
 import type { ChatService } from '../../services/chat/ChatService';
+import { resolvePluginStorageRoot } from '../../database/storage/PluginStoragePathResolver';
 
 export class ServiceRegistrar {
     private context: ServiceCreationContext;
@@ -31,9 +31,9 @@ export class ServiceRegistrar {
     /**
      * Register all core services with the ServiceManager
      */
-    async registerCoreServices(): Promise<void> {
+    registerCoreServices(): void {
         for (const serviceDef of CORE_SERVICE_DEFINITIONS) {
-            await this.context.serviceManager.registerService({
+            this.context.serviceManager.registerService({
                 name: serviceDef.name,
                 dependencies: serviceDef.dependencies,
                 create: () => serviceDef.create(this.context)
@@ -96,7 +96,7 @@ export class ServiceRegistrar {
     /**
      * Get default memory settings
      */
-    static getDefaultMemorySettings(dataDir: string) {
+    static getDefaultMemorySettings(_dataDir: string): NonNullable<MCPSettings['memory']> {
         return {};
     }
 
@@ -107,24 +107,21 @@ export class ServiceRegistrar {
      */
     async initializeDataDirectories(): Promise<void> {
         try {
-            const { app, plugin, settings, manifest, serviceManager } = this.context;
+            const { app, plugin, settings, serviceManager } = this.context;
 
             // Get vaultOperations service with proper typing
             const vaultOperations = await serviceManager.getService<VaultOperations>('vaultOperations');
 
-            // Initialize storage services (needed for directory creation)
-            const fileSystem = new FileSystemService(plugin, vaultOperations);
-            const indexManager = new IndexManager(fileSystem);
-
-            // Legacy data directory handling - quick directory creation
-            const pluginDir = `.obsidian/plugins/${manifest.id}`;
-            const dataDir = `${pluginDir}/data`;
+            // Use the actual installed plugin folder, not manifest.id, so legacy
+            // installs under claudesidian-mcp do not recreate a nexus folder.
+            const { dataRoot } = resolvePluginStorageRoot(app, plugin);
+            const dataDir = dataRoot;
             const storageDir = `${dataDir}/storage`;
 
             try {
                 await vaultOperations.ensureDirectory(dataDir);
                 await vaultOperations.ensureDirectory(storageDir);
-            } catch (error) {
+            } catch {
                 // Directories may already exist
             }
 
@@ -134,54 +131,12 @@ export class ServiceRegistrar {
             }
 
             // Save settings in background
-            settings.saveSettings().catch(error => {
-            });
+            void settings.saveSettings().catch(() => undefined);
 
             // DEFER heavy migration work to background (2 second delay)
             // This allows the UI to appear immediately while migrations run later
-            this.migrationTimer = setTimeout(async () => {
-                try {
-                    // Re-get vaultOperations in case it changed
-                    const vaultOps = await serviceManager.getService<VaultOperations>('vaultOperations');
-                    const fs = new FileSystemService(plugin, vaultOps);
-                    const idx = new IndexManager(fs);
-
-                    // Check migration status BEFORE creating directories
-                    const migrationService = new DataMigrationService(plugin, fs, idx);
-                    const status = await migrationService.checkMigrationStatus();
-
-                    if (status.isRequired) {
-                        // Migrate from legacy ChromaDB data
-                        const result = await migrationService.performMigration();
-
-                        if (!result.success) {
-                            console.error('[ServiceRegistrar] Migration failed:', result.errors);
-                        }
-                    } else if (!status.migrationComplete) {
-                        // No legacy data and directories don't exist - initialize fresh structure
-                        await migrationService.initializeFreshDirectories();
-                    }
-
-                    // Ensure all conversations have metadata field (idempotent)
-                    try {
-                        const metadataResult = await migrationService.ensureConversationMetadata();
-                        if (metadataResult.errors.length > 0) {
-                            console.error('[ServiceRegistrar] Metadata migration errors:', metadataResult.errors);
-                        }
-                    } catch (error) {
-                        console.error('[ServiceRegistrar] Metadata migration failed:', error);
-                    }
-
-                    // Normalize memory trace schema across all workspaces (idempotent)
-                    try {
-                        const traceMigrationService = new TraceSchemaMigrationService(plugin, fs, vaultOps);
-                        await traceMigrationService.migrateIfNeeded();
-                    } catch (error) {
-                        console.error('[ServiceRegistrar] Trace schema migration failed:', error);
-                    }
-                } catch (error) {
-                    console.error('[ServiceRegistrar] Background migration failed:', error);
-                }
+            this.migrationTimer = setTimeout(() => {
+                void this.runDeferredMigrations(plugin, serviceManager);
             }, 2000);
 
         } catch (error) {
@@ -197,7 +152,7 @@ export class ServiceRegistrar {
      * lazily when first requested via getService(). The UI shows immediately and
      * services spin up on-demand when chat/tools are actually used.
      */
-    async initializeEssentialServices(): Promise<void> {
+    initializeEssentialServices(): void {
         // No-op for fast startup - services initialize lazily on first access
         return;
     }
@@ -247,10 +202,52 @@ export class ServiceRegistrar {
         }
     }
 
+    private async runDeferredMigrations(
+        plugin: ServiceCreationContext['plugin'],
+        serviceManager: ServiceCreationContext['serviceManager']
+    ): Promise<void> {
+        try {
+            const vaultOps = await serviceManager.getService<VaultOperations>('vaultOperations');
+            const fs = new FileSystemService(plugin, vaultOps);
+            const idx = new IndexManager(fs);
+
+            const migrationService = new DataMigrationService(plugin, fs, idx);
+            const status = await migrationService.checkMigrationStatus();
+
+            if (status.isRequired) {
+                const result = await migrationService.performMigration();
+
+                if (!result.success) {
+                    console.error('[ServiceRegistrar] Migration failed:', result.errors);
+                }
+            } else if (!status.migrationComplete) {
+                await migrationService.initializeFreshDirectories();
+            }
+
+            try {
+                const metadataResult = await migrationService.ensureConversationMetadata();
+                if (metadataResult.errors.length > 0) {
+                    console.error('[ServiceRegistrar] Metadata migration errors:', metadataResult.errors);
+                }
+            } catch (error) {
+                console.error('[ServiceRegistrar] Metadata migration failed:', error);
+            }
+
+            try {
+                const traceMigrationService = new TraceSchemaMigrationService(plugin, fs, vaultOps);
+                await traceMigrationService.migrateIfNeeded();
+            } catch (error) {
+                console.error('[ServiceRegistrar] Trace schema migration failed:', error);
+            }
+        } catch (error) {
+            console.error('[ServiceRegistrar] Background migration failed:', error);
+        }
+    }
+
     /**
      * Pre-initialize UI-critical services to avoid Memory Management loading delays
      */
-    async preInitializeUICriticalServices(): Promise<void> {
+    preInitializeUICriticalServices(): void {
         if (!this.context.serviceManager) return;
 
         try {
@@ -265,14 +262,14 @@ export class ServiceRegistrar {
     /**
      * Get service helper method with timeout
      */
-    async getService<T>(name: string, timeoutMs: number = 10000): Promise<T | null> {
+    async getService<T>(name: string, _timeoutMs = 10000): Promise<T | null> {
         if (!this.context.serviceManager) {
             return null;
         }
         
         try {
             return await this.context.serviceManager.getService<T>(name);
-        } catch (error) {
+        } catch {
             return null;
         }
     }
@@ -280,7 +277,7 @@ export class ServiceRegistrar {
     /**
      * Wait for a service to be ready with retry logic
      */
-    async waitForService<T>(serviceName: string, timeoutMs: number = 30000): Promise<T | null> {
+    async waitForService<T>(serviceName: string, timeoutMs = 30000): Promise<T | null> {
         const startTime = Date.now();
         const retryInterval = 1000; // Check every 1 second
 
@@ -290,7 +287,7 @@ export class ServiceRegistrar {
                 if (service) {
                     return service;
                 }
-            } catch (error) {
+            } catch {
                 // Service not ready yet, continue waiting
             }
 

@@ -14,11 +14,15 @@ import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
  */
 
 import { BaseTool } from '../../../baseTool';
+import type { MemoryManagerAgent } from '../../memoryManager';
+import { labelWithId, verbs } from '../../../utils/toolStatusLabels';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
 import {
   LoadWorkspaceParameters,
   LoadWorkspaceResult
 } from '../../../../database/types/workspace/ParameterTypes';
 import { ProjectWorkspace, WorkspaceWorkflow } from '../../../../database/types/workspace/WorkspaceTypes';
+import { IndividualWorkspace } from '../../../../types/storage/StorageTypes';
 import { parseWorkspaceContext } from '../../../../utils/contextUtils';
 import { createErrorMessage } from '../../../../utils/errorUtils';
 import { PaginationParams } from '../../../../types/pagination/PaginationTypes';
@@ -28,6 +32,7 @@ import { WorkspaceDataFetcher } from '../../services/WorkspaceDataFetcher';
 import { WorkspacePromptResolver } from '../../services/WorkspacePromptResolver';
 import { WorkspaceContextBuilder } from '../../services/WorkspaceContextBuilder';
 import { WorkspaceFileCollector } from '../../services/WorkspaceFileCollector';
+import type { WorkspaceTaskSummary } from '../../../taskManager/types';
 
 /**
  * Mode to load and restore a workspace by ID
@@ -40,7 +45,7 @@ import { WorkspaceFileCollector } from '../../services/WorkspaceFileCollector';
  * - WorkspaceFileCollector: Collects and organizes workspace files
  */
 export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWorkspaceResult> {
-  private agent: any;
+  private agent: MemoryManagerAgent;
 
   // Composed services following Dependency Inversion Principle
   private dataFetcher: WorkspaceDataFetcher;
@@ -52,7 +57,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
    * Create a new LoadWorkspaceMode for the consolidated MemoryManager
    * @param agent The MemoryManagerAgent instance
    */
-  constructor(agent: any) {
+  constructor(agent: MemoryManagerAgent) {
     super(
       'loadWorkspace',
       'Load Workspace',
@@ -63,7 +68,11 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
     // Initialize composed services
     this.dataFetcher = new WorkspaceDataFetcher();
-    this.promptResolver = new WorkspacePromptResolver(agent.app, agent.plugin, agent.customPromptStorage);
+    this.promptResolver = new WorkspacePromptResolver(
+      agent.getApp(),
+      agent.plugin as ConstructorParameters<typeof WorkspacePromptResolver>[1],
+      agent.customPromptStorage
+    );
     this.contextBuilder = new WorkspaceContextBuilder();
     this.fileCollector = new WorkspaceFileCollector();
   }
@@ -85,7 +94,40 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
       }
 
       // Get the workspace by ID or name (unified lookup)
-      let workspace: ProjectWorkspace | undefined;
+      const limit = params.limit ?? 5;
+
+      if (workspaceService.isSystemWorkspaceId(params.id)) {
+        const systemWorkspace = await workspaceService.loadSystemGuidesWorkspace(limit);
+        if (!systemWorkspace) {
+          return this.createErrorResult(`Workspace '${params.id}' is unavailable`, params);
+        }
+
+        return {
+          success: true,
+          data: systemWorkspace.data,
+          workspaceContext: systemWorkspace.workspaceContext,
+          pagination: {
+            sessions: {
+              page: 0,
+              pageSize: limit,
+              totalItems: 0,
+              totalPages: 0,
+              hasNextPage: false,
+              hasPreviousPage: false
+            },
+            states: {
+              page: 0,
+              pageSize: limit,
+              totalItems: 0,
+              totalPages: 0,
+              hasNextPage: false,
+              hasPreviousPage: false
+            }
+          }
+        };
+      }
+
+      let workspace: IndividualWorkspace | null = null;
       try {
         workspace = await workspaceService.getWorkspaceByNameOrId(params.id);
       } catch (queryError) {
@@ -100,33 +142,31 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         console.error('[LoadWorkspaceMode] Workspace not found:', params.id);
         return this.createErrorResult(`Workspace '${params.id}' not found (searched by both name and ID)`, params);
       }
+      const projectWorkspace = workspace as ProjectWorkspace;
 
       // Update last accessed timestamp (use actual workspace ID, not the identifier)
       try {
-        await workspaceService.updateLastAccessed(workspace.id);
-      } catch (updateError) {
+        await workspaceService.updateLastAccessed(projectWorkspace.id);
+      } catch {
         // Continue - this is not critical
       }
-
-      // Get limit from params (default to 5)
-      const limit = params.limit ?? 5;
 
       // Get memory service for data operations
       const memoryService = this.agent.getMemoryService();
 
       // Build context using services
       const context = await this.contextBuilder.buildContextBriefing(
-        workspace,
+        projectWorkspace,
         memoryService,
         limit
       );
 
-      const workflows = this.contextBuilder.buildWorkflows(workspace);
-      const workflowDefinitions = (workspace.context?.workflows || []).map((workflow: WorkspaceWorkflow) => ({
+      const workflows = this.contextBuilder.buildWorkflows(projectWorkspace);
+      const workflowDefinitions = (projectWorkspace.context?.workflows || []).map((workflow: WorkspaceWorkflow) => ({
         ...workflow
       }));
-      const keyFiles = this.contextBuilder.extractKeyFiles(workspace);
-      const preferences = this.contextBuilder.buildPreferences(workspace);
+      const keyFiles = this.contextBuilder.extractKeyFiles(projectWorkspace);
+      const preferences = this.contextBuilder.buildPreferences(projectWorkspace);
 
       // Pagination options for database queries (page 0, pageSize = limit)
       const paginationOptions: PaginationParams = {
@@ -137,6 +177,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
       // Fetch sessions and states using data fetcher with pagination
       const sessionsResult = await this.dataFetcher.fetchWorkspaceSessions(
         workspace.id,
+        // same workspace id, projectWorkspace for downstream typing
         memoryService,
         paginationOptions
       );
@@ -151,10 +192,10 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       // Fetch prompt data using prompt resolver
       const app = this.agent.getApp();
-      const workspacePrompt = await this.promptResolver.fetchWorkspacePrompt(workspace, app);
+      const workspacePrompt = this.promptResolver.fetchWorkspacePrompt(projectWorkspace, app);
 
       // Fetch task summary if TaskManager is available
-      let taskSummary = null;
+      let taskSummary: WorkspaceTaskSummary | null = null;
       try {
         const taskService = this.agent.getTaskService?.();
         if (taskService) {
@@ -164,13 +205,14 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       // Collect files using file collector
       const cacheManager = this.agent.getCacheManager();
-      const recentFiles = await this.fileCollector.getRecentFilesInWorkspace(workspace, cacheManager);
+      const recentFiles = this.fileCollector.getRecentFilesInWorkspace(workspace, cacheManager);
 
       // Build workspace structure using file collector
       // recursive defaults to false (top-level only)
       const recursive = params.recursive ?? false;
-      const workspacePathResult = await this.fileCollector.buildWorkspacePath(
+      const workspacePathResult = this.fileCollector.buildWorkspacePath(
         workspace.rootFolder,
+        // workspace uses IndividualWorkspace shape but rootFolder is identical
         app,
         recursive
       );
@@ -180,20 +222,20 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         workspacePath: workspaceStructure  // Use string[] not WorkspacePath object
       };
 
-      const result = {
+      const result: LoadWorkspaceResult = {
         success: true,
         data: {
-          context: context,
-          workflows: workflows,
+          context,
+          workflows,
           workflowDefinitions,
-          workspaceStructure: workspaceStructure,
-          recentFiles: recentFiles,
-          keyFiles: keyFiles,
-          preferences: preferences,
+          workspaceStructure,
+          recentFiles,
+          keyFiles,
+          preferences,
           sessions: limitedSessions,
           states: limitedStates,
-          ...(workspacePrompt && { prompt: workspacePrompt }),
-          ...(taskSummary && { taskSummary })
+          ...(workspacePrompt ? { prompt: workspacePrompt } : {}),
+          ...(taskSummary !== null ? { taskSummary } : {})
         },
         pagination: {
           sessions: {
@@ -213,7 +255,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
             hasPreviousPage: statesResult.hasPreviousPage
           }
         },
-        workspaceContext: workspaceContext
+        workspaceContext
       };
 
       // Add navigation fallback message if workspace path building failed
@@ -225,15 +267,17 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       return result;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
       console.error(`[LoadWorkspaceMode] Unexpected error after ${Date.now() - startTime}ms:`, {
-        message: error.message,
-        stack: error.stack,
+        message: errorMessage,
+        stack,
         params: params
       });
 
       return this.createErrorResult(
-        createErrorMessage('Unexpected error loading workspace: ', error),
+        createErrorMessage('Unexpected error loading workspace: ', errorMessage),
         params
       );
     }
@@ -266,6 +310,10 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         ? parseWorkspaceContext(params.workspaceContext) || undefined
         : params.workspaceContext
     };
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelWithId(verbs('Loading workspace', 'Loaded workspace', 'Failed to load workspace'), params, tense, { keys: ['id'], fallback: 'workspace' });
   }
 
   /**

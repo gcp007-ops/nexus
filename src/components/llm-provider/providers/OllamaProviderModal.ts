@@ -12,6 +12,14 @@ import {
   ProviderModalDependencies,
 } from '../types';
 
+interface OllamaTagsResponse {
+  models: Array<{ name: string }>;
+}
+
+interface OllamaGenerateResponse {
+  response: string;
+}
+
 export class OllamaProviderModal implements IProviderModal {
   private config: ProviderModalConfig;
   private deps: ProviderModalDependencies;
@@ -23,9 +31,9 @@ export class OllamaProviderModal implements IProviderModal {
   private testButton: HTMLButtonElement | null = null;
 
   // State
-  private serverUrl: string = 'http://127.0.0.1:11434';
-  private modelName: string = '';
-  private isValidated: boolean = false;
+  private serverUrl = 'http://127.0.0.1:11434';
+  private modelName = '';
+  private isValidated = false;
   private validationTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: ProviderModalConfig, deps: ProviderModalDependencies) {
@@ -72,9 +80,11 @@ export class OllamaProviderModal implements IProviderModal {
       .addButton(button => {
         this.testButton = button.buttonEl;
         button
-          .setButtonText('Test Connection')
+          .setButtonText('Test connection')
           .setTooltip('Test connection to Ollama server with the configured model')
-          .onClick(() => this.testConnection());
+          .onClick(() => {
+            void this.testConnection();
+          });
       });
   }
 
@@ -105,7 +115,7 @@ export class OllamaProviderModal implements IProviderModal {
       // Auto-validate after delay
       this.validationTimeout = setTimeout(() => {
         if (this.modelName.trim()) {
-          this.testConnection();
+          void this.testConnection();
         }
       }, 2000);
 
@@ -126,7 +136,7 @@ export class OllamaProviderModal implements IProviderModal {
     container.createEl('h2', { text: 'Model' });
 
     new Setting(container)
-      .setName('Default Model')
+      .setName('Default model')
       .setDesc('Enter the name of the Ollama model to use')
       .addText(text => {
         this.modelInput = text.inputEl;
@@ -153,7 +163,7 @@ export class OllamaProviderModal implements IProviderModal {
     const descDiv = helpDiv.createDiv('setting-item-description');
 
     const details = descDiv.createEl('details');
-    const summary = details.createEl('summary', { text: 'Setup Help' });
+    const summary = details.createEl('summary', { text: 'Setup help' });
     summary.addClass('llm-provider-help-summary');
 
     const contentDiv = details.createDiv();
@@ -221,12 +231,16 @@ export class OllamaProviderModal implements IProviderModal {
       }
 
       // Check if model is available
-      const serverData = serverResponse.json;
-      const availableModels = serverData.models || [];
-      const modelExists = availableModels.some((model: { name: string }) => model.name === modelName);
+      const serverData = this.parseJson(serverResponse.text);
+      if (!this.isOllamaTagsResponse(serverData)) {
+        throw new Error('Invalid response format from Ollama server');
+      }
+
+      const availableModels = serverData.models;
+      const modelExists = availableModels.some(model => model.name === modelName);
 
       if (!modelExists) {
-        const modelList = availableModels.map((m: { name: string }) => m.name).join(', ') || 'none';
+        const modelList = availableModels.map(model => model.name).join(', ') || 'none';
         new Notice(`Model '${modelName}' not found. Available: ${modelList}`);
         return;
       }
@@ -248,8 +262,8 @@ export class OllamaProviderModal implements IProviderModal {
         throw new Error(`Model test failed: ${testResponse.status}`);
       }
 
-      const testData = testResponse.json;
-      if (testData.response) {
+      const testData = this.parseJson(testResponse.text);
+      if (this.isOllamaGenerateResponse(testData) && testData.response) {
         new Notice(`Ollama connection successful! Model '${modelName}' is working.`);
 
         this.isValidated = true;
@@ -278,7 +292,7 @@ export class OllamaProviderModal implements IProviderModal {
       new Notice(`Ollama test failed: ${errorMessage}`);
     } finally {
       if (this.testButton) {
-        this.testButton.textContent = 'Test Connection';
+        this.testButton.textContent = 'Test connection';
         this.testButton.disabled = false;
       }
     }
@@ -288,7 +302,29 @@ export class OllamaProviderModal implements IProviderModal {
    * Save configuration
    */
   private saveConfig(): void {
-    this.config.onConfigChange(this.config.config);
+    void this.config.onConfigChange(this.config.config);
+  }
+
+  private parseJson(text: string): unknown {
+    const parser = JSON.parse as (value: string) => unknown;
+    return parser(text);
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private isOllamaTagsResponse(value: unknown): value is OllamaTagsResponse {
+    if (!this.isRecord(value)) {
+      return false;
+    }
+
+    const models = value.models;
+    return Array.isArray(models) && models.every(model => this.isRecord(model) && typeof model.name === 'string');
+  }
+
+  private isOllamaGenerateResponse(value: unknown): value is OllamaGenerateResponse {
+    return this.isRecord(value) && typeof value.response === 'string';
   }
 
   /**

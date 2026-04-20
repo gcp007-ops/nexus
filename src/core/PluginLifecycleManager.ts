@@ -8,10 +8,9 @@
  * Used by main.ts to manage the plugin's lifecycle phases in a structured way.
  */
 
-import { Plugin, Notice, Platform, App, PluginManifest } from 'obsidian';
+import { Plugin, Platform, App, PluginManifest } from 'obsidian';
 import { ServiceManager } from './ServiceManager';
 import { Settings } from '../settings';
-import { UpdateManager } from '../utils/UpdateManager';
 import { ServiceRegistrar } from './services/ServiceRegistrar';
 import { MaintenanceCommandManager } from './commands/MaintenanceCommandManager';
 import { InlineEditCommandManager } from './commands/InlineEditCommandManager';
@@ -64,7 +63,7 @@ export interface PluginLifecycleConfig {
  */
 export class PluginLifecycleManager {
     private config: PluginLifecycleConfig;
-    private isInitialized: boolean = false;
+    private isInitialized = false;
     private startTime: number = Date.now();
     private serviceRegistrar: ServiceRegistrar;
     private commandManager: MaintenanceCommandManager;
@@ -88,14 +87,14 @@ export class PluginLifecycleManager {
             app: config.app,
             serviceManager: config.serviceManager,
             settings: config.settings,
-            connector: config.connector,
+            connector: config.connector as NonNullable<ServiceCreationContext['connector']> | undefined,
             manifest: config.manifest
         };
         this.serviceRegistrar = new ServiceRegistrar(serviceContext);
 
         // Create command manager
         this.commandManager = new MaintenanceCommandManager({
-            plugin: config.plugin,
+            plugin: config.plugin as unknown as import('./commands/CommandDefinitions').CommandContext['plugin'],
             serviceManager: config.serviceManager,
             getService: (name, timeoutMs) => this.serviceRegistrar.getService(name, timeoutMs),
             isInitialized: () => this.isInitialized
@@ -161,7 +160,7 @@ export class PluginLifecycleManager {
             // PHASE 1: Foundation - Service container and settings already created by main.ts
 
             // PHASE 2: Register core services (no initialization yet)
-            await this.serviceRegistrar.registerCoreServices();
+            this.serviceRegistrar.registerCoreServices();
 
             // PHASE 3: Register ChatView EARLY so Obsidian can restore it during layout restoration
             await this.chatUIManager.registerViewEarly();
@@ -189,15 +188,15 @@ export class PluginLifecycleManager {
             await this.config.settings.loadSettings();
             await this.serviceRegistrar.initializeDataDirectories();
             await this.serviceRegistrar.initializeBusinessServices();
-            await this.serviceRegistrar.preInitializeUICriticalServices();
-            await this.backgroundProcessor.validateSearchFunctionality();
+            this.serviceRegistrar.preInitializeUICriticalServices();
+            this.backgroundProcessor.validateSearchFunctionality();
 
             // Start MCP server AFTER services are ready (registers agents)
             // Only on desktop - connector is undefined on mobile
             if (this.config.connector) {
                 try {
                     await this.config.connector.start();
-                } catch (error) {
+                } catch {
                     // MCP connector start failed - non-fatal
                 }
             }
@@ -214,21 +213,23 @@ export class PluginLifecycleManager {
 
             // Initialize settings tab AFTER business services are ready
             // This prevents race condition where settings tab tries to access agents before services are initialized
-            await this.settingsTabManager.initializeSettingsTab();
+            this.settingsTabManager.initializeSettingsTab();
 
             // Defer SQLite/embedding initialization - WASM loading is CPU-intensive (~2s)
             // Uses a fixed timeout from onload rather than onLayoutReady (which is unreliable, can take 13+s)
             // 3 second delay gives Obsidian enough time to finish loading screen
             if (!Platform.isMobile) {
-                const sqliteTimer = setTimeout(async () => {
-                    try {
-                        const adapter = await this.config.serviceManager?.getService<HybridStorageAdapter>('hybridStorageAdapter');
-                        if (adapter) {
-                            await this.initializeEmbeddingsWhenReady(adapter);
+                const sqliteTimer = setTimeout(() => {
+                    void (async () => {
+                        try {
+                            const adapter = await this.config.serviceManager?.getService<HybridStorageAdapter>('hybridStorageAdapter');
+                            if (adapter) {
+                                await this.initializeEmbeddingsWhenReady(adapter);
+                            }
+                        } catch (err) {
+                            console.error('[PluginLifecycleManager] Background SQLite initialization failed:', err);
                         }
-                    } catch (err) {
-                        console.error('[PluginLifecycleManager] Background SQLite initialization failed:', err);
-                    }
+                    })();
                 }, 3000); // 3s from background init start - Obsidian loading screen is gone by then
                 this.pendingTimers.push(sqliteTimer);
             }
@@ -243,7 +244,7 @@ export class PluginLifecycleManager {
             this.vaultIngestionManager.register();
 
             // Check for updates
-            this.backgroundProcessor.checkForUpdatesOnStartup();
+            void this.backgroundProcessor.checkForUpdatesOnStartup();
 
             // Update settings tab with loaded services
             this.backgroundProcessor.updateSettingsTabServices();
@@ -273,15 +274,17 @@ export class PluginLifecycleManager {
     /**
      * Get service helper method
      */
-    private async getService<T>(name: string, timeoutMs: number = 10000): Promise<T | null> {
+    private async getService<T>(name: string, timeoutMs = 10000): Promise<T | null> {
         if (!this.config.serviceManager) {
             return null;
         }
 
+        void timeoutMs;
+
         // Try to get service (will initialize if needed)
         try {
             return await this.config.serviceManager.getService<T>(name);
-        } catch (error) {
+        } catch {
             return null;
         }
     }
@@ -305,11 +308,17 @@ export class PluginLifecycleManager {
 
     /**
      * Initialize embeddings when storage adapter becomes ready (called from background).
-     * The storageAdapter.cache getter always returns the constructor-created sqliteCache,
-     * so no waitForReady guard is needed here.
+     * Must wait for the adapter's SQLite cache to finish initializing before
+     * creating EmbeddingManager, since background indexing queries SQLite.
      */
     private async initializeEmbeddingsWhenReady(storageAdapter: HybridStorageAdapter): Promise<void> {
         try {
+            const ready = await storageAdapter.waitForQueryReady();
+            if (!ready) {
+                console.warn('[PluginLifecycleManager] Storage adapter failed to initialize; skipping embeddings');
+                return;
+            }
+            console.warn('[PluginLifecycleManager] Storage adapter ready, initializing embeddings...');
             const enableEmbeddings = this.config.settings.settings.enableEmbeddings ?? true;
             this.embeddingManager = new EmbeddingManager(
                 this.config.app,
@@ -318,7 +327,7 @@ export class PluginLifecycleManager {
                 enableEmbeddings,
                 storageAdapter.messages
             );
-            await this.embeddingManager.initialize();
+            this.embeddingManager.initialize();
             (this.config.plugin as PluginWithServices).embeddingManager = this.embeddingManager;
 
             // Wire embedding service into ChatTraceService
@@ -353,6 +362,7 @@ export class PluginLifecycleManager {
                 try {
                     await this.embeddingManager.shutdown();
                 } catch (error) {
+                    void error;
                 }
             }
 
@@ -368,6 +378,7 @@ export class PluginLifecycleManager {
                 try {
                     await storageAdapter.close();
                 } catch (error) {
+                    void error;
                 }
             }
 
@@ -376,7 +387,7 @@ export class PluginLifecycleManager {
 
             // Cleanup service manager (handles all service cleanup)
             if (this.config.serviceManager) {
-                await this.config.serviceManager.stop();
+                this.config.serviceManager.stop();
             }
 
             // Stop the MCP connector

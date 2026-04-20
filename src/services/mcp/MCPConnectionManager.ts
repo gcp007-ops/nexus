@@ -29,7 +29,7 @@ export interface MCPConnectionManagerInterface {
      * @returns Configured MCP server instance
      * @throws ServerCreationError when server creation fails
      */
-    createServer(): Promise<MCPServer>;
+    createServer(): MCPServer;
 
     /**
      * Starts the MCP server
@@ -91,16 +91,16 @@ export class MCPConnectionManager implements MCPConnectionManagerInterface {
     private serverCreatedAt?: Date;
     private lastError?: { message: string; timestamp: Date };
     private sessionContextManager: SessionContextManager | null = null;
-    private serviceManager: any = null;
+    private serviceManager: { getServiceIfReady(name: string): SessionContextManager | null } | null = null;
 
     constructor(
         private app: App,
         private plugin: Plugin,
         private events: Events,
-        serviceManager: any,
+        serviceManager: { getServiceIfReady(name: string): SessionContextManager | null } | null,
         private customPromptStorage?: CustomPromptStorageService,
-        private onToolCall?: (toolName: string, params: any) => Promise<void>,
-        private onToolResponse?: (toolName: string, params: any, response: any, success: boolean, executionTime: number) => Promise<void>
+        private onToolCall?: (toolName: string, params: unknown) => Promise<void>,
+        private onToolResponse?: (toolName: string, params: unknown, response: unknown, success: boolean, executionTime: number) => Promise<void>
     ) {
         this.serviceManager = serviceManager;
     }
@@ -137,7 +137,7 @@ export class MCPConnectionManager implements MCPConnectionManagerInterface {
             await this.initializeToolCallTracing();
 
             // Create the MCP server
-            this.server = await this.createServer();
+            this.server = this.createServer();
             this.isInitialized = true;
 
             logger.systemLog('MCP Connection Manager initialized successfully');
@@ -196,7 +196,7 @@ export class MCPConnectionManager implements MCPConnectionManagerInterface {
     /**
      * Creates and configures MCP server
      */
-    async createServer(): Promise<MCPServer> {
+    createServer(): MCPServer {
         try {
             const server = new MCPServer(
                 this.app,

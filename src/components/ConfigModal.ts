@@ -1,6 +1,10 @@
 import { App, FileSystemAdapter, Modal, Platform, Setting, normalizePath } from 'obsidian';
 import { getAllPluginIds, getPrimaryServerKey, BRAND_NAME } from '../constants/branding';
 
+type ConfigModalDesktopModuleMap = {
+    path: typeof import('path');
+};
+
 /**
  * Configuration modal for the plugin
  * Provides setup instructions for different operating systems
@@ -23,18 +27,18 @@ export class ConfigModal extends Modal {
     /**
      * Called when the modal is opened
      */
-    onOpen() {
+    onOpen(): void {
         const { contentEl } = this;
         contentEl.empty();
         
-        contentEl.createEl('h2', { text: 'MCP Configuration' });
+        contentEl.createEl('h2', { text: 'MCP configuration' });
 
         // Add configuration type toggle
         const toggleContainer = contentEl.createDiv({ cls: 'mcp-config-toggle' });
-        toggleContainer.createEl('span', { text: 'Configuration Type:', cls: 'mcp-config-label' });
+        toggleContainer.createEl('span', { text: 'Configuration type:', cls: 'mcp-config-label' });
         new Setting(toggleContainer)
-            .setName('First Time Setup')
-            .setDesc('Toggle between first-time setup and adding to existing configuration')
+            .setName('First time setup')
+            .setDesc('Toggle between first-time setup and adding to an existing configuration')
             .addToggle(toggle => toggle
                 .setValue(this.isFirstTimeSetup)
                 .onChange(value => {
@@ -130,7 +134,7 @@ export class ConfigModal extends Modal {
         step1.appendText(' → ');
         step1.createEl('strong', { text: 'Developer' });
         step1.appendText(' → ');
-        step1.createEl('strong', { text: 'Edit Config' });
+        step1.createEl('strong', { text: 'Edit config' });
         step1.appendText(' (this creates the config file if it doesn\'t exist)');
 
         // Step 2: Alternative - use file link
@@ -143,7 +147,7 @@ export class ConfigModal extends Modal {
             href: '#'
         });
 
-        configLink.addEventListener('click', async (e) => {
+        configLink.addEventListener('click', (e) => {
             e.preventDefault();
             // Try to open the file with system's default program
             const actualPath = this.getWindowsConfigPath();
@@ -160,11 +164,11 @@ export class ConfigModal extends Modal {
         
         // Copy button
         const copyButton = windowsContent.createEl('button', {
-            text: 'Copy Configuration',
+            text: 'Copy configuration',
             cls: 'mod-cta'
         });
         
-        this.populateTabConfig('windows', codeEl, copyButton);
+        void this.populateTabConfig('windows', codeEl, copyButton);
         
         // Remaining steps
         steps.createEl('li', { text: this.isFirstTimeSetup
@@ -194,7 +198,7 @@ export class ConfigModal extends Modal {
         step1.appendText(' → ');
         step1.createEl('strong', { text: 'Developer' });
         step1.appendText(' → ');
-        step1.createEl('strong', { text: 'Edit Config' });
+        step1.createEl('strong', { text: 'Edit config' });
         step1.appendText(' (this creates the config file if it doesn\'t exist)');
 
         // Step 2: Alternative - use file link
@@ -207,7 +211,7 @@ export class ConfigModal extends Modal {
             href: '#'
         });
 
-        configLink.addEventListener('click', async (e) => {
+        configLink.addEventListener('click', (e) => {
             e.preventDefault();
             // Try to open the file with system's default program
             const actualPath = this.getMacConfigPath();
@@ -224,11 +228,11 @@ export class ConfigModal extends Modal {
         
         // Copy button
         const copyButton = macContent.createEl('button', {
-            text: 'Copy Configuration',
+            text: 'Copy configuration',
             cls: 'mod-cta'
         });
         
-        this.populateTabConfig('mac', codeEl, copyButton);
+        void this.populateTabConfig('mac', codeEl, copyButton);
         
         // Remaining steps
         steps.createEl('li', { text: this.isFirstTimeSetup
@@ -258,7 +262,7 @@ export class ConfigModal extends Modal {
         step1.appendText(' → ');
         step1.createEl('strong', { text: 'Developer' });
         step1.appendText(' → ');
-        step1.createEl('strong', { text: 'Edit Config' });
+        step1.createEl('strong', { text: 'Edit config' });
         step1.appendText(' (this creates the config file if it doesn\'t exist)');
 
         // Step 2: Alternative - use file link
@@ -271,7 +275,7 @@ export class ConfigModal extends Modal {
             href: '#'
         });
 
-        configLink.addEventListener('click', async (e) => {
+        configLink.addEventListener('click', (e) => {
             e.preventDefault();
             // Try to open the file with system's default program
             const actualPath = this.getLinuxConfigPath();
@@ -288,11 +292,11 @@ export class ConfigModal extends Modal {
         
         // Copy button
         const copyButton = linuxContent.createEl('button', {
-            text: 'Copy Configuration',
+            text: 'Copy configuration',
             cls: 'mod-cta'
         });
         
-        this.populateTabConfig('linux', codeEl, copyButton);
+        void this.populateTabConfig('linux', codeEl, copyButton);
         
         // Remaining steps
         steps.createEl('li', { text: this.isFirstTimeSetup
@@ -350,8 +354,8 @@ export class ConfigModal extends Modal {
         // Update all tab contents with new configuration
         for (const tabId of Object.keys(this.tabContents)) {
             const content = this.tabContents[tabId];
-            const codeBlock = content.querySelector('pre code') as HTMLElement | null;
-            const copyButton = content.querySelector('button.mod-cta') as HTMLButtonElement | null;
+            const codeBlock = content.querySelector<HTMLElement>('pre code');
+            const copyButton = content.querySelector<HTMLButtonElement>('button.mod-cta');
             if (codeBlock && copyButton) {
                 await this.populateTabConfig(tabId, codeBlock, copyButton);
             }
@@ -409,12 +413,12 @@ export class ConfigModal extends Modal {
                 if (exists) {
                     // Prefer absolute path when available (desktop FileSystemAdapter)
                     if (vaultRoot && Platform.isDesktop) {
-                        const nodePath = require('path') as typeof import('path');
+                        const nodePath = this.loadDesktopModule('path');
                         return nodePath.join(vaultRoot, relativeConnectorPath);
                     }
                     return relativeConnectorPath;
                 }
-            } catch (error) {
+            } catch {
                 // Fall through and try next folder
             }
         }
@@ -422,10 +426,28 @@ export class ConfigModal extends Modal {
         // Default to the primary folder even if we couldn't verify existence
         const fallbackRelative = normalizePath(`.obsidian/plugins/${pluginFolders[0]}/connector.js`);
         if (vaultRoot && Platform.isDesktop) {
-            const nodePath = require('path') as typeof import('path');
+            const nodePath = this.loadDesktopModule('path');
             return nodePath.join(vaultRoot, fallbackRelative);
         }
         return fallbackRelative;
+    }
+
+    private loadDesktopModule<TModuleName extends keyof ConfigModalDesktopModuleMap>(
+        moduleName: TModuleName
+    ): ConfigModalDesktopModuleMap[TModuleName] {
+        if (!Platform.isDesktop) {
+            throw new Error(`${moduleName} is only available on desktop.`);
+        }
+
+        const maybeRequire = (globalThis as typeof globalThis & {
+            require?: (moduleId: string) => unknown;
+        }).require;
+
+        if (typeof maybeRequire !== 'function') {
+            throw new Error('Desktop module loader is unavailable.');
+        }
+
+        return maybeRequire(moduleName) as ConfigModalDesktopModuleMap[TModuleName];
     }
 
     /**
@@ -452,9 +474,9 @@ export class ConfigModal extends Modal {
             const config = await this.getConfiguration(tabId);
             codeEl.textContent = JSON.stringify(config, null, 2);
             copyButton.onclick = () => {
-                navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+                void navigator.clipboard.writeText(JSON.stringify(config, null, 2));
                 copyButton.setText('Copied!');
-                setTimeout(() => copyButton.setText('Copy Configuration'), 2000);
+                setTimeout(() => copyButton.setText('Copy configuration'), 2000);
             };
         } catch (error) {
             console.error(`[ConfigModal] Failed to populate config for ${tabId}:`, error);
@@ -479,7 +501,7 @@ export class ConfigModal extends Modal {
      */
     private getWindowsConfigPath(): string {
         if (Platform.isDesktop) {
-            const nodePath = require('path') as typeof import('path');
+            const nodePath = this.loadDesktopModule('path');
             return nodePath.join(process.env.APPDATA || '', 'Claude', 'claude_desktop_config.json');
         }
         return '';
@@ -491,7 +513,7 @@ export class ConfigModal extends Modal {
      */
     private getMacConfigPath(): string {
         if (Platform.isDesktop) {
-            const nodePath = require('path') as typeof import('path');
+            const nodePath = this.loadDesktopModule('path');
             return nodePath.join(process.env.HOME || '', 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
         }
         return '';
@@ -503,7 +525,7 @@ export class ConfigModal extends Modal {
      */
     private getLinuxConfigPath(): string {
         if (Platform.isDesktop) {
-            const nodePath = require('path') as typeof import('path');
+            const nodePath = this.loadDesktopModule('path');
             return nodePath.join(process.env.HOME || '', '.config', 'Claude', 'claude_desktop_config.json');
         }
         return '';
@@ -512,7 +534,7 @@ export class ConfigModal extends Modal {
     /**
      * Called when the modal is closed
      */
-    onClose() {
+    onClose(): void {
         const { contentEl } = this;
         contentEl.empty();
     }

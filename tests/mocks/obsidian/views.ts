@@ -7,7 +7,7 @@ import { createMockElement, App, EventRef } from './core';
 // Scope mock
 export class Scope {
   register(): void {
-    // Mock implementation
+    void 0;
   }
 }
 
@@ -16,36 +16,67 @@ export class Modal {
   app: App;
   contentEl: HTMLElement;
   containerEl: HTMLElement;
+  modalEl: HTMLElement;
+  titleEl: HTMLElement;
   scope: Scope;
+
+  // Mirror of Component.register — Modal extends Component at runtime
+  private _cleanups: Array<() => void> = [];
+  private _domEvents: Array<{ el: HTMLElement; type: string; handler: EventListenerOrEventListenerObject }> = [];
 
   constructor(app: App) {
     this.app = app;
     this.contentEl = createMockElement('div');
     this.containerEl = createMockElement('div');
+    this.modalEl = createMockElement('div');
+    this.titleEl = createMockElement('div');
     this.scope = new Scope();
   }
 
   open(): void {
-    // Mock implementation
+    this.onOpen();
   }
 
   close(): void {
-    // Mock implementation
+    this.onClose();
+    // Mirror Obsidian cleanup on close
+    for (const cb of this._cleanups) {
+      try { cb(); } catch { /* best effort */ }
+    }
+    this._cleanups = [];
+    for (const { el, type, handler } of this._domEvents) {
+      if (el && typeof el.removeEventListener === 'function') {
+        el.removeEventListener(type, handler);
+      }
+    }
+    this._domEvents = [];
   }
 
   onOpen(): void {
-    // Override in subclass
+    void 0;
   }
 
   onClose(): void {
-    // Override in subclass
+    void 0;
+  }
+
+  register(cb: () => void): void {
+    this._cleanups.push(cb);
+  }
+
+  registerDomEvent(el: HTMLElement, type: string, handler: EventListenerOrEventListenerObject): void {
+    this._domEvents.push({ el, type, handler });
+    if (el && typeof el.addEventListener === 'function') {
+      el.addEventListener(type, handler);
+    }
   }
 }
 
 // Component mock (base class for UI components like MessageBubble)
 export class Component {
-  private _domEvents: Array<{ el: any; type: string; handler: any }> = [];
-  private _intervals: any[] = [];
+  private _domEvents: Array<{ el: HTMLElement; type: string; handler: EventListenerOrEventListenerObject }> = [];
+  private _intervals: Array<ReturnType<typeof setInterval>> = [];
+  private _cleanups: Array<() => void> = [];
   private _isLoaded = false;
 
   load(): void {
@@ -53,10 +84,20 @@ export class Component {
   }
 
   onload(): void {
-    // Override in subclass
+    void 0;
   }
 
   unload(): void {
+    // Run registered cleanup callbacks (Obsidian's Component.register)
+    for (const cb of this._cleanups) {
+      try {
+        cb();
+      } catch {
+        // Swallow cleanup errors — match Obsidian's best-effort teardown semantics
+      }
+    }
+    this._cleanups = [];
+
     // Clean up registered DOM events
     for (const { el, type, handler } of this._domEvents) {
       if (el && typeof el.removeEventListener === 'function') {
@@ -72,26 +113,35 @@ export class Component {
     this._intervals = [];
 
     this._isLoaded = false;
+    this.onunload();
   }
 
   onunload(): void {
-    // Override in subclass
+    void 0;
   }
 
-  registerDomEvent(el: any, type: string, handler: any): void {
+  /**
+   * Register a cleanup callback invoked during unload().
+   * Mirrors Obsidian's Component.register(cb) API.
+   */
+  register(cb: () => void): void {
+    this._cleanups.push(cb);
+  }
+
+  registerDomEvent(el: HTMLElement, type: string, handler: EventListenerOrEventListenerObject): void {
     this._domEvents.push({ el, type, handler });
     if (el && typeof el.addEventListener === 'function') {
       el.addEventListener(type, handler);
     }
   }
 
-  registerInterval(interval: any): number {
+  registerInterval(interval: ReturnType<typeof setInterval>): ReturnType<typeof setInterval> {
     this._intervals.push(interval);
     return interval;
   }
 
   registerEvent(eventRef: EventRef): void {
-    // Mock implementation
+    void eventRef;
   }
 }
 
@@ -107,7 +157,7 @@ export class Plugin extends Component {
   }
 
   addCommand(command: { id: string; name: string; callback?: () => void }): void {
-    // Mock implementation
+    void command;
   }
 }
 
@@ -121,15 +171,15 @@ export class Menu {
 
 // MenuItem mock
 export class MenuItem {
-  setTitle(title: string): this {
+  setTitle(_title: string): this {
     return this;
   }
 
-  setIcon(icon: string): this {
+  setIcon(_icon: string): this {
     return this;
   }
 
-  onClick(callback: () => void): this {
+  onClick(_callback: () => void): this {
     return this;
   }
 }

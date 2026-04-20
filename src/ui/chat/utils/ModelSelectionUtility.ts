@@ -15,6 +15,7 @@ import { getNexusPlugin } from '../../../utils/pluginLocator';
 import { getAvailableProviders } from '../../../utils/platform';
 import { ModelWithProvider } from '../../../services/llm/core/ModelDiscoveryService';
 import { Settings } from '../../../settings';
+import type { App } from 'obsidian';
 
 /**
  * Interface for LLMService with getAvailableModels method
@@ -29,7 +30,16 @@ interface LLMServiceWithModels {
 interface NexusPluginExtended extends Plugin {
   settings: Settings;
   getService<T>(name: string): Promise<T | null>;
-  loadData(): Promise<any>;
+  loadData(): Promise<NexusPluginData | null>;
+}
+
+interface NexusPluginData {
+  llmProviders?: {
+    defaultModel?: {
+      provider?: string;
+      model?: string;
+    };
+  };
 }
 
 /**
@@ -39,7 +49,7 @@ export class ModelSelectionUtility {
   /**
    * Get available models from validated providers
    */
-  static async getAvailableModels(app: any): Promise<ModelOption[]> {
+  static async getAvailableModels(app: App): Promise<ModelOption[]> {
     try {
       // Get plugin instance to access LLMService
       const plugin = getNexusPlugin<NexusPluginExtended>(app);
@@ -65,7 +75,7 @@ export class ModelSelectionUtility {
         .map((model: ModelWithProvider) => ModelSelectionUtility.mapToModelOption(model));
 
       return models;
-    } catch (error) {
+    } catch {
       return [];
     }
   }
@@ -73,7 +83,7 @@ export class ModelSelectionUtility {
   /**
    * Get the configured default model from plugin settings
    */
-  static async getDefaultModel(app: any): Promise<{ provider: string; model: string }> {
+  static async getDefaultModel(app: App): Promise<{ provider: string; model: string }> {
     try {
       const plugin = getNexusPlugin<NexusPluginExtended>(app);
       if (!plugin) {
@@ -93,15 +103,17 @@ export class ModelSelectionUtility {
       const defaultModel = pluginData?.llmProviders?.defaultModel;
 
       if (defaultModel?.provider && defaultModel?.model) {
-        return defaultModel;
+        return {
+          provider: defaultModel.provider,
+          model: defaultModel.model
+        };
       }
 
-      // If still no default, return the hardcoded default (openai/gpt-4o)
-      // This prevents errors during initial setup
-      return { provider: 'openai', model: 'gpt-4o' };
-    } catch (error) {
-      // Return fallback instead of throwing to prevent UI errors
-      return { provider: 'openai', model: 'gpt-4o' };
+      // No default configured — return empty sentinel so callers show "no model selected" state
+      return { provider: '', model: '' };
+    } catch {
+      // Return empty sentinel instead of throwing to prevent UI errors
+      return { provider: '', model: '' };
     }
   }
 
@@ -109,7 +121,7 @@ export class ModelSelectionUtility {
    * Find default model in available models
    */
   static async findDefaultModelOption(
-    app: any,
+    app: App,
     availableModels: ModelOption[]
   ): Promise<ModelOption | null> {
     try {

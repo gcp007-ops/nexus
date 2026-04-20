@@ -4,18 +4,18 @@
 
 import { ConversationData } from '../../../types/chat/ChatTypes';
 import { ModelOption } from '../types/SelectionTypes';
-import { ContextUsage } from '../components/ContextProgressBar';
+import type { ContextUsage } from '../types/ContextTypes';
 import { ContextBudgetService, NormalizedTokenUsage } from '../../../services/chat/ContextBudgetService';
 
 export class TokenCalculator {
   /**
    * Get current context usage for a conversation and model
    */
-  static async getContextUsage(
+  static getContextUsage(
     selectedModel: ModelOption | null,
     currentConversation: ConversationData | null,
     currentSystemPrompt: string | null
-  ): Promise<ContextUsage> {
+  ): ContextUsage {
     try {
       if (!selectedModel || !currentConversation) {
         return { used: 0, total: 0, percentage: 0 };
@@ -109,7 +109,7 @@ export class TokenCalculator {
     currentUsage: ContextUsage,
     newMessage: string,
     systemPrompt?: string | null,
-    bufferPercentage: number = 10 // Leave 10% buffer
+    bufferPercentage = 10 // Leave 10% buffer
   ): boolean {
     const newMessageTokens = this.estimateMessageTokens(newMessage, systemPrompt);
     const projectedUsage = currentUsage.used + newMessageTokens;

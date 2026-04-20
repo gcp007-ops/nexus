@@ -6,9 +6,7 @@
  * Delegates token calculation to TokenCalculator utility.
  */
 
-import { ConversationData } from '../../../types/chat/ChatTypes';
-import { ModelOption } from '../types/SelectionTypes';
-import { ContextUsage } from '../components/ContextProgressBar';
+import type { ContextUsage } from '../types/ContextTypes';
 import { TokenCalculator } from '../utils/TokenCalculator';
 import type { ModelAgentManager } from './ModelAgentManager';
 import type { ConversationManager } from './ConversationManager';
@@ -27,7 +25,7 @@ export class ContextTracker {
     const conversation = this.conversationManager.getCurrentConversation();
     const selectedModel = await this.modelAgentManager.getSelectedModelOrDefault();
 
-    const usage = await TokenCalculator.getContextUsage(
+    const usage = TokenCalculator.getContextUsage(
       selectedModel,
       conversation,
       await this.modelAgentManager.getCurrentSystemPrompt()

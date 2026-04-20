@@ -8,7 +8,7 @@
  * - Auto-save on all changes
  */
 
-import { Notice, TextComponent, TextAreaComponent, ButtonComponent, Component } from 'obsidian';
+import { App, Modal, Notice, TextComponent, TextAreaComponent, ButtonComponent, Component } from 'obsidian';
 import { SettingsRouter } from '../SettingsRouter';
 import { BackButton } from '../components/BackButton';
 import { CustomPrompt } from '../../types/mcp/CustomPromptTypes';
@@ -23,6 +23,56 @@ export interface PromptsTabServices {
 
 type PromptsView = 'list' | 'detail';
 
+class PromptDeleteConfirmModal extends Modal {
+    private resolvePromise: ((confirmed: boolean) => void) | null = null;
+
+    constructor(app: App, private readonly promptName: string) {
+        super(app);
+    }
+
+    prompt(): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+            this.resolvePromise = resolve;
+            this.open();
+        });
+    }
+
+    onOpen(): void {
+        const { contentEl } = this;
+        contentEl.empty();
+
+        contentEl.createEl('h2', { text: 'Delete prompt' });
+        contentEl.createEl('p', {
+            text: `Delete prompt "${this.promptName}"? This cannot be undone.`,
+            cls: 'setting-item-description'
+        });
+
+        const actions = contentEl.createDiv('nexus-form-actions');
+        new ButtonComponent(actions)
+            .setButtonText('Cancel')
+            .onClick(() => this.close());
+
+        new ButtonComponent(actions)
+            .setButtonText('Delete prompt')
+            .setWarning()
+            .onClick(() => {
+                if (this.resolvePromise) {
+                    this.resolvePromise(true);
+                    this.resolvePromise = null;
+                }
+                this.close();
+            });
+    }
+
+    onClose(): void {
+        if (this.resolvePromise) {
+            this.resolvePromise(false);
+            this.resolvePromise = null;
+        }
+        this.contentEl.empty();
+    }
+}
+
 export class PromptsTab {
     private container: HTMLElement;
     private router: SettingsRouter;
@@ -30,7 +80,7 @@ export class PromptsTab {
     private prompts: CustomPrompt[] = [];
     private currentPrompt: Partial<CustomPrompt> | null = null;
     private currentView: PromptsView = 'list';
-    private isNewPrompt: boolean = false;
+    private isNewPrompt = false;
 
     // Auto-save debounce
     private saveTimeout?: ReturnType<typeof setTimeout>;
@@ -91,7 +141,7 @@ export class PromptsTab {
         this.container.empty();
 
         // Header
-        this.container.createEl('h3', { text: 'Custom Prompts' });
+        this.container.createEl('h3', { text: 'Custom prompts' });
         this.container.createEl('p', {
             text: 'Create specialized prompts with custom system instructions',
             cls: 'setting-item-description'
@@ -118,8 +168,8 @@ export class PromptsTab {
         this.searchableCardManager = new SearchableCardManager<CardItem>({
             containerEl: this.container,
             cardManagerConfig: {
-                title: 'Custom Prompts',
-                addButtonText: '+ New Prompt',
+                title: 'Custom prompts',
+                addButtonText: '+ New prompt',
                 emptyStateText: 'No custom prompts yet. Create one to get started.',
                 showToggle: true,
                 onAdd: () => this.createNewPrompt(),
@@ -133,26 +183,8 @@ export class PromptsTab {
                 onEdit: (item) => {
                     this.router.showDetail(item.id);
                 },
-                onDelete: async (item) => {
-                    const confirmed = confirm(`Delete prompt "${item.name}"? This cannot be undone.`);
-                    if (!confirmed) return;
-
-                    try {
-                        if (this.services.customPromptStorage) {
-                            await this.services.customPromptStorage.deletePrompt(item.id);
-                            this.prompts = this.prompts.filter(p => p.id !== item.id);
-                            this.searchableCardManager?.updateItems(this.prompts.map(p => ({
-                                id: p.id,
-                                name: p.name,
-                                description: p.description || 'No description',
-                                isEnabled: p.isEnabled
-                            })));
-                            new Notice('Prompt deleted');
-                        }
-                    } catch (error) {
-                        console.error('[PromptsTab] Failed to delete prompt:', error);
-                        new Notice('Failed to delete prompt');
-                    }
+                onDelete: (item) => {
+                    void this.deletePromptById(item.id, item.name);
                 }
             },
             items: cardItems,
@@ -183,7 +215,7 @@ export class PromptsTab {
             },
             this.services.component
         );
-        this.container.createEl('h3', { text: prompt.name || 'New Prompt' });
+        this.container.createEl('h3', { text: prompt.name || 'New prompt' });
 
         // Form container with modern stacked layout
         const form = this.container.createDiv('nexus-modern-form');
@@ -192,7 +224,7 @@ export class PromptsTab {
         const nameField = form.createDiv('nexus-form-field');
         nameField.createEl('label', { text: 'Name', cls: 'nexus-form-label' });
         const nameInput = new TextComponent(nameField);
-        nameInput.setPlaceholder('e.g., Code Reviewer');
+        nameInput.setPlaceholder('e.g., code reviewer');
         nameInput.setValue(prompt.name || '');
         nameInput.onChange((value) => {
             prompt.name = value;
@@ -207,7 +239,7 @@ export class PromptsTab {
             cls: 'nexus-form-hint'
         });
         const descInput = new TextAreaComponent(descField);
-        descInput.setPlaceholder('e.g., Reviews code for best practices and potential issues');
+        descInput.setPlaceholder('e.g., reviews code for best practices and potential issues');
         descInput.setValue(prompt.description || '');
         descInput.onChange((value) => {
             prompt.description = value;
@@ -216,7 +248,7 @@ export class PromptsTab {
 
         // System Prompt field
         const promptField = form.createDiv('nexus-form-field');
-        promptField.createEl('label', { text: 'System Prompt', cls: 'nexus-form-label' });
+        promptField.createEl('label', { text: 'System prompt', cls: 'nexus-form-label' });
         promptField.createEl('span', {
             text: 'Instructions that define this prompt\'s behavior and expertise',
             cls: 'nexus-form-hint'
@@ -238,22 +270,26 @@ export class PromptsTab {
         new ButtonComponent(actions)
             .setButtonText('Save')
             .setCta()
-            .onClick(async () => {
+            .onClick(() => {
                 // Cancel any pending debounced save to prevent double-save
                 if (this.saveTimeout) {
                     clearTimeout(this.saveTimeout);
                     this.saveTimeout = undefined;
                 }
-                await this.saveCurrentPrompt();
-                new Notice('Prompt saved');
-                this.router.back();
+                void (async () => {
+                    await this.saveCurrentPrompt();
+                    new Notice('Prompt saved');
+                    this.router.back();
+                })();
             });
 
         if (!this.isNewPrompt && prompt.id) {
             new ButtonComponent(actions)
                 .setButtonText('Delete')
                 .setWarning()
-                .onClick(() => this.deleteCurrentPrompt());
+                .onClick(() => {
+                    void this.deleteCurrentPrompt();
+                });
         }
     }
 
@@ -325,7 +361,7 @@ export class PromptsTab {
     private async deleteCurrentPrompt(): Promise<void> {
         if (!this.currentPrompt?.id || !this.services.customPromptStorage) return;
 
-        const confirmed = confirm(`Delete prompt "${this.currentPrompt.name}"? This cannot be undone.`);
+        const confirmed = await this.confirmDeletePrompt(this.currentPrompt.name || 'this prompt');
         if (!confirmed) return;
 
         try {
@@ -340,6 +376,38 @@ export class PromptsTab {
         }
     }
 
+    private async deletePromptById(promptId: string, promptName: string): Promise<void> {
+        if (!this.services.customPromptStorage) return;
+
+        const confirmed = await this.confirmDeletePrompt(promptName);
+        if (!confirmed) return;
+
+        try {
+            await this.services.customPromptStorage.deletePrompt(promptId);
+            this.prompts = this.prompts.filter(p => p.id !== promptId);
+            this.searchableCardManager?.updateItems(this.prompts.map(p => ({
+                id: p.id,
+                name: p.name,
+                description: p.description || 'No description',
+                isEnabled: p.isEnabled
+            })));
+            new Notice('Prompt deleted');
+        } catch (error) {
+            console.error('[PromptsTab] Failed to delete prompt:', error);
+            new Notice('Failed to delete prompt');
+        }
+    }
+
+    private async confirmDeletePrompt(promptName: string): Promise<boolean> {
+        const modalApp = (globalThis as typeof globalThis & { app?: App }).app;
+        if (!modalApp) {
+            return false;
+        }
+
+        const modal = new PromptDeleteConfirmModal(modalApp, promptName);
+        return modal.prompt();
+    }
+
     /**
      * Debounced auto-save
      */
@@ -349,7 +417,7 @@ export class PromptsTab {
         }
 
         this.saveTimeout = setTimeout(() => {
-            this.saveCurrentPrompt();
+            void this.saveCurrentPrompt();
         }, 500);
     }
 

@@ -11,11 +11,13 @@
  *             fuzzy searching, and result formatting following SOLID principles
  */
 
-import { Plugin } from 'obsidian';
+import { Plugin, TFile, TFolder } from 'obsidian';
 import { BaseTool } from '../../baseTool';
 import { getErrorMessage } from '../../../utils/errorUtils';
 import { CommonParameters } from '../../../types/mcp/AgentTypes';
 import { WorkspaceService, GLOBAL_WORKSPACE_ID } from '../../../services/WorkspaceService';
+import type { ToolStatusTense } from '../../interfaces/ITool';
+import { labelQuery, verbs } from '../../utils/toolStatusLabels';
 
 // Import refactored services
 import { DirectoryItemCollector } from '../services/DirectoryItemCollector';
@@ -88,6 +90,10 @@ export class SearchDirectoryTool extends BaseTool<SearchDirectoryParams, SearchD
     this.resultFormatter = new SearchResultFormatter(plugin.app);
   }
 
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    return labelQuery(verbs('Searching directory', 'Searched directory', 'Failed to search directory'), params, tense);
+  }
+
   async execute(params: SearchDirectoryParams): Promise<SearchDirectoryResult> {
     try {
       // Validate parameters
@@ -101,7 +107,7 @@ export class SearchDirectoryTool extends BaseTool<SearchDirectoryParams, SearchD
       const searchType = params.searchType || 'both';
 
       // Get items from specified directories using item collector
-      const items = await this.itemCollector.getDirectoryItems(
+      const items = this.itemCollector.getDirectoryItems(
         params.paths,
         searchType,
         params.depth
@@ -177,9 +183,9 @@ export class SearchDirectoryTool extends BaseTool<SearchDirectoryParams, SearchD
    * @returns Items (potentially boosted if workspace context available)
    */
   private async applyWorkspaceContext(
-    items: any[],
+    items: (TFile | TFolder)[],
     workspaceId?: string
-  ): Promise<any[]> {
+  ): Promise<(TFile | TFolder)[]> {
     if (!this.workspaceService || !workspaceId || workspaceId === GLOBAL_WORKSPACE_ID) {
       return items;
     }
@@ -194,12 +200,12 @@ export class SearchDirectoryTool extends BaseTool<SearchDirectoryParams, SearchD
       // This maintains the explicit directory paths while adding workspace awareness
       return items;
 
-    } catch (error) {
+    } catch {
       return items;
     }
   }
 
-  getParameterSchema() {
+  getParameterSchema(): Record<string, unknown> {
     const toolSchema = {
       type: 'object',
       title: 'Search Directory',
@@ -284,7 +290,7 @@ export class SearchDirectoryTool extends BaseTool<SearchDirectoryParams, SearchD
     return this.getMergedSchema(toolSchema);
   }
 
-  getResultSchema() {
+  getResultSchema(): Record<string, unknown> {
     return {
       type: 'object',
       properties: {

@@ -52,7 +52,7 @@ export class ImageFileManager {
     try {
       // Validate and sanitize the save path
       const sanitizedPath = this.sanitizePath(params.savePath);
-      const finalPath = await this.ensureUniqueFileName(sanitizedPath, imageResponse.format);
+      const finalPath = this.ensureUniqueFileName(sanitizedPath, imageResponse.format);
 
       // Ensure directory exists
       await this.ensureDirectoryExists(pathUtils.dirname(finalPath));
@@ -61,7 +61,7 @@ export class ImageFileManager {
       const arrayBuffer = new ArrayBuffer(imageResponse.imageData.length);
       const uint8Array = new Uint8Array(arrayBuffer);
       uint8Array.set(imageResponse.imageData);
-      const file = await this.vault.createBinary(finalPath, arrayBuffer);
+      await this.vault.createBinary(finalPath, arrayBuffer);
 
       return {
         success: true,
@@ -190,7 +190,7 @@ export class ImageFileManager {
   /**
    * Ensure filename is unique, append number if needed
    */
-  private async ensureUniqueFileName(filePath: string, format: string): Promise<string> {
+  private ensureUniqueFileName(filePath: string, format: string): string {
     let finalPath = filePath;
     let counter = 1;
 
@@ -232,7 +232,7 @@ export class ImageFileManager {
   /**
    * Check if file exists in vault
    */
-  async fileExists(filePath: string): Promise<boolean> {
+  fileExists(filePath: string): boolean {
     const file = this.vault.getAbstractFileByPath(filePath);
     return file instanceof TFile;
   }
@@ -283,7 +283,7 @@ export class ImageFileManager {
           fileSize: buffer.length
         }
       };
-    } catch (error) {
+    } catch {
       return null;
     }
   }

@@ -4,36 +4,38 @@
  * Properly extends Obsidian's Modal class for proper focus management
  */
 
-import { App, Modal, Setting } from 'obsidian';
+import { App, Component, Modal, Setting } from 'obsidian';
 
 export class ConversationTitleModal extends Modal {
   private result: string | null = null;
   private submitted = false;
   private inputEl: HTMLInputElement | null = null;
+  private modalEvents: Component | null = null;
 
   constructor(app: App, private onSubmit: (title: string | null) => void) {
     super(app);
   }
 
-  onOpen() {
+  onOpen(): void {
+    this.modalEvents = new Component();
     const { contentEl } = this;
     contentEl.addClass('chat-conversation-title-modal');
 
-    contentEl.createEl('h2', { text: 'New Conversation' });
+    contentEl.createEl('h2', { text: 'New conversation' });
     contentEl.createEl('p', { text: 'Enter a title for your new conversation:' });
 
     new Setting(contentEl)
-      .setName('Conversation Title')
+      .setName('Conversation title')
       .addText((text) => {
         this.inputEl = text.inputEl;
 
         text
-          .setPlaceholder('e.g., "Help with React project"')
+          .setPlaceholder('Chat title')
           .onChange((value) => {
             this.result = value;
           });
 
-        text.inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
+        this.modalEvents?.registerDomEvent(text.inputEl, 'keydown', (e: KeyboardEvent) => {
           if (e.key === 'Enter') {
             e.preventDefault();
             this.submit();
@@ -49,13 +51,13 @@ export class ConversationTitleModal extends Modal {
       text: 'Cancel',
       cls: 'mod-cancel'
     });
-    cancelBtn.addEventListener('click', () => this.close());
+    this.modalEvents.registerDomEvent(cancelBtn, 'click', () => this.close());
 
     const createBtn = buttonContainer.createEl('button', {
-      text: 'Create Chat',
+      text: 'Create chat',
       cls: 'mod-cta'
     });
-    createBtn.addEventListener('click', () => this.submit());
+    this.modalEvents.registerDomEvent(createBtn, 'click', () => this.submit());
 
     // Focus the input after modal is fully rendered
     setTimeout(() => {
@@ -81,12 +83,14 @@ export class ConversationTitleModal extends Modal {
     this.close();
   }
 
-  onClose() {
+  onClose(): void {
     // Release focus from modal elements before cleanup
     this.inputEl?.blur();
 
     const { contentEl } = this;
     contentEl.empty();
+    this.modalEvents?.unload();
+    this.modalEvents = null;
 
     // Call the callback with result (or null if cancelled)
     if (this.submitted && this.result?.trim()) {

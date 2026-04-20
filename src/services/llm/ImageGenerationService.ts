@@ -5,7 +5,6 @@
  */
 
 import { Vault } from 'obsidian';
-import { OpenAIImageAdapter } from './adapters/openai/OpenAIImageAdapter'; // Available but not used
 import { GeminiImageAdapter } from './adapters/google/GeminiImageAdapter';
 import { OpenRouterImageAdapter } from './adapters/openrouter/OpenRouterImageAdapter';
 import { ImageFileManager } from './ImageFileManager';
@@ -17,7 +16,7 @@ import {
   ImageGenerationError
 } from './types/ImageTypes';
 import { BaseImageAdapter } from './adapters/BaseImageAdapter';
-import { ModelInfo } from './adapters/types';
+import { ModelInfo, ProviderCapabilities } from './adapters/types';
 import { LLMProviderSettings } from '../../types/llm/ProviderTypes';
 
 export class ImageGenerationService {
@@ -98,7 +97,7 @@ export class ImageGenerationService {
       }
 
       // Check if adapter is available for image generation
-      const isAvailable = await adapter.isImageGenerationAvailable();
+      const isAvailable = adapter.isImageGenerationAvailable();
       if (!isAvailable) {
         return {
           success: false,
@@ -156,7 +155,7 @@ export class ImageGenerationService {
   /**
    * Validate image generation parameters across all providers
    */
-  async validateParams(params: ImageGenerationParams): Promise<ImageValidationResult> {
+  validateParams(params: ImageGenerationParams): ImageValidationResult {
     try {
       const adapter = this.getAdapter(params.provider);
       if (!adapter) {
@@ -178,12 +177,12 @@ export class ImageGenerationService {
   /**
    * Get available providers with their status
    */
-  async getAvailableProviders(): Promise<Array<{
+  getAvailableProviders(): Array<{
     provider: ImageProvider;
     available: boolean;
     models: string[];
     error?: string;
-  }>> {
+  }> {
     const providers: Array<{
       provider: ImageProvider;
       available: boolean;
@@ -193,7 +192,7 @@ export class ImageGenerationService {
 
     for (const [providerName, adapter] of this.adapters) {
       try {
-        const available = await adapter.isImageGenerationAvailable();
+        const available = adapter.isImageGenerationAvailable();
         const models = available ? adapter.supportedModels : [];
         
         providers.push({
@@ -231,16 +230,16 @@ export class ImageGenerationService {
   /**
    * Get supported models for a provider
    */
-  async getSupportedModels(provider: ImageProvider): Promise<string[]> {
+  getSupportedModels(provider: ImageProvider): string[] {
     const adapter = this.getAdapter(provider);
     if (!adapter) {
       return [];
     }
 
     try {
-      const available = await adapter.isImageGenerationAvailable();
+      const available = adapter.isImageGenerationAvailable();
       return available ? adapter.supportedModels : [];
-    } catch (error) {
+    } catch {
       return [];
     }
   }
@@ -280,7 +279,7 @@ export class ImageGenerationService {
   /**
    * Get provider capabilities
    */
-  async getProviderCapabilities(provider: ImageProvider) {
+  getProviderCapabilities(provider: ImageProvider): ProviderCapabilities | null {
     const adapter = this.getAdapter(provider);
     if (!adapter) {
       return null;
@@ -288,7 +287,7 @@ export class ImageGenerationService {
 
     try {
       return adapter.getImageCapabilities();
-    } catch (error) {
+    } catch {
       return null;
     }
   }
@@ -319,7 +318,7 @@ export class ImageGenerationService {
         currency: pricing.currency,
         breakdown: `1 image using ${model}: ${pricing.totalCost} ${pricing.currency}`
       };
-    } catch (error) {
+    } catch {
       return null;
     }
   }

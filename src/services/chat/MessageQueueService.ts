@@ -10,14 +10,14 @@
  * Follows Single Responsibility Principle - only handles message queuing.
  */
 
-import { EventEmitter } from 'events';
+import { Events } from 'obsidian';
 import type { QueuedMessage, MessageQueueEvents } from '../../types/branch/BranchTypes';
 
-export interface MessageQueueServiceEvents extends MessageQueueEvents {}
+export type MessageQueueServiceEvents = MessageQueueEvents
 
-export class MessageQueueService extends EventEmitter {
+export class MessageQueueService extends Events {
   private queue: QueuedMessage[] = [];
-  private isGenerating: boolean = false;
+  private isGenerating = false;
   private processMessageFn: ((message: QueuedMessage) => Promise<void>) | null = null;
 
   constructor() {
@@ -47,7 +47,7 @@ export class MessageQueueService extends EventEmitter {
   async enqueue(message: QueuedMessage): Promise<void> {
     if (this.isGenerating) {
       this.addToQueue(message);
-      this.emit('message:queued', { count: this.queue.length, message });
+      this.trigger('message:queued', { count: this.queue.length, message });
     } else {
       await this.processMessage(message);
     }
@@ -103,12 +103,16 @@ export class MessageQueueService extends EventEmitter {
    */
   private async processQueue(): Promise<void> {
     while (this.queue.length > 0 && !this.isGenerating) {
-      const message = this.queue.shift()!;
+      const message = this.queue.shift();
+      if (!message) {
+        break;
+      }
+
       await this.processMessage(message);
     }
 
     if (this.queue.length === 0) {
-      this.emit('queue:empty');
+      this.trigger('queue:empty');
     }
   }
 
@@ -120,7 +124,7 @@ export class MessageQueueService extends EventEmitter {
       return;
     }
 
-    this.emit('message:processing', { message });
+    this.trigger('message:processing', { message });
 
     try {
       await this.processMessageFn(message);
@@ -155,7 +159,7 @@ export class MessageQueueService extends EventEmitter {
    */
   clearQueue(): void {
     this.queue = [];
-    this.emit('queue:empty');
+    this.trigger('queue:empty');
   }
 
   /**
@@ -190,6 +194,6 @@ export class MessageQueueService extends EventEmitter {
   destroy(): void {
     this.clearQueue();
     this.processMessageFn = null;
-    this.removeAllListeners();
+    // Obsidian's Events doesn't have removeAllListeners — handled by GC after clearQueue()
   }
 }

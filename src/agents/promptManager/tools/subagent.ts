@@ -10,6 +10,8 @@
  */
 
 import { BaseTool } from '../../baseTool';
+import { ToolStatusTense } from '../../interfaces/ITool';
+import { verbs, labelNamed } from '../../utils/toolStatusLabels';
 import { getCommonResultSchema, createResult } from '../../../utils/schemaUtils';
 import { CommonParameters, CommonResult } from '../../../types';
 import type { SubagentExecutor } from '../../../services/chat/SubagentExecutor';
@@ -56,7 +58,7 @@ export interface SubagentToolContext {
   agentPrompt?: string;  // Custom agent's full system prompt
   agentName?: string;    // Custom agent name for reference
   // Inherited workspace settings
-  workspaceData?: any;   // Full comprehensive workspace data (sessions, states, files, etc.)
+  workspaceData?: Record<string, unknown>;   // Full comprehensive workspace data (sessions, states, files, etc.)
   // Inherited context notes (file paths - subagent will read content)
   contextNotes?: string[];
   // Inherited thinking settings
@@ -239,6 +241,11 @@ To continue a subagent that hit max iterations, provide continueBranchId.`,
     };
 
     return this.getMergedSchema(toolSchema);
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    const v = verbs('Spawning subagent', 'Spawned subagent', 'Failed to spawn subagent');
+    return labelNamed(v, params, tense, ['task']);
   }
 
   getResultSchema(): Record<string, unknown> {

@@ -30,7 +30,7 @@ import { ServiceContainer, IServiceContainer, ServiceFactory, LazyFactory, IServ
 // All service management now handled through ServiceContainer - no external dependencies needed
 
 // Core interfaces for unified service management
-export interface IServiceDescriptor<T = any> {
+export interface IServiceDescriptor<T = unknown> {
     name: string;
     dependencies?: string[];
     stage?: ServiceStage;
@@ -40,7 +40,7 @@ export interface IServiceDescriptor<T = any> {
 
 export interface IServiceManager {
     // Registration methods - unified interface
-    registerService<T>(descriptor: IServiceDescriptor<T>): Promise<void>;
+    registerService<T>(descriptor: IServiceDescriptor<T>): void;
     registerFactory<T>(name: string, factory: ServiceFactory<T>, options?: ServiceRegistrationOptions): void;
     registerLazy<T>(name: string, factory: LazyFactory<T>): void;
     registerServiceFactory<T>(name: string, factory: IServiceFactory<T>): void;
@@ -62,8 +62,8 @@ export interface IServiceManager {
     
     // Lifecycle operations
     start(): Promise<void>;
-    stop(): Promise<void>;
-    cleanup(): Promise<void>;
+    stop(): void;
+    cleanup(): void;
 }
 
 export interface ServiceRegistrationOptions {
@@ -122,7 +122,7 @@ export class ServiceManager implements IServiceManager {
      * Register service using unified descriptor interface
      * Supports all existing registration patterns through a single interface
      */
-    async registerService<T>(descriptor: IServiceDescriptor<T>): Promise<void> {
+    registerService<T>(descriptor: IServiceDescriptor<T>): void {
         const stage = descriptor.stage || ServiceStage.BACKGROUND;
         const singleton = descriptor.singleton !== false; // Default to singleton
         
@@ -132,7 +132,7 @@ export class ServiceManager implements IServiceManager {
         // Register with ServiceContainer using factory pattern
         this.container.register<T>(
             descriptor.name,
-            async (dependencies: Record<string, unknown>) => {
+            async (_dependencies: Record<string, unknown>) => {
                 // Resolve dependencies if needed
                 if (descriptor.dependencies && descriptor.dependencies.length > 0) {
                     const resolvedDeps: Record<string, unknown> = {};
@@ -261,7 +261,6 @@ export class ServiceManager implements IServiceManager {
             return;
         }
 
-        const stageStartTime = Date.now();
         // Initializing services for stage
         
         // Initialize services in parallel within stage, but respect dependencies
@@ -277,7 +276,6 @@ export class ServiceManager implements IServiceManager {
         
         await Promise.all(initPromises);
         
-        const stageDuration = Date.now() - stageStartTime;
         // Stage initialization completed
     }
 
@@ -345,7 +343,7 @@ export class ServiceManager implements IServiceManager {
     /**
      * Stop the service manager
      */
-    async stop(): Promise<void> {
+    stop(): void {
         if (!this.isStarted) {
             return;
         }
@@ -353,7 +351,7 @@ export class ServiceManager implements IServiceManager {
         // Service manager stopping
         
         // Stop services in reverse dependency order
-        await this.cleanup();
+        this.cleanup();
         
         this.isStarted = false;
     }
@@ -361,7 +359,7 @@ export class ServiceManager implements IServiceManager {
     /**
      * Cleanup all services
      */
-    async cleanup(): Promise<void> {
+    cleanup(): void {
         try {
             // Container handles cleanup in proper dependency order
             this.container.clear();
@@ -431,7 +429,7 @@ export class ServiceManager implements IServiceManager {
     /**
      * Get container statistics
      */
-    getStats() {
+    getStats(): { registered: number; ready: number; failed: number } {
         return this.container.getStats();
     }
 

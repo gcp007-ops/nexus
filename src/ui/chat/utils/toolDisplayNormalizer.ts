@@ -1,4 +1,5 @@
 import { getToolNameMetadata, normalizeToolName } from '../../../utils/toolNameUtils';
+import { parseCliForDisplay } from '../../../agents/toolManager/services/ToolCliNormalizer';
 import { formatToolDisplayLabel, formatToolGroupHeader, formatToolStepLabel } from './toolDisplayFormatter';
 
 export type ToolDisplayStatus = 'pending' | 'streaming' | 'queued' | 'executing' | 'completed' | 'failed' | 'skipped';
@@ -44,7 +45,7 @@ interface ToolCallLike {
   batchId?: string;
   callIndex?: number;
   totalCalls?: number;
-  strategy?: 'serial' | 'parallel' | string;
+  strategy?: string;
   parametersComplete?: boolean;
   name?: string;
   displayName?: string;
@@ -54,7 +55,7 @@ interface ToolCallLike {
   result?: unknown;
   error?: string;
   success?: boolean;
-  status?: ToolDisplayStatus | string;
+  status?: string;
   isVirtual?: boolean;
   function?: {
     name?: string;
@@ -78,6 +79,7 @@ interface UseToolResultLike {
     results?: Array<{
       agent?: string;
       tool?: string;
+      params?: Record<string, unknown>;
       success?: boolean;
       error?: string;
       data?: unknown;
@@ -165,7 +167,7 @@ function normalizeUseToolParams(toolCall: ToolCallLike): Record<string, unknown>
   return isRecord(parsed) ? parsed : {};
 }
 
-function normalizeUseToolResults(result: UseToolResultLike | undefined): Array<{ agent?: string; tool?: string; success?: boolean; error?: string; data?: unknown }> {
+function normalizeUseToolResults(result: UseToolResultLike | undefined): Array<{ agent?: string; tool?: string; params?: Record<string, unknown>; success?: boolean; error?: string; data?: unknown }> {
   return result?.data?.results || [];
 }
 
@@ -185,13 +187,6 @@ function getInnerCallTechnicalName(
 
 function cloneStep(step: ToolDisplayStep): ToolDisplayStep {
   return { ...step };
-}
-
-function cloneGroup(group: ToolDisplayGroup): ToolDisplayGroup {
-  return {
-    ...group,
-    steps: group.steps.map(step => cloneStep(step))
-  };
 }
 
 function getBatchId(toolCall: ToolCallLike): string | undefined {
@@ -498,14 +493,27 @@ function buildUseToolGroup(toolCall: ToolCallLike): ToolDisplayGroup {
   const technicalName = normalizeTechnicalName(toolCall);
   const params = normalizeUseToolParams(toolCall);
   const strategy = params.strategy === 'parallel' ? 'parallel' : 'serial';
-  const calls = Array.isArray(params.calls) ? params.calls : [];
+  // New CLI contract: params.tool is a comma-separated command string.
+  // Legacy contract (WebLLM/Nexus, pre-refactor conversations): params.calls[].
+  const legacyCalls: UseToolCallLike[] = Array.isArray(params.calls)
+    ? params.calls.filter(isRecord)
+    : [];
+  const calls: UseToolCallLike[] = legacyCalls.length > 0
+    ? legacyCalls
+    : typeof params.tool === 'string'
+      ? parseCliForDisplay(params.tool).map(segment => ({
+          agent: segment.agent,
+          tool: segment.tool,
+          parameters: segment.parameters
+        }))
+      : [];
   let results = normalizeUseToolResults(toolCall.result as UseToolResultLike | undefined);
-  const rawStatus = (toolCall.status as ToolDisplayStatus | string | undefined) || '';
+  const rawStatus = (toolCall.status) || '';
   const isCompleted = rawStatus === 'completed' || Boolean(toolCall.result && toolCall.success !== false);
   const isFailed = rawStatus === 'failed' || toolCall.success === false;
 
   if (results.length === 0 && calls.length === 1 && isRecord(toolCall.result)) {
-    const directResult = toolCall.result as Record<string, unknown>;
+    const directResult = toolCall.result;
     results = [{
       success: directResult.success !== false,
       error: typeof directResult.error === 'string' ? directResult.error : undefined,
@@ -517,7 +525,7 @@ function buildUseToolGroup(toolCall: ToolCallLike): ToolDisplayGroup {
 
   if (calls.length > 0) {
     for (let index = 0; index < calls.length; index += 1) {
-      const call = calls[index] as UseToolCallLike;
+      const call = calls[index];
       const result = results[index];
       const fullTechnicalName = getInnerCallTechnicalName(call, result) || technicalName;
       const paramsValue = parseParameterValue(call.params || call.parameters || {});
@@ -565,15 +573,18 @@ function buildUseToolGroup(toolCall: ToolCallLike): ToolDisplayGroup {
       const fallbackCall = Array.isArray(params.calls) ? params.calls[index] as UseToolCallLike | undefined : undefined;
       const fullTechnicalName = getInnerCallTechnicalName(fallbackCall, result) || technicalName;
       const metadata = getToolNameMetadata(fullTechnicalName);
+      const parameters = result.params;
       const status: ToolDisplayStatus = result.success === false ? 'failed' : 'completed';
       steps.push({
         id: `${toolCall.id || technicalName}_${index}`,
         displayName: formatToolDisplayLabel({
           technicalName: fullTechnicalName,
+          parameters,
           status,
           result: result.data
         }),
         technicalName: fullTechnicalName,
+        parameters,
         result: result.data,
         error: result.error,
         status,

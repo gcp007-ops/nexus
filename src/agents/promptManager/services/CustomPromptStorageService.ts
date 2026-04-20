@@ -2,16 +2,28 @@ import { CustomPrompt, CustomPromptsSettings, DEFAULT_CUSTOM_PROMPTS_SETTINGS } 
 import { Settings } from '../../../settings';
 import type { MigratableDatabase } from '../../../database/schema/SchemaMigrator';
 
+type DbRowValue = string | number | null;
+type DbRow = DbRowValue[];
+type DbResultSet = { values: DbRow[] };
+type RawDatabase = {
+    prepare(sql: string): {
+        bind(params?: DbRowValue[]): void;
+        step(): boolean;
+        get(params: DbRowValue[]): DbRow;
+        finalize(): void;
+    };
+};
+
 /**
  * Database-like wrapper that adapts raw sqlite db to MigratableDatabase interface
  * Adds query() method for parameterized SELECT queries
  */
 class DatabaseAdapter implements MigratableDatabase {
-    constructor(private rawDb: any) {}
+    constructor(private rawDb: RawDatabase) {}
 
-    exec(sql: string): { values: any[][] }[] {
+    exec(sql: string): DbResultSet[] {
         const stmt = this.rawDb.prepare(sql);
-        const results: any[][] = [];
+        const results: DbRow[] = [];
         while (stmt.step()) {
             results.push(stmt.get([]));
         }
@@ -19,7 +31,7 @@ class DatabaseAdapter implements MigratableDatabase {
         return results.length > 0 ? [{ values: results }] : [];
     }
 
-    run(sql: string, params?: any[]): void {
+    run(sql: string, params?: DbRowValue[]): void {
         const stmt = this.rawDb.prepare(sql);
         if (params?.length) {
             stmt.bind(params);
@@ -29,12 +41,12 @@ class DatabaseAdapter implements MigratableDatabase {
     }
 
     /** Query with parameters (extension of MigratableDatabase) */
-    query(sql: string, params?: any[]): { values: any[][] }[] {
+    query(sql: string, params?: DbRowValue[]): DbResultSet[] {
         const stmt = this.rawDb.prepare(sql);
         if (params?.length) {
             stmt.bind(params);
         }
-        const results: any[][] = [];
+        const results: DbRow[] = [];
         while (stmt.step()) {
             results.push(stmt.get([]));
         }
@@ -43,6 +55,8 @@ class DatabaseAdapter implements MigratableDatabase {
     }
 }
 
+type DatabaseInput = MigratableDatabase | { db?: RawDatabase } | null;
+
 /**
  * Service for managing custom prompt storage and persistence
  * Migrated to SQLite-based storage with data.json fallback for backward compatibility
@@ -50,11 +64,19 @@ class DatabaseAdapter implements MigratableDatabase {
 export class CustomPromptStorageService {
     private db: MigratableDatabase | null;
     private settings: Settings;
-    private migrated: boolean = false;
+    private migrated = false;
 
-    constructor(rawDb: any | null, settings: Settings) {
+    constructor(rawDb: DatabaseInput, settings: Settings) {
         // Wrap raw db in adapter if provided
-        this.db = rawDb && rawDb.db ? new DatabaseAdapter(rawDb.db) : null;
+        if (!rawDb) {
+            this.db = null;
+        } else if ('exec' in rawDb && 'run' in rawDb) {
+            this.db = rawDb;
+        } else if ('db' in rawDb && rawDb.db) {
+            this.db = new DatabaseAdapter(rawDb.db);
+        } else {
+            this.db = null;
+        }
         this.settings = settings;
         this.initialize();
     }
@@ -235,7 +257,7 @@ export class CustomPromptStorageService {
         const id = this.generatePromptId();
         const now = Date.now();
 
-        // Try SQLite first if available
+        // Best-effort SQLite write
         if (this.db && this.migrated) {
             try {
                 this.db.run(
@@ -252,17 +274,15 @@ export class CustomPromptStorageService {
                         now
                     ]
                 );
-
-                return { id, ...promptData };
             } catch (error) {
-                console.error('[CustomPromptStorageService] Error writing to SQLite, falling back to data.json:', error);
+                console.error('[CustomPromptStorageService] Error writing to SQLite:', error);
             }
         }
 
-        // Fallback to data.json
-        this.ensureCustomPromptsSettings();
+        // Always write to data.json (source of truth for cross-device sync)
+        const customPromptsSettings = this.ensureCustomPromptsSettings();
         const newPrompt: CustomPrompt = { id, ...promptData };
-        this.settings.settings.customPrompts!.prompts.push(newPrompt);
+        customPromptsSettings.prompts.push(newPrompt);
         await this.settings.saveSettings();
 
         return newPrompt;
@@ -277,11 +297,11 @@ export class CustomPromptStorageService {
     async updatePrompt(id: string, updates: Partial<Omit<CustomPrompt, 'id'>>): Promise<void> {
         const now = Date.now();
 
-        // Try SQLite first if available
+        // Best-effort SQLite write
         if (this.db && this.migrated) {
             try {
                 const fields: string[] = [];
-                const values: any[] = [];
+                const values: DbRowValue[] = [];
 
                 if (updates.name !== undefined) {
                     fields.push('name = ?');
@@ -308,16 +328,14 @@ export class CustomPromptStorageService {
                     `UPDATE custom_prompts SET ${fields.join(', ')} WHERE id = ?`,
                     values
                 );
-
-                return;
             } catch (error) {
-                console.error('[CustomPromptStorageService] Error updating in SQLite, falling back to data.json:', error);
+                console.error('[CustomPromptStorageService] Error updating in SQLite:', error);
             }
         }
 
-        // Fallback to data.json
+        // Always write to data.json (source of truth for cross-device sync)
         this.ensureCustomPromptsSettings();
-        const prompts = this.settings.settings.customPrompts!.prompts;
+        const prompts = this.getCustomPrompts();
         const index = prompts.findIndex(prompt => prompt.id === id);
 
         if (index === -1) {
@@ -341,19 +359,18 @@ export class CustomPromptStorageService {
      * @param id Prompt ID
      */
     async deletePrompt(id: string): Promise<void> {
-        // Try SQLite first if available
+        // Best-effort SQLite write
         if (this.db && this.migrated) {
             try {
                 this.db.run('DELETE FROM custom_prompts WHERE id = ?', [id]);
-                return;
             } catch (error) {
-                console.error('[CustomPromptStorageService] Error deleting from SQLite, falling back to data.json:', error);
+                console.error('[CustomPromptStorageService] Error deleting from SQLite:', error);
             }
         }
 
-        // Fallback to data.json
+        // Always write to data.json (source of truth for cross-device sync)
         this.ensureCustomPromptsSettings();
-        const prompts = this.settings.settings.customPrompts!.prompts;
+        const prompts = this.getCustomPrompts();
         const index = prompts.findIndex(prompt => prompt.id === id);
 
         if (index !== -1) {
@@ -383,8 +400,7 @@ export class CustomPromptStorageService {
      * @returns True if enabled
      */
     isEnabled(): boolean {
-        this.ensureCustomPromptsSettings();
-        return this.settings.settings.customPrompts?.enabled || false;
+        return this.ensureCustomPromptsSettings().enabled;
     }
 
     /**
@@ -392,18 +408,22 @@ export class CustomPromptStorageService {
      * @param enabled Whether to enable custom prompts
      */
     async setEnabled(enabled: boolean): Promise<void> {
-        this.ensureCustomPromptsSettings();
-        this.settings.settings.customPrompts!.enabled = enabled;
+        this.ensureCustomPromptsSettings().enabled = enabled;
         await this.settings.saveSettings();
     }
 
     /**
      * Ensure custom prompts settings exist with defaults
      */
-    private ensureCustomPromptsSettings(): void {
+    private ensureCustomPromptsSettings(): CustomPromptsSettings {
         if (!this.settings.settings.customPrompts) {
             this.settings.settings.customPrompts = { ...DEFAULT_CUSTOM_PROMPTS_SETTINGS };
         }
+        return this.settings.settings.customPrompts;
+    }
+
+    private getCustomPrompts(): CustomPrompt[] {
+        return this.ensureCustomPromptsSettings().prompts;
     }
 
     /**
@@ -411,6 +431,6 @@ export class CustomPromptStorageService {
      * @returns Unique string ID
      */
     private generatePromptId(): string {
-        return `prompt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        return `prompt_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     }
 }

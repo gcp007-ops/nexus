@@ -28,6 +28,12 @@ export interface WorkspacePromptInfo {
   systemPrompt: string;
 }
 
+interface PromptEntry {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
 /**
  * Legacy workspace context structure for backward compatibility
  * Extends the current WorkspaceContext with deprecated fields
@@ -45,10 +51,18 @@ interface LegacyWorkspaceContext extends WorkspaceContext {
  */
 export class WorkspacePromptResolver {
   private app: App;
-  private plugin: any;
+  private plugin: {
+    settings?: {
+      settings?: {
+        customPrompts?: {
+          prompts?: PromptEntry[];
+        };
+      };
+    };
+  } | null;
   private customPromptStorage?: CustomPromptStorageService;
 
-  constructor(app: App, plugin: any, customPromptStorage?: CustomPromptStorageService) {
+  constructor(app: App, plugin: WorkspacePromptResolver['plugin'], customPromptStorage?: CustomPromptStorageService) {
     this.app = app;
     this.plugin = plugin;
     this.customPromptStorage = customPromptStorage;
@@ -61,10 +75,10 @@ export class WorkspacePromptResolver {
    * @param app The Obsidian app instance
    * @returns Prompt info or null if not available
    */
-  async fetchWorkspacePrompt(
+  fetchWorkspacePrompt(
     workspace: ProjectWorkspace,
     app: App
-  ): Promise<WorkspacePromptInfo | null> {
+  ): WorkspacePromptInfo | null {
     try {
       // Check top-level dedicatedAgentId field first (new storage location)
       const workspaceWithId = workspace as ProjectWorkspace & { dedicatedAgentId?: string };
@@ -72,14 +86,14 @@ export class WorkspacePromptResolver {
 
       if (dedicatedAgentId) {
         // Use top-level dedicatedAgentId (name or ID)
-        return await this.fetchPromptByNameOrId(dedicatedAgentId, app);
+        return this.fetchPromptByNameOrId(dedicatedAgentId, app);
       }
 
       // DEPRECATED: Fall back to context.dedicatedAgent for backward compatibility
       // TODO(v5.0.0): Remove this fallback - migration v6 moves data to top-level dedicatedAgentId
       if (workspace.context?.dedicatedAgent) {
         const { agentId } = workspace.context.dedicatedAgent;
-        return await this.fetchPromptByNameOrId(agentId, app);
+        return this.fetchPromptByNameOrId(agentId, app);
       }
 
       // DEPRECATED: Fall back to legacy agents array for backward compatibility
@@ -89,7 +103,7 @@ export class WorkspacePromptResolver {
       if (legacyAgents && Array.isArray(legacyAgents) && legacyAgents.length > 0) {
         const legacyPromptRef = legacyAgents[0];
         if (legacyPromptRef && legacyPromptRef.name) {
-          return await this.fetchPromptByNameOrId(legacyPromptRef.name, app);
+          return this.fetchPromptByNameOrId(legacyPromptRef.name, app);
         }
       }
 
@@ -108,10 +122,10 @@ export class WorkspacePromptResolver {
    * @param app The Obsidian app instance (unused, kept for compatibility)
    * @returns Prompt info or null if not found
    */
-  async fetchPromptByNameOrId(
+  fetchPromptByNameOrId(
     identifier: string,
-    app: App
-  ): Promise<WorkspacePromptInfo | null> {
+    _app: App
+  ): WorkspacePromptInfo | null {
     try {
       // Primary: CustomPromptStorageService (SQLite -> internal fallback to data.json)
       if (this.customPromptStorage) {
@@ -129,11 +143,11 @@ export class WorkspacePromptResolver {
       const prompts = this.plugin?.settings?.settings?.customPrompts?.prompts || [];
 
       // Try ID lookup first (more specific)
-      let fallbackPrompt = prompts.find((p: any) => p.id === identifier);
+      let fallbackPrompt = prompts.find((p) => p.id === identifier);
 
       // Fall back to name lookup
       if (!fallbackPrompt) {
-        fallbackPrompt = prompts.find((p: any) => p.name === identifier);
+        fallbackPrompt = prompts.find((p) => p.name === identifier);
       }
 
       if (!fallbackPrompt) {

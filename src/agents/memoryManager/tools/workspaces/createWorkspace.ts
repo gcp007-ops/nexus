@@ -10,17 +10,24 @@ import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 
 import { App } from 'obsidian';
 import { BaseTool } from '../../../baseTool';
-import { MemoryManagerAgent } from '../../memoryManager'
+import { MemoryManagerAgent } from '../../memoryManager';
+import { labelNamed, verbs } from '../../../utils/toolStatusLabels';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
 import { createServiceIntegration } from '../../services/ValidationService';
+import type { IndividualWorkspace } from '../../../../types/storage/StorageTypes';
 
 // Import types from existing workspace mode
 import { 
     CreateWorkspaceParameters, 
     CreateWorkspaceResult
 } from '../../../../database/types/workspace/ParameterTypes';
-import { ProjectWorkspace, WorkspaceContext } from '../../../../database/types/workspace/WorkspaceTypes';
-import { WorkspaceService } from '../../../../services/WorkspaceService';
+import { WorkspaceContext } from '../../../../database/types/workspace/WorkspaceTypes';
 import { createErrorMessage } from '../../../../utils/errorUtils';
+
+interface WorkspaceServiceLike {
+    getWorkspaceByNameOrId(identifier: string): Promise<IndividualWorkspace | null>;
+    createWorkspace(workspace: Partial<IndividualWorkspace>): Promise<IndividualWorkspace>;
+}
 
 /**
  * Consolidated CreateWorkspaceMode - simplified from original
@@ -53,7 +60,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
                 return this.prepareResult(false, undefined, `Workspace service not available: ${serviceResult.error}`);
             }
             
-            const workspaceService = serviceResult.service;
+            const workspaceService = serviceResult.service as WorkspaceServiceLike;
             
             // Validate required fields
             if (!params.name) {
@@ -75,7 +82,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
                 if (!folder) {
                     await this.app.vault.createFolder(params.rootFolder);
                 }
-            } catch (folderError) {
+            } catch {
                 // Ignore folder creation errors
             }
             
@@ -85,7 +92,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
 
             // Combine provided key files with auto-detected ones
             const providedKeyFiles = params.keyFiles || [];
-            const autoDetectedKeyFiles = await this.detectSimpleKeyFiles(params.rootFolder);
+            const autoDetectedKeyFiles = this.detectSimpleKeyFiles(params.rootFolder);
             const allKeyFiles = [...new Set([...providedKeyFiles, ...autoDetectedKeyFiles])]; // Remove duplicates
 
             // Build workspace context (don't include dedicatedAgent object yet - will be resolved on load)
@@ -100,7 +107,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
 
             // Create workspace data
             const now = Date.now();
-            const workspaceData: Omit<ProjectWorkspace, 'id'> & { dedicatedAgentId?: string } = {
+            const workspaceData: Partial<IndividualWorkspace> & Record<string, unknown> = {
                 name: params.name,
                 context: context,
                 rootFolder: params.rootFolder,
@@ -108,6 +115,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
                 lastAccessed: now,
                 description: params.description,
                 dedicatedAgentId: params.dedicatedAgentId, // Store ID or name as-is
+                sessions: {},
                 relatedFolders: params.relatedFolders || [],
                 relatedFiles: params.relatedFiles || [],
                 associatedNotes: [],
@@ -130,7 +138,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
                 if (existing) {
                     return this.prepareResult(false, undefined, `Workspace "${params.name}" already exists. Use listWorkspaces to see existing workspaces.`);
                 }
-            } catch (error) {
+            } catch {
                 // Ignore lookup errors
             }
 
@@ -148,7 +156,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
     /**
      * Auto-detect key files in workspace folder (simple array format)
      */
-    private async detectSimpleKeyFiles(rootFolder: string): Promise<string[]> {
+    private detectSimpleKeyFiles(rootFolder: string): string[] {
         try {
             const detectedFiles: string[] = [];
 
@@ -168,7 +176,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
                             if ('cachedData' in child && child.cachedData?.frontmatter?.key === true) {
                                 detectedFiles.push(child.path);
                             }
-                        } catch (error) {
+                        } catch {
                             // Ignore frontmatter parsing errors
                         }
                     }
@@ -177,9 +185,13 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
 
             return detectedFiles;
 
-        } catch (error) {
+        } catch {
             return [];
         }
+    }
+
+    getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+        return labelNamed(verbs('Creating workspace', 'Created workspace', 'Failed to create workspace'), params, tense, ['name']);
     }
 
     getParameterSchema(): JSONSchema {

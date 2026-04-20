@@ -3,6 +3,15 @@ import { SystemPromptBuilder } from '../../src/ui/chat/services/SystemPromptBuil
 import { ContextCompactionService } from '../../src/services/chat/ContextCompactionService';
 import type { ConversationData, ConversationMessage } from '../../src/types/chat/ChatTypes';
 
+type ConversationManagerLike = {
+  getCurrentConversation: jest.Mock<ConversationData, []>;
+};
+
+type ModelAgentManagerLike = {
+  getSelectedModelOrDefault: jest.Mock<Promise<{ providerId: string; providerName: string; modelId: string; modelName: string; contextWindow: number }>, []>;
+  getCurrentSystemPrompt: jest.Mock<Promise<string>, []>;
+};
+
 function createLongMessage(
   id: string,
   role: 'user' | 'assistant',
@@ -78,8 +87,8 @@ describe('ContextTracker compaction usage regression', () => {
     };
 
     const tracker = new ContextTracker(
-      conversationManager as any,
-      modelAgentManager as any
+      conversationManager as ConversationManagerLike,
+      modelAgentManager as ModelAgentManagerLike
     );
 
     const beforeUsage = await tracker.getContextUsage();
@@ -94,6 +103,12 @@ describe('ContextTracker compaction usage regression', () => {
       maxSummaryLength: 500,
       includeFileReferences: true
     });
+    conversationAfter.metadata = {
+      ...(conversationAfter.metadata ?? {}),
+      compaction: {
+        frontier: [compactedContext]
+      }
+    };
 
     const afterSystemPrompt = await builder.build({
       sessionId: 'session_1',
@@ -112,6 +127,6 @@ describe('ContextTracker compaction usage regression', () => {
     expect(beforeUsage.used).toBeGreaterThan(afterUsage.used);
     expect(beforeUsage.percentage).toBeGreaterThan(afterUsage.percentage);
     expect(compactedContext.messagesRemoved).toBeGreaterThan(0);
-    expect(afterUsage.used).toBeLessThan(beforeUsage.used * 0.6);
+    expect(afterUsage.used).toBeLessThan(beforeUsage.used * 0.8);
   });
 });

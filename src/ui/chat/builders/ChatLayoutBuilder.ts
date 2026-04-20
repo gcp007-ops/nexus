@@ -13,12 +13,12 @@
  * following the Builder pattern for complex UI construction.
  */
 
-import { setIcon } from 'obsidian';
+import { Component, setIcon } from 'obsidian';
 
 export interface ChatLayoutElements {
   messageContainer: HTMLElement;
   inputContainer: HTMLElement;
-  contextContainer: HTMLElement;
+  toolStatusBarContainer: HTMLElement;
   conversationListContainer: HTMLElement;
   newChatButton: HTMLElement;
   settingsButton: HTMLElement;
@@ -28,13 +28,14 @@ export interface ChatLayoutElements {
   sidebarContainer: HTMLElement;
   loadingOverlay: HTMLElement;
   branchHeaderContainer: HTMLElement;
+  searchInput: HTMLInputElement;
 }
 
 export class ChatLayoutBuilder {
   /**
    * Build the complete chat interface layout
    */
-  static buildLayout(container: HTMLElement): ChatLayoutElements {
+  static buildLayout(container: HTMLElement, component: Component): ChatLayoutElements {
     container.empty();
     container.addClass('chat-view-container');
 
@@ -43,7 +44,7 @@ export class ChatLayoutBuilder {
     const mainContainer = chatLayout.createDiv('chat-main');
 
     // Experimental warning banner
-    this.createWarningBanner(mainContainer);
+    this.createWarningBanner(mainContainer, component);
 
     // Header
     const { chatTitle, hamburgerButton, settingsButton } = this.createHeader(mainContainer);
@@ -54,20 +55,20 @@ export class ChatLayoutBuilder {
 
     // Main content areas
     const messageContainer = mainContainer.createDiv('message-display-container');
+    const toolStatusBarContainer = mainContainer.createDiv('tool-status-bar-container');
     const inputContainer = mainContainer.createDiv('chat-input-container');
-    const contextContainer = mainContainer.createDiv('chat-context-container');
 
     // Nexus model loading overlay (hidden by default)
     const loadingOverlay = this.createLoadingOverlay(mainContainer);
 
     // Backdrop and sidebar
     const backdrop = chatLayout.createDiv('chat-backdrop');
-    const { sidebarContainer, conversationListContainer, newChatButton } = this.createSidebar(chatLayout);
+    const { sidebarContainer, conversationListContainer, newChatButton, searchInput } = this.createSidebar(chatLayout);
 
     return {
       messageContainer,
       inputContainer,
-      contextContainer,
+      toolStatusBarContainer,
       conversationListContainer,
       newChatButton,
       settingsButton,
@@ -76,7 +77,8 @@ export class ChatLayoutBuilder {
       backdrop,
       sidebarContainer,
       loadingOverlay,
-      branchHeaderContainer
+      branchHeaderContainer,
+      searchInput
     };
   }
 
@@ -96,16 +98,16 @@ export class ChatLayoutBuilder {
       attr: { cx: '25', cy: '25', r: '20', fill: 'none', stroke: 'currentColor', 'stroke-width': '4', 'stroke-linecap': 'round' }
     });
     // Add animations via DOM
-    const animate1 = circle.createSvg('animate', {
+    circle.createSvg('animate', {
       attr: { attributeName: 'stroke-dasharray', values: '1,150;90,150;90,150', dur: '1.5s', repeatCount: 'indefinite' }
     });
-    const animate2 = circle.createSvg('animate', {
+    circle.createSvg('animate', {
       attr: { attributeName: 'stroke-dashoffset', values: '0;-35;-125', dur: '1.5s', repeatCount: 'indefinite' }
     });
 
     // Status text
     const statusText = content.createDiv('nexus-loading-status');
-    statusText.textContent = 'Loading Nexus model...';
+    statusText.textContent = 'Loading model...';
     statusText.dataset.statusEl = 'true';
 
     // Progress bar
@@ -125,24 +127,41 @@ export class ChatLayoutBuilder {
   /**
    * Create experimental warning banner with auto-hide
    */
-  private static createWarningBanner(container: HTMLElement): void {
+  private static createWarningBanner(container: HTMLElement, component: Component): void {
     const warningBanner = container.createDiv('chat-experimental-warning');
 
     warningBanner.createEl('span', { cls: 'warning-icon', text: '⚠️' });
-    warningBanner.createEl('span', { cls: 'warning-text', text: 'Experimental Feature: Nexus Chat is in beta.' });
+    warningBanner.createEl('span', { cls: 'warning-text', text: 'This chat is in beta.' });
     const link = warningBanner.createEl('a', { cls: 'warning-link', text: 'Report issues' });
     link.href = 'https://github.com/ProfSynapse/nexus/issues';
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
-    warningBanner.createEl('span', { cls: 'warning-text', text: '• Use at your own risk' });
+    warningBanner.createEl('span', { cls: 'warning-text', text: 'Use at your own risk.' });
 
-    // Auto-hide warning after 5 seconds
-    setTimeout(() => {
+    // Auto-hide warning after 5 seconds — guard against detached DOM
+    let fadeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    const hideTimer = setTimeout(() => {
+      if (!warningBanner.isConnected) return;
       warningBanner.addClass('chat-warning-banner-fadeout');
-      setTimeout(() => {
+      fadeoutTimer = setTimeout(() => {
+        if (!warningBanner.isConnected) return;
         warningBanner.addClass('chat-loading-overlay-hidden');
+        fadeoutTimer = null;
       }, 500);
     }, 5000);
+
+    // Clear timers if the banner is removed early (e.g., view closed)
+    const observer = new MutationObserver(() => {
+      if (!warningBanner.isConnected) {
+        clearTimeout(hideTimer);
+        if (fadeoutTimer) clearTimeout(fadeoutTimer);
+        observer.disconnect();
+      }
+    });
+    if (warningBanner.parentElement) {
+      observer.observe(warningBanner.parentElement, { childList: true });
+    }
+    component.register(() => observer.disconnect());
   }
 
   /**
@@ -161,7 +180,7 @@ export class ChatLayoutBuilder {
 
     // Center: Title
     const chatTitle = chatHeader.createDiv('chat-title');
-    chatTitle.textContent = 'Nexus Chat';
+    chatTitle.textContent = 'Chat';
 
     // Right: Settings gear icon
     const settingsButton = chatHeader.createEl('button', { cls: 'chat-settings-button' });
@@ -172,12 +191,13 @@ export class ChatLayoutBuilder {
   }
 
   /**
-   * Create sidebar with conversation list
+   * Create sidebar with conversation list and search input
    */
   private static createSidebar(container: HTMLElement): {
     sidebarContainer: HTMLElement;
     conversationListContainer: HTMLElement;
     newChatButton: HTMLElement;
+    searchInput: HTMLInputElement;
   } {
     const sidebarContainer = container.createDiv('chat-sidebar');
     sidebarContainer.addClass('chat-sidebar-hidden');
@@ -186,11 +206,22 @@ export class ChatLayoutBuilder {
     sidebarHeader.createEl('h3', { text: 'Conversations' });
     const newChatButton = sidebarHeader.createEl('button', {
       cls: 'chat-new-button',
-      text: '+ New Chat'
+      text: 'New chat'
+    });
+
+    // Search input between header and list
+    const searchContainer = sidebarContainer.createDiv('conversation-search-container');
+    const searchInput = searchContainer.createEl('input', {
+      cls: 'conversation-search-input',
+      attr: {
+        type: 'text',
+        placeholder: 'Search by title...',
+        'aria-label': 'Search conversations by title',
+      }
     });
 
     const conversationListContainer = sidebarContainer.createDiv('conversation-list-container');
 
-    return { sidebarContainer, conversationListContainer, newChatButton };
+    return { sidebarContainer, conversationListContainer, newChatButton, searchInput };
   }
 }

@@ -1,6 +1,7 @@
 import { App, TFolder } from 'obsidian';
 import { BaseTool } from '../../baseTool';
 import { CommonParameters, CommonResult } from '../../../types';
+import { JSONSchema } from '../../../types/schema/JSONSchemaTypes';
 
 /**
  * Base class for directory listing operations
@@ -34,7 +35,7 @@ export abstract class BaseDirectoryTool<T extends CommonParameters, R extends Co
    * @returns TFolder instance
    * @throws Error if folder not found
    */
-  protected async getFolder(path: string): Promise<TFolder> {
+  protected getFolder(path: string): TFolder {
     const normalizedPath = this.normalizeDirectoryPath(path);
 
     // Handle root directory case
@@ -56,7 +57,7 @@ export abstract class BaseDirectoryTool<T extends CommonParameters, R extends Co
    * Get standardized directory path schema for JSON schema
    * @returns Schema object for directory path parameter
    */
-  protected getDirectoryPathSchema(): any {
+  protected getDirectoryPathSchema(): JSONSchema {
     return {
       type: 'string',
       description: 'Directory path (required). Use empty string (""), "/" or "." for root directory',

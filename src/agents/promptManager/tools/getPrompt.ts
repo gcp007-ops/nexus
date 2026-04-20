@@ -3,6 +3,9 @@ import { BaseTool } from '../../baseTool';
 import { GetPromptParams, GetPromptResult } from '../types';
 import { CustomPromptStorageService } from '../services/CustomPromptStorageService';
 import { getCommonResultSchema, createResult } from '../../../utils/schemaUtils';
+import { getErrorMessage } from '../../../utils/errorUtils';
+import { ToolStatusTense } from '../../interfaces/ITool';
+import { verbs, labelNamed } from '../../utils/toolStatusLabels';
 
 /**
  * Tool for getting a specific custom prompt for persona adoption
@@ -30,6 +33,7 @@ export class GetPromptTool extends BaseTool<GetPromptParams, GetPromptResult> {
    * @param params Tool parameters
    * @returns Promise that resolves with the prompt data
    */
+  // eslint-disable-next-line @typescript-eslint/require-await -- implements ITool.execute() async interface
   async execute(params: GetPromptParams): Promise<GetPromptResult> {
     try {
       const { id, name } = params;
@@ -72,7 +76,7 @@ To execute tasks: User must explicitly request promptManager_executePrompts`;
 
       return createResult<GetPromptResult>(true, resultWithMessage, undefined);
     } catch (error) {
-      return createResult<GetPromptResult>(false, null, `Failed to get prompt: ${error}`);
+      return createResult<GetPromptResult>(false, null, `Failed to get prompt: ${getErrorMessage(error)}`);
     }
   }
 
@@ -101,6 +105,11 @@ To execute tasks: User must explicitly request promptManager_executePrompts`;
     };
 
     return this.getMergedSchema(toolSchema);
+  }
+
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    const v = verbs('Getting prompt', 'Got prompt', 'Failed to get prompt');
+    return labelNamed(v, params, tense, ['name', 'id']);
   }
 
   /**

@@ -28,7 +28,6 @@ import {
   MAX_SHEET_COLUMNS,
   MAX_SHEET_ROWS
 } from './SpreadsheetExtractionService';
-import { transcribeAudio, TranscriptionServiceDeps } from './TranscriptionService';
 import {
   buildAudioNote,
   buildDocxNote,
@@ -36,12 +35,13 @@ import {
   buildPptxNote,
   buildSpreadsheetSheetNote
 } from './OutputNoteBuilder';
-import { getIngestionProvidersForKind } from './IngestModelCatalog';
+import { TranscriptionService } from '../../../../services/llm/TranscriptionService';
+import { getTranscriptionProviders, type TranscriptionProvider } from '../../../../services/llm/types/VoiceTypes';
 
 export interface PipelineDeps {
   vault: Vault;
   ocrDeps: OcrServiceDeps;
-  transcriptionDeps: TranscriptionServiceDeps;
+  transcriptionService: TranscriptionService;
 }
 
 interface NoteWrite {
@@ -118,7 +118,7 @@ export async function processFile(
     onProgress?.({ filePath, stage: 'extracting', progress: 100 });
   } else {
     onProgress?.({ filePath, stage: 'extracting', progress: 0 });
-    const result = processSpreadsheet(fileData, file.name, filePath);
+    const result = await processSpreadsheet(fileData, file.name, filePath);
     noteWrites = result.notes;
     if (result.warnings) warnings.push(...result.warnings);
     onProgress?.({ filePath, stage: 'extracting', progress: 100 });
@@ -132,7 +132,7 @@ export async function processFile(
     const existingFile = deps.vault.getFileByPath(normalizedOutput);
 
     if (existingFile) {
-      await deps.vault.modify(existingFile as TFile, noteWrite.content);
+      await deps.vault.modify(existingFile, noteWrite.content);
     } else {
       await deps.vault.create(normalizedOutput, noteWrite.content);
     }
@@ -232,12 +232,12 @@ async function processPptx(
 }
 
 /** Process an XLSX file */
-function processSpreadsheet(
+async function processSpreadsheet(
   fileData: ArrayBuffer,
   fileName: string,
   filePath: string
-): { notes: NoteWrite[]; warnings?: string[] } {
-  const sheets = extractSpreadsheetSheets(fileData);
+): Promise<{ notes: NoteWrite[]; warnings?: string[] }> {
+  const sheets = await extractSpreadsheetSheets(fileData);
   const validSheets: SpreadsheetSheetContent[] = [];
   const warnings: string[] = [];
 
@@ -269,6 +269,19 @@ function processSpreadsheet(
   };
 }
 
+/** Audio MIME types accepted by the transcription pipeline. */
+const SUPPORTED_AUDIO_MIME_TYPES = new Set([
+  'audio/mpeg',
+  'audio/wav',
+  'audio/mp4',
+  'audio/aac',
+  'audio/ogg',
+  'audio/opus',
+  'audio/flac',
+  'audio/webm',
+  'audio/x-ms-wma',
+]);
+
 /** Process an audio file (transcription) */
 async function processAudio(
   fileData: ArrayBuffer,
@@ -277,24 +290,37 @@ async function processAudio(
   request: IngestFileRequest,
   deps: PipelineDeps
 ): Promise<{ content: string; durationSeconds?: number }> {
+  if (!SUPPORTED_AUDIO_MIME_TYPES.has(mimeType)) {
+    throw new Error(
+      `Unsupported audio format "${mimeType}". ` +
+      `Supported: ${Array.from(SUPPORTED_AUDIO_MIME_TYPES).join(', ')}`
+    );
+  }
+
   const provider = request.transcriptionProvider;
   const model = request.transcriptionModel;
 
   if (!provider) {
     throw new Error(
       'Audio transcription requires a transcriptionProvider. ' +
-      `Supported: ${getIngestionProvidersForKind('transcription').join(', ')}`
+      `Supported: ${getTranscriptionProviders().join(', ')}`
     );
   }
 
-  const segments: TranscriptionSegment[] = await transcribeAudio(
-    fileData,
+  const transcription = await deps.transcriptionService.transcribe({
+    audioData: fileData,
     mimeType,
     fileName,
-    provider,
+    provider: provider as TranscriptionProvider,
     model,
-    deps.transcriptionDeps
-  );
+    requestWordTimestamps: true
+  });
+
+  const segments: TranscriptionSegment[] = transcription.segments.map(segment => ({
+    startSeconds: segment.startSeconds,
+    endSeconds: segment.endSeconds,
+    text: segment.text
+  }));
 
   const content = buildAudioNote(fileName, segments);
   const lastSegment = segments[segments.length - 1];

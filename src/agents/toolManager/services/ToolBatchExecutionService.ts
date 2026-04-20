@@ -1,7 +1,7 @@
 import { App } from 'obsidian';
 import { IAgent } from '../../interfaces/IAgent';
 import { CommonResult } from '../../../types';
-import { ToolCallParams, ToolCallResult, ToolContext, UseToolParams, UseToolResult } from '../types';
+import { NormalizedUseToolParams, ToolCallParams, ToolCallResult, ToolContext, UseToolResult } from '../types';
 import { getErrorMessage } from '../../../utils/errorUtils';
 import { getNexusPlugin } from '../../../utils/pluginLocator';
 import { WorkspaceService } from '../../../services/WorkspaceService';
@@ -64,7 +64,7 @@ export class ToolBatchExecutionService {
     private knownWorkspaces: ToolManagerWorkspaceInfo[] = []
   ) {}
 
-  async execute(params: UseToolParams, options: ToolBatchExecutionOptions = {}): Promise<UseToolResult> {
+  async execute(params: NormalizedUseToolParams, options: ToolBatchExecutionOptions = {}): Promise<UseToolResult> {
     try {
       const contextErrors = this.validateContext(params.context);
       if (contextErrors.length > 0) {
@@ -85,7 +85,7 @@ export class ToolBatchExecutionService {
       if (!params.calls || params.calls.length === 0) {
         return {
           success: false,
-          error: 'calls array is required. Structure: calls: [{ agent: "agentName", tool: "toolName", params: {...} }]'
+          error: 'No commands were parsed. Call getTools first, then provide one or more CLI-style commands in the top-level "tool" field.'
         };
       }
 
@@ -273,7 +273,8 @@ export class ToolBatchExecutionService {
     const { agent: agentName, tool: toolSlug } = call;
 
     const callWithAny = call as ToolCallParams & { parameters?: Record<string, unknown> };
-    const params = call.params || callWithAny.parameters || {};
+    const baseParams = call.params || callWithAny.parameters || {};
+    const params = this.applyContextDefaults(context, agentName, toolSlug, baseParams);
 
     if (!agentName) {
       const availableAgents = Array.from(this.agentRegistry.keys()).join(', ');
@@ -290,7 +291,7 @@ export class ToolBatchExecutionService {
         agent: agentName,
         tool: 'unknown',
         success: false,
-        error: `"tool" is required in each call. Use getTools({ request: { "${agentName}": [] } }) to see available tools for ${agentName}.`
+        error: `"tool" is required in each normalized call. Use getTools({ tool: "${agentName.replace(/Manager$/, '').toLowerCase()}" }) to inspect available commands for ${agentName}.`
       };
     }
 
@@ -301,7 +302,7 @@ export class ToolBatchExecutionService {
         agent: agentName,
         tool: toolSlug,
         success: false,
-        error: `Agent "${agentName}" not found. Available agents: ${availableAgents}. Use getTools({ request: { "agentName": [] } }) to see an agent's tools.`
+        error: `Agent "${agentName}" not found. Available agents: ${availableAgents}. Use getTools({ tool: "--help" }) to inspect available commands.`
       };
     }
 
@@ -322,6 +323,7 @@ export class ToolBatchExecutionService {
       const result: ToolCallResult = {
         agent: agentName,
         tool: toolSlug,
+        params,
         success: toolResult.success
       };
 
@@ -330,15 +332,16 @@ export class ToolBatchExecutionService {
       }
 
       if (toolResult.success) {
-        const {
-          success: _success,
-          error: _error,
-          data,
-          workspaceContext: _workspaceContext,
-          context: _context,
-          sessionId: _sessionId,
-          ...extra
-        } = toolResult as unknown as Record<string, unknown>;
+        const toolResultPayload = {
+          ...(toolResult as unknown as Record<string, unknown>)
+        };
+        delete toolResultPayload.success;
+        delete toolResultPayload.error;
+        delete toolResultPayload.workspaceContext;
+        delete toolResultPayload.context;
+        delete toolResultPayload.sessionId;
+
+        const { data, ...extra } = toolResultPayload;
 
         if (data !== undefined && data !== null) {
           result.data = data;
@@ -352,10 +355,41 @@ export class ToolBatchExecutionService {
       return {
         agent: agentName,
         tool: toolSlug,
+        params,
         success: false,
         error: `Error executing ${agentName}_${toolSlug}: ${getErrorMessage(error)}`
       };
     }
+  }
+
+  private applyContextDefaults(
+    context: ToolContext,
+    agentName: string | undefined,
+    toolSlug: string | undefined,
+    params: Record<string, unknown>
+  ): Record<string, unknown> {
+    const defaulted: Record<string, unknown> = {
+      ...params,
+      workspaceId: params.workspaceId || context.workspaceId
+    };
+
+    if (agentName === 'promptManager' && toolSlug === 'generateImage') {
+      return {
+        ...defaulted,
+        provider: params.provider || context.imageProvider,
+        model: params.model || context.imageModel
+      };
+    }
+
+    if (agentName === 'ingestManager' && toolSlug === 'ingest') {
+      return {
+        ...defaulted,
+        transcriptionProvider: params.transcriptionProvider || context.transcriptionProvider,
+        transcriptionModel: params.transcriptionModel || context.transcriptionModel
+      };
+    }
+
+    return defaulted;
   }
 
   private formatUseToolResult(results: ToolCallResult[]): UseToolResult {
@@ -364,17 +398,29 @@ export class ToolBatchExecutionService {
     const formatResult = (result: ToolCallResult): Record<string, unknown> => {
       if (result.success) {
         if (result.data !== undefined && typeof result.data === 'object' && result.data !== null && !Array.isArray(result.data)) {
-          return { success: true, ...(result.data as Record<string, unknown>) };
+          return {
+            agent: result.agent,
+            tool: result.tool,
+            success: true,
+            ...(result.params ? { params: result.params } : {}),
+            ...(result.data as Record<string, unknown>)
+          };
         }
 
         if (result.data !== undefined) {
-          return { success: true, data: result.data };
+          return { agent: result.agent, tool: result.tool, ...(result.params ? { params: result.params } : {}), success: true, data: result.data };
         }
 
-        return { success: true };
+        return { agent: result.agent, tool: result.tool, ...(result.params ? { params: result.params } : {}), success: true };
       }
 
-      return { success: false, error: result.error || 'Unknown error' };
+      return {
+        agent: result.agent,
+        tool: result.tool,
+        ...(result.params ? { params: result.params } : {}),
+        success: false,
+        error: result.error || 'Unknown error'
+      };
     };
 
     if (results.length === 1) {

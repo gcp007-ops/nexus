@@ -10,7 +10,6 @@ import {
   EditorSuggestContext,
   PromptSuggestionItem,
   PromptReference,
-  EnhancementType
 } from './base/SuggesterInterfaces';
 import { MessageEnhancer } from '../../services/MessageEnhancer';
 import { CustomPromptStorageService } from '../../../../agents/promptManager/services/CustomPromptStorageService';
@@ -51,9 +50,9 @@ export class PromptSuggester extends BaseSuggester<PromptSuggestionItem> {
    * @param context - Editor context with query
    * @returns Filtered and ranked prompt suggestions
    */
-  async getSuggestions(
+  getSuggestions(
     context: EditorSuggestContext
-  ): Promise<SuggestionItem<PromptSuggestionItem>[]> {
+  ): SuggestionItem<PromptSuggestionItem>[] {
 
     // Get enabled prompts only
     const prompts = this.promptStorage.getEnabledPrompts();
@@ -143,7 +142,7 @@ export class PromptSuggester extends BaseSuggester<PromptSuggestionItem> {
    */
   selectSuggestion(
     item: SuggestionItem<PromptSuggestionItem>,
-    evt: MouseEvent | KeyboardEvent
+    _evt: MouseEvent | KeyboardEvent
   ): void {
 
     // Access the context property from EditorSuggest base class

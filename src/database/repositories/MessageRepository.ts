@@ -18,10 +18,34 @@
  */
 
 import { BaseRepository, RepositoryDependencies } from './base/BaseRepository';
-import { IMessageRepository, CreateMessageData, UpdateMessageData } from './interfaces/IMessageRepository';
+import {
+  IMessageRepository,
+  CreateMessageData,
+  UpdateMessageData,
+  ToolCallMessageHistoryOptions
+} from './interfaces/IMessageRepository';
 import { MessageData, AlternativeMessage } from '../../types/storage/HybridStorageTypes';
 import { MessageEvent, MessageUpdatedEvent, MessageDeletedEvent, AlternativeMessageEvent } from '../interfaces/StorageEvents';
 import { PaginatedResult, PaginationParams } from '../../types/pagination/PaginationTypes';
+import { DatabaseRow, QueryParams } from './base/BaseRepository';
+
+interface MessageRow extends DatabaseRow {
+  id: string;
+  conversationId: string;
+  role: MessageData['role'];
+  content: string;
+  timestamp: number;
+  state?: MessageData['state'];
+  sequenceNumber: number;
+  toolCallsJson?: string | null;
+  toolCallId?: string | null;
+  reasoningContent?: string | null;
+  alternativesJson?: string | null;
+  activeAlternativeIndex?: number | null;
+  metadataJson?: string | null;
+}
+
+type MessageJSONValue = Record<string, unknown>;
 
 /**
  * Callback signature for message completion observers.
@@ -100,22 +124,22 @@ export class MessageRepository
   // Abstract method implementations
   // ============================================================================
 
-  protected rowToEntity(row: any): MessageData {
+  protected rowToEntity(row: MessageRow): MessageData {
     return this.rowToMessage(row);
   }
 
   async getById(id: string): Promise<MessageData | null> {
-    const row = await this.sqliteCache.queryOne<any>(
+    const row = await this.sqliteCache.queryOne<MessageRow>(
       `SELECT * FROM ${this.tableName} WHERE id = ?`,
       [id]
     );
     return row ? this.rowToMessage(row) : null;
   }
 
-  async getAll(options?: PaginationParams): Promise<PaginatedResult<MessageData>> {
+  getAll(options?: PaginationParams): Promise<PaginatedResult<MessageData>> {
     // Messages don't have a global getAll - they are per conversation
     // Return empty result - use getMessages instead
-    return {
+    return Promise.resolve({
       items: [],
       page: 0,
       pageSize: options?.pageSize ?? 50,
@@ -123,12 +147,12 @@ export class MessageRepository
       totalPages: 0,
       hasNextPage: false,
       hasPreviousPage: false
-    };
+    });
   }
 
-  async create(data: any): Promise<string> {
+  create(_data: unknown): Promise<string> {
     // Use addMessage with conversationId
-    throw new Error('Use addMessage(conversationId, data) instead');
+    return Promise.reject(new Error('Use addMessage(conversationId, data) instead'));
   }
 
   async delete(id: string): Promise<void> {
@@ -169,7 +193,7 @@ export class MessageRepository
     const totalItems = countResult?.count ?? 0;
 
     // Get data (ordered by sequence number)
-    const rows = await this.sqliteCache.query<any>(
+    const rows = await this.sqliteCache.query<MessageRow>(
       `SELECT * FROM ${this.tableName} WHERE conversationId = ?
        ORDER BY sequenceNumber ASC
        LIMIT ? OFFSET ?`,
@@ -184,6 +208,78 @@ export class MessageRepository
       totalPages: Math.ceil(totalItems / pageSize),
       hasNextPage: (page + 1) * pageSize < totalItems,
       hasPreviousPage: page > 0
+    };
+  }
+
+  /**
+   * Get conversation-wide tool call history using a sequence-number cursor.
+   *
+   * The cursor represents the oldest already-loaded tool-call message.
+   * When omitted, the newest page is returned. When present, older messages
+   * with sequenceNumber < cursor are returned.
+   */
+  async getToolCallMessagesForConversation(
+    conversationId: string,
+    options?: ToolCallMessageHistoryOptions
+  ): Promise<PaginatedResult<MessageData>> {
+    const pageSize = Math.max(1, Math.min(options?.pageSize ?? 50, 200));
+    const cursorSequenceNumber = this.parseSequenceCursor(options?.cursor);
+
+    const totalResult = await this.sqliteCache.queryOne<{ count: number }>(
+      `SELECT COUNT(*) as count
+       FROM ${this.tableName}
+       WHERE conversationId = ?
+         AND toolCallsJson IS NOT NULL
+         AND toolCallsJson != '[]'`,
+      [conversationId]
+    );
+    const totalItems = totalResult?.count ?? 0;
+
+    let newerItemCount = 0;
+    if (cursorSequenceNumber !== undefined) {
+      const newerResult = await this.sqliteCache.queryOne<{ count: number }>(
+        `SELECT COUNT(*) as count
+         FROM ${this.tableName}
+         WHERE conversationId = ?
+           AND toolCallsJson IS NOT NULL
+           AND toolCallsJson != '[]'
+           AND sequenceNumber >= ?`,
+        [conversationId, cursorSequenceNumber]
+      );
+      newerItemCount = newerResult?.count ?? 0;
+    }
+
+    const queryParams: QueryParams = [conversationId];
+    let cursorClause = '';
+    if (cursorSequenceNumber !== undefined) {
+      cursorClause = ' AND sequenceNumber < ?';
+      queryParams.push(cursorSequenceNumber);
+    }
+
+    const descendingRows = await this.sqliteCache.query<MessageRow>(
+      `SELECT *
+       FROM ${this.tableName}
+       WHERE conversationId = ?
+         AND toolCallsJson IS NOT NULL
+         AND toolCallsJson != '[]'${cursorClause}
+       ORDER BY sequenceNumber DESC
+       LIMIT ?`,
+      [...queryParams, pageSize]
+    );
+
+    const rows = descendingRows.reverse();
+    const consumedItems = newerItemCount + rows.length;
+    const olderRemaining = Math.max(0, totalItems - consumedItems);
+
+    return {
+      items: rows.map((row) => this.rowToMessage(row)),
+      page: cursorSequenceNumber === undefined ? 0 : Math.floor(newerItemCount / pageSize),
+      pageSize,
+      totalItems,
+      totalPages: Math.ceil(totalItems / pageSize),
+      hasNextPage: olderRemaining > 0,
+      hasPreviousPage: newerItemCount > 0,
+      nextCursor: olderRemaining > 0 && rows.length > 0 ? String(rows[0].sequenceNumber) : undefined
     };
   }
 
@@ -223,7 +319,7 @@ export class MessageRepository
     startSeq: number,
     endSeq: number
   ): Promise<MessageData[]> {
-    const rows = await this.sqliteCache.query<any>(
+    const rows = await this.sqliteCache.query<MessageRow>(
       `SELECT * FROM ${this.tableName}
        WHERE conversationId = ?
          AND sequenceNumber >= ?
@@ -335,26 +431,32 @@ export class MessageRepository
 
   /**
    * Update an existing message
-   * Only content, state, reasoning, and tool call data can be updated
+   * Only content, state, reasoning, and tool call data can be updated.
+   *
+   * Includes dirty-checking: if none of the supplied fields differ from
+   * the current stored values the write is skipped entirely, preventing
+   * O(N) redundant JSONL events when callers pass the full message array
+   * through ConversationService.updateConversation().
    */
   async update(messageId: string, data: UpdateMessageData): Promise<void> {
     try {
-      // Get message to find conversation ID
-      const message = await this.sqliteCache.queryOne<any>(
-        `SELECT conversationId FROM ${this.tableName} WHERE id = ?`,
-        [messageId]
-      );
-
-      if (!message) {
+      // Load full current message — used for both change detection and conversationId
+      const current = await this.getById(messageId);
+      if (!current) {
         throw new Error(`Message ${messageId} not found`);
+      }
+
+      // Skip entirely if nothing actually changed (prevents JSONL write amplification)
+      if (!this.hasChanges(current, data)) {
+        return;
       }
 
       // 1. Write update event to JSONL
       await this.writeEvent<MessageUpdatedEvent>(
-        this.jsonlPath(message.conversationId),
+        this.jsonlPath(current.conversationId),
         {
           type: 'message_updated',
-          conversationId: message.conversationId,
+          conversationId: current.conversationId,
           messageId,
           data: {
             content: data.content ?? undefined,
@@ -381,7 +483,7 @@ export class MessageRepository
 
       // 2. Update SQLite cache
       const setClauses: string[] = [];
-      const params: any[] = [];
+      const params: QueryParams = [];
 
       if (data.content !== undefined) {
         setClauses.push('content = ?');
@@ -423,8 +525,8 @@ export class MessageRepository
       // 3. Invalidate cache
       this.invalidateCache();
 
-      // 4. Notify observers if message transitioned to 'complete'
-      if (data.state === 'complete') {
+      // 4. Notify observers only on actual state transition to 'complete'
+      if (data.state === 'complete' && current.state !== 'complete') {
         const fullMessage = await this.getById(messageId);
         if (fullMessage) {
           this.notifyMessageComplete(fullMessage);
@@ -435,6 +537,45 @@ export class MessageRepository
       console.error('[MessageRepository] Failed to update message:', error);
       throw error;
     }
+  }
+
+  /**
+   * Detect whether any supplied update fields differ from the current stored values.
+   * Only checks fields present in the update (undefined = not being updated).
+   */
+  private hasChanges(current: MessageData, updates: UpdateMessageData): boolean {
+    if (updates.content !== undefined) {
+      // Normalise null → '' for comparison since SQLite stores empty strings
+      const incoming = updates.content ?? '';
+      if (incoming !== current.content) return true;
+    }
+    if (updates.state !== undefined && updates.state !== current.state) {
+      return true;
+    }
+    if (updates.reasoning !== undefined && updates.reasoning !== current.reasoning) {
+      return true;
+    }
+    if (updates.toolCallId !== undefined && updates.toolCallId !== current.toolCallId) {
+      return true;
+    }
+    if (updates.activeAlternativeIndex !== undefined
+        && updates.activeAlternativeIndex !== current.activeAlternativeIndex) {
+      return true;
+    }
+    // Serialised comparison for complex objects — conservative (may detect
+    // false-positive changes if the caller reshapes tool call objects, but
+    // never misses a real change).
+    if (updates.toolCalls !== undefined) {
+      const currentJson = current.toolCalls ? JSON.stringify(current.toolCalls) : null;
+      const updatesJson = updates.toolCalls ? JSON.stringify(updates.toolCalls) : null;
+      if (currentJson !== updatesJson) return true;
+    }
+    if (updates.alternatives !== undefined) {
+      const currentJson = current.alternatives ? JSON.stringify(current.alternatives) : null;
+      const updatesJson = updates.alternatives ? JSON.stringify(updates.alternatives) : null;
+      if (currentJson !== updatesJson) return true;
+    }
+    return false;
   }
 
   /**
@@ -477,15 +618,15 @@ export class MessageRepository
   /**
    * Convert SQLite row to MessageData
    */
-  private rowToMessage(row: any): MessageData {
-    let toolCalls: any;
-    let metadata: any;
-    let alternatives: any;
+  private rowToMessage(row: MessageRow): MessageData {
+    let toolCalls: MessageData['toolCalls'];
+    let metadata: MessageJSONValue | undefined;
+    let alternatives: AlternativeMessage[] | undefined;
 
     // Defensive JSON parsing — corrupt data shouldn't crash the entire message load
     if (row.toolCallsJson) {
       try {
-        toolCalls = JSON.parse(row.toolCallsJson);
+        toolCalls = this.parseJsonValue<MessageData['toolCalls']>(row.toolCallsJson);
       } catch {
         console.error(`[MessageRepository] Failed to parse toolCallsJson for message ${row.id}`);
         toolCalls = undefined;
@@ -494,7 +635,7 @@ export class MessageRepository
 
     if (row.metadataJson) {
       try {
-        metadata = JSON.parse(row.metadataJson);
+        metadata = this.parseJsonValue<MessageJSONValue>(row.metadataJson);
       } catch {
         console.error(`[MessageRepository] Failed to parse metadataJson for message ${row.id}`);
         metadata = undefined;
@@ -503,7 +644,7 @@ export class MessageRepository
 
     if (row.alternativesJson) {
       try {
-        alternatives = JSON.parse(row.alternativesJson);
+        alternatives = this.parseJsonValue<AlternativeMessage[]>(row.alternativesJson);
       } catch {
         console.error(`[MessageRepository] Failed to parse alternativesJson for message ${row.id}`);
         alternatives = undefined;
@@ -525,6 +666,27 @@ export class MessageRepository
       alternatives,
       activeAlternativeIndex: row.activeAlternativeIndex ?? 0
     };
+  }
+
+  private parseSequenceCursor(cursor?: string): number | undefined {
+    if (cursor === undefined || cursor.trim() === '') {
+      return undefined;
+    }
+
+    const parsed = Number.parseInt(cursor, 10);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(`[MessageRepository] Invalid sequence cursor: ${cursor}`);
+    }
+
+    return parsed;
+  }
+
+  private parseJsonValue<T>(json: string): T | undefined {
+    try {
+      return JSON.parse(json) as T;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

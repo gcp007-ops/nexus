@@ -17,6 +17,7 @@ import { ANTHROPIC_CLAUDE_CODE_MODELS } from './llm/adapters/anthropic-claude-co
 import { GOOGLE_GEMINI_CLI_MODELS } from './llm/adapters/google-gemini-cli/GoogleGeminiCliModels';
 import { GITHUB_COPILOT_MODELS } from './llm/adapters/github-copilot/GithubCopilotModels';
 import { getIngestionModelsForProvider } from '../agents/ingestManager/tools/services/IngestModelCatalog';
+import { getTranscriptionModelsForProvider } from './llm/types/VoiceTypes';
 
 export interface ModelWithProvider {
   provider: string;
@@ -75,7 +76,7 @@ export class StaticModelsService {
       { provider: 'github-copilot', models: GITHUB_COPILOT_MODELS }
     ];
 
-    providerModels.forEach(({ provider, models }) => {
+    providerModels.forEach(({ provider: _provider, models }) => {
       models.forEach(model => {
         allModels.push(this.convertModelSpec(model));
       });
@@ -88,8 +89,9 @@ export class StaticModelsService {
    * Get models for a specific provider
    */
   getModelsForProvider(providerId: string): ModelWithProvider[] {
-    if (this.modelCache.has(providerId)) {
-      return this.modelCache.get(providerId)!;
+    const cachedModels = this.modelCache.get(providerId);
+    if (cachedModels) {
+      return cachedModels;
     }
 
     let providerModels: ModelSpec[] = [];
@@ -154,7 +156,15 @@ export class StaticModelsService {
       return chatModels;
     }
 
-    const ingestionModels = getIngestionModelsForProvider(providerId).map(model => ({
+    const ingestionModels = [
+      ...getIngestionModelsForProvider(providerId, 'ocr'),
+      ...getTranscriptionModelsForProvider(providerId).map(model => ({
+        provider: model.provider,
+        id: model.id,
+        name: model.name,
+        kind: 'transcription' as const
+      }))
+    ].map(model => ({
       provider: model.provider,
       id: model.id,
       name: model.name,
@@ -213,7 +223,7 @@ export class StaticModelsService {
    * Get provider information
    */
   getAvailableProviders(): string[] {
-    return ['openai', 'anthropic', 'anthropic-claude-code', 'google', 'google-gemini-cli', 'github-copilot', 'mistral', 'groq', 'openrouter', 'requesty', 'perplexity', 'openai-codex'];
+    return ['openai', 'anthropic', 'anthropic-claude-code', 'google', 'google-gemini-cli', 'github-copilot', 'mistral', 'groq', 'deepgram', 'assemblyai', 'openrouter', 'requesty', 'perplexity', 'openai-codex'];
   }
 
   /**

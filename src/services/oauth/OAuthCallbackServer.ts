@@ -10,10 +10,8 @@
  * Used by: OAuthService.ts (starts server before opening browser,
  * waits for callback, then shuts down).
  */
-
-import { createServer, IncomingMessage, ServerResponse, Server } from 'node:http';
-import { URL } from 'node:url';
-import { timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage, ServerResponse, Server } from 'node:http';
+import { desktopRequire } from '../../utils/desktopRequire';
 
 /** Common no-cache headers for all callback responses (prevents browser caching auth codes) */
 const NO_CACHE_HEADERS: Record<string, string> = {
@@ -99,6 +97,10 @@ export interface CallbackServerOptions {
  * @throws Error with descriptive message on EADDRINUSE or other server errors
  */
 export function startCallbackServer(options: CallbackServerOptions): Promise<CallbackServerHandle> {
+  const nodeHttp = desktopRequire<typeof import('node:http')>('node:http');
+  const nodeUrl = desktopRequire<typeof import('node:url')>('node:url');
+  const nodeCrypto = desktopRequire<typeof import('node:crypto')>('node:crypto');
+
   const {
     port,
     callbackPath,
@@ -120,12 +122,17 @@ export function startCallbackServer(options: CallbackServerOptions): Promise<Cal
         timeoutHandle = null;
       }
       if (server) {
+        const serverToClose = server;
+        server = null;
         try {
-          server.close();
+          serverToClose.close();
+          const serverWithCloseAll = serverToClose as unknown as { closeAllConnections?: () => void };
+          if (typeof serverWithCloseAll.closeAllConnections === 'function') {
+            serverWithCloseAll.closeAllConnections();
+          }
         } catch {
           // Ignore close errors during cleanup
         }
-        server = null;
       }
     };
 
@@ -145,9 +152,9 @@ export function startCallbackServer(options: CallbackServerOptions): Promise<Cal
       callbackReject = reject;
     });
 
-    server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    server = nodeHttp.createServer((req: IncomingMessage, res: ServerResponse) => {
       // Only handle GET requests to the callback path
-      const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+      const url = new nodeUrl.URL(req.url || '/', `http://127.0.0.1:${port}`);
 
       if (url.pathname !== callbackPath) {
         res.writeHead(404, { 'Content-Type': 'text/plain', ...NO_CACHE_HEADERS });
@@ -174,7 +181,7 @@ export function startCallbackServer(options: CallbackServerOptions): Promise<Cal
       const state = url.searchParams.get('state') || '';
       const stateValid =
         state.length === expectedState.length &&
-        timingSafeEqual(Buffer.from(state), Buffer.from(expectedState));
+        nodeCrypto.timingSafeEqual(Buffer.from(state), Buffer.from(expectedState));
       if (!stateValid) {
         res.writeHead(400, { 'Content-Type': 'text/html', ...NO_CACHE_HEADERS });
         res.end(HTML_ERROR);
@@ -224,6 +231,10 @@ export function startCallbackServer(options: CallbackServerOptions): Promise<Cal
 
     // Bind to 127.0.0.1 ONLY -- never 'localhost' (resolves to IPv6 on some systems), never 0.0.0.0
     server.listen(port, '127.0.0.1', () => {
+      // This is a short-lived local callback listener. Unref it so it never
+      // becomes the only handle keeping a process or test run alive.
+      server?.unref();
+
       // Set up timeout for auto-shutdown
       timeoutHandle = setTimeout(() => {
         if (!settled) {

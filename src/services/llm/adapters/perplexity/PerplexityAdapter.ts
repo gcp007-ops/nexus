@@ -17,23 +17,36 @@ import {
 } from '../types';
 import { PERPLEXITY_MODELS, PERPLEXITY_DEFAULT_MODEL } from './PerplexityModels';
 import { WebSearchUtils } from '../../utils/WebSearchUtils';
-import { MCPToolExecution } from '../shared/ToolExecutionUtils';
 
 export interface PerplexityOptions extends GenerateOptions {
   webSearch?: boolean;
-  searchMode?: 'web' | 'academic';
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  searchMode?: 'web' | 'academic' | 'sec';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   searchContextSize?: 'low' | 'medium' | 'high';
 }
 
 interface PerplexityChatMessage {
   content?: string;
-  toolCalls?: any[];
 }
 
 interface PerplexityChatChoice {
   message?: PerplexityChatMessage;
   finish_reason?: string;
+}
+
+interface PerplexityStreamChoice {
+  delta?: {
+    content?: string;
+  };
+  finish_reason?: string;
+}
+
+interface PerplexityStreamChunk {
+  object?: string;
+  choices?: PerplexityStreamChoice[];
+  usage?: PerplexityChatResponse['usage'];
+  citations?: string[];
+  search_results?: PerplexitySearchResult[];
 }
 
 interface PerplexityChatResponse {
@@ -43,7 +56,31 @@ interface PerplexityChatResponse {
     completion_tokens?: number;
     total_tokens?: number;
   };
-  search_results?: any[];
+  citations?: string[];
+  search_results?: PerplexitySearchResult[];
+}
+
+interface PerplexitySearchResult {
+  title?: string;
+  url?: string;
+  date?: string;
+  last_updated?: string;
+  snippet?: string;
+  source?: string;
+}
+
+interface PerplexityRequestBody {
+  model: string;
+  messages: Array<Record<string, unknown>>;
+  temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  stream?: boolean;
+  search_mode?: 'web' | 'academic' | 'sec';
+  reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high';
+  web_search_options?: {
+    search_context_size: 'low' | 'medium' | 'high';
+  };
 }
 
 export class PerplexityAdapter extends BaseAdapter {
@@ -62,66 +99,38 @@ export class PerplexityAdapter extends BaseAdapter {
         WebSearchUtils.validateWebSearchRequest('perplexity', options.webSearch);
       }
 
-      const model = options?.model || this.currentModel;
-
-      // Perplexity does not support native function calling
-      // If tools are requested, proceed without tools
-
-      // Use standard chat completions (Perplexity's strength is web search, not tool calling)
+      // Perplexity does not support native function calling.
       return await this.generateWithChatCompletions(prompt, options);
     } catch (error) {
-      throw this.handleError(error, 'generation');
+      this.handleError(error, 'generation');
     }
   }
 
   /**
-   * Generate streaming response using async generator
-   * Uses unified stream processing with automatic tool call accumulation
+   * Generate streaming response using async generator.
    */
   async* generateStreamAsync(prompt: string, options?: PerplexityOptions): AsyncGenerator<StreamChunk, void, unknown> {
     try {
-      const requestBody = {
-        model: options?.model || this.currentModel,
-        messages: this.buildMessages(prompt, options?.systemPrompt),
-        temperature: options?.temperature,
-        max_tokens: options?.maxTokens,
-        top_p: options?.topP,
-        presence_penalty: options?.presencePenalty,
-        frequency_penalty: options?.frequencyPenalty,
-        tools: options?.tools ? this.convertTools(options.tools) : undefined,
-        stream: true,
-        extra: {
-          search_mode: options?.searchMode || 'web',
-          reasoning_effort: options?.reasoningEffort || 'medium',
-          web_search_options: {
-            search_context_size: options?.searchContextSize || 'low'
-          }
-        }
-      };
+      const requestBody = this.buildRequestBody(prompt, options, true);
 
       const nodeStream = await this.requestStream({
         url: `${this.baseUrl}/chat/completions`,
         operation: 'streaming generation',
         method: 'POST',
-        headers: {
+        headers: this.buildHeaders({
           'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        },
+        }),
         body: JSON.stringify(requestBody),
         timeoutMs: 120_000
       });
 
       yield* this.processNodeStream(nodeStream, {
         debugLabel: 'Perplexity',
-        extractContent: (parsed) => parsed.choices?.[0]?.delta?.content || null,
-        extractToolCalls: (parsed) => parsed.choices?.[0]?.delta?.tool_calls || null,
-        extractFinishReason: (parsed) => parsed.choices?.[0]?.finish_reason || null,
-        extractUsage: (parsed) => parsed.usage || null,
-        accumulateToolCalls: true,
-        toolCallThrottling: {
-          initialYield: true,
-          progressInterval: 50
-        }
+        extractContent: (parsed) => (parsed as PerplexityStreamChunk).choices?.[0]?.delta?.content || null,
+        extractToolCalls: () => null,
+        extractFinishReason: (parsed) => (parsed as PerplexityStreamChunk).choices?.[0]?.finish_reason || null,
+        extractUsage: (parsed) => (parsed as PerplexityStreamChunk).usage,
+        extractMetadata: (parsed) => this.extractResponseMetadata(parsed as PerplexityStreamChunk) || null
       });
     } catch (error) {
       console.error('[PerplexityAdapter] Streaming error:', error);
@@ -129,9 +138,9 @@ export class PerplexityAdapter extends BaseAdapter {
     }
   }
 
-  async listModels(): Promise<ModelInfo[]> {
+  listModels(): Promise<ModelInfo[]> {
     try {
-      return PERPLEXITY_MODELS.map(model => ({
+      return Promise.resolve(PERPLEXITY_MODELS.map(model => ({
         id: model.apiName,
         name: model.name,
         contextWindow: model.contextWindow,
@@ -151,10 +160,10 @@ export class PerplexityAdapter extends BaseAdapter {
           currency: 'USD',
           lastUpdated: new Date().toISOString()
         }
-      }));
+      })));
     } catch (error) {
       this.handleError(error, 'listing models');
-      return [];
+      return Promise.resolve([]);
     }
   }
 
@@ -166,7 +175,7 @@ export class PerplexityAdapter extends BaseAdapter {
       supportsImages: false,
       supportsFunctions: false, // Perplexity does not support function calling
       supportsThinking: false,
-      maxContextWindow: 127072,
+      maxContextWindow: 200000,
       supportedFeatures: [
         'messages',
         'streaming',
@@ -184,38 +193,15 @@ export class PerplexityAdapter extends BaseAdapter {
    * Generate using standard chat completions
    */
   private async generateWithChatCompletions(prompt: string, options?: PerplexityOptions): Promise<LLMResponse> {
-    const model = options?.model || this.currentModel;
-    
-    const requestBody: any = {
-      model,
-      messages: this.buildMessages(prompt, options?.systemPrompt),
-      temperature: options?.temperature,
-      max_tokens: options?.maxTokens,
-      top_p: options?.topP,
-      presence_penalty: options?.presencePenalty,
-      frequency_penalty: options?.frequencyPenalty,
-      extra: {
-        search_mode: options?.searchMode || 'web',
-        reasoning_effort: options?.reasoningEffort || 'medium',
-        web_search_options: {
-          search_context_size: options?.searchContextSize || 'low'
-        }
-      }
-    };
-
-    // Add tools if provided
-    if (options?.tools) {
-      requestBody.tools = this.convertTools(options.tools);
-    }
+    const requestBody = this.buildRequestBody(prompt, options);
 
     const response = await this.request<PerplexityChatResponse>({
       url: `${this.baseUrl}/chat/completions`,
       operation: 'generation',
       method: 'POST',
-      headers: {
+      headers: this.buildHeaders({
         'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
+      }),
       body: JSON.stringify(requestBody),
       timeoutMs: 60_000
     });
@@ -229,33 +215,18 @@ export class PerplexityAdapter extends BaseAdapter {
       throw new Error('No response from Perplexity');
     }
     
-    let text = choice.message?.content || '';
+    const text = choice.message?.content || '';
     const usage = this.extractUsage(data);
     const rawFinishReason = choice.finish_reason || 'stop';
 
-    // If tools were provided and we got tool calls, return placeholder text
-    if (options?.tools && choice.message?.toolCalls && choice.message.toolCalls.length > 0) {
-      text = text || '[AI requested tool calls but tool execution not available]';
-    }
-
-    // Extract and format web search results
-    const webSearchResults = options?.webSearch || data.search_results
-      ? this.extractPerplexitySources(data.search_results || [])
-      : undefined;
-
-    // Map finish reason to expected type
     const finishReason = this.mapFinishReason(rawFinishReason);
+    const metadata = this.extractResponseMetadata(data);
 
     return this.buildLLMResponse(
       text,
-      model,
+      options?.model || this.currentModel,
       usage,
-      {
-        provider: 'perplexity',
-        searchResults: data.search_results, // Keep raw data for debugging
-        searchMode: options?.searchMode,
-        webSearchResults
-      },
+      metadata,
       finishReason
     );
   }
@@ -265,7 +236,7 @@ export class PerplexityAdapter extends BaseAdapter {
   /**
    * Extract search results from Perplexity response
    */
-  private extractPerplexitySources(searchResults: any[]): SearchResult[] {
+  private extractPerplexitySources(searchResults: PerplexitySearchResult[]): SearchResult[] {
     try {
       if (!Array.isArray(searchResults)) {
         return [];
@@ -273,18 +244,57 @@ export class PerplexityAdapter extends BaseAdapter {
 
       return searchResults
         .map(result => WebSearchUtils.validateSearchResult({
-          title: result.title || result.name || 'Unknown Source',
+          title: result.title || 'Unknown Source',
           url: result.url,
-          date: result.date || result.timestamp
+          date: result.last_updated || result.date
         }))
         .filter((result: SearchResult | null): result is SearchResult => result !== null);
-    } catch (error) {
+    } catch {
       return [];
     }
   }
 
-  private extractToolCalls(message: any): any[] {
-    return message?.toolCalls || [];
+  private extractResponseMetadata(
+    data: { citations?: string[]; search_results?: PerplexitySearchResult[] } | undefined
+  ): Record<string, unknown> | undefined {
+    if (!data) {
+      return undefined;
+    }
+
+    const webSearchResults = this.extractPerplexitySources(data.search_results || []);
+    const citations = this.extractCitationUrls(data.citations, data.search_results || []);
+
+    if (webSearchResults.length === 0 && citations.length === 0) {
+      return undefined;
+    }
+
+    return {
+      ...(webSearchResults.length > 0 ? { webSearchResults } : {}),
+      ...(citations.length > 0 ? { citations } : {})
+    };
+  }
+
+  private extractCitationUrls(
+    citations: string[] | undefined,
+    searchResults: PerplexitySearchResult[]
+  ): string[] {
+    const urls = new Set<string>();
+
+    if (Array.isArray(citations)) {
+      for (const citation of citations) {
+        if (typeof citation === 'string' && citation.trim()) {
+          urls.add(citation);
+        }
+      }
+    }
+
+    for (const result of searchResults) {
+      if (typeof result.url === 'string' && result.url.trim()) {
+        urls.add(result.url);
+      }
+    }
+
+    return Array.from(urls);
   }
 
   private mapFinishReason(reason: string | null): 'stop' | 'length' | 'tool_calls' | 'content_filter' {
@@ -299,7 +309,7 @@ export class PerplexityAdapter extends BaseAdapter {
     return reasonMap[reason] || 'stop';
   }
 
-  protected extractUsage(response: any): TokenUsage | undefined {
+  protected extractUsage(response: PerplexityChatResponse): TokenUsage | undefined {
     const usage = response?.usage;
     if (usage) {
       return {
@@ -309,6 +319,32 @@ export class PerplexityAdapter extends BaseAdapter {
       };
     }
     return undefined;
+  }
+
+  private buildRequestBody(
+    prompt: string,
+    options?: PerplexityOptions,
+    stream = false
+  ): PerplexityRequestBody {
+    const model = options?.model || this.currentModel;
+    const requestBody: PerplexityRequestBody = {
+      model,
+      messages: this.buildMessages(prompt, options?.systemPrompt),
+      temperature: options?.temperature,
+      max_tokens: options?.maxTokens,
+      top_p: options?.topP,
+      stream,
+      search_mode: options?.searchMode || 'web',
+      web_search_options: {
+        search_context_size: options?.searchContextSize || 'low'
+      }
+    };
+
+    if (model === 'sonar-reasoning-pro') {
+      requestBody.reasoning_effort = options?.reasoningEffort || 'medium';
+    }
+
+    return requestBody;
   }
 
   private getCostPer1kTokens(modelId: string): { input: number; output: number } | undefined {
@@ -321,32 +357,14 @@ export class PerplexityAdapter extends BaseAdapter {
     };
   }
 
-  async getModelPricing(modelId: string): Promise<ModelPricing | null> {
+  getModelPricing(modelId: string): Promise<ModelPricing | null> {
     const costs = this.getCostPer1kTokens(modelId);
-    if (!costs) return null;
+    if (!costs) return Promise.resolve(null);
 
-    return {
+    return Promise.resolve({
       rateInputPerMillion: costs.input * 1000,
       rateOutputPerMillion: costs.output * 1000,
       currency: 'USD'
-    };
-  }
-
-  private convertTools(tools: any[]): any[] {
-    return tools.map(tool => {
-      if (tool.type === 'function') {
-        // Handle both nested (Chat Completions) and flat (Responses API) formats
-        const toolDef = tool.function || tool;
-        return {
-          type: 'function',
-          function: {
-            name: toolDef.name,
-            description: toolDef.description,
-            parameters: toolDef.parameters || toolDef.input_schema
-          }
-        };
-      }
-      return tool;
     });
   }
 }

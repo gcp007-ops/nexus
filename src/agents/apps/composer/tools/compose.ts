@@ -25,6 +25,8 @@ import { TextComposer } from '../services/TextComposer';
 import { PdfComposer } from '../services/PdfComposer';
 import { AudioComposer } from '../services/AudioComposer';
 import { IFormatComposer } from '../types';
+import type { ToolStatusTense } from '../../../interfaces/ITool';
+import { verbs } from '../../../utils/toolStatusLabels';
 
 interface ComposeParams extends CommonParameters {
   files?: string[];
@@ -67,6 +69,16 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
     this.agent = agent;
   }
 
+  getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
+    const v = verbs('Composing', 'Composed', 'Failed to compose');
+    const format = typeof params?.format === 'string' ? params.format : undefined;
+    const outputPath = typeof params?.outputPath === 'string' ? params.outputPath.split(/[\\/]/).pop() : undefined;
+    if (outputPath) {
+      return format ? `${v[tense]} ${format} → ${outputPath}` : `${v[tense]} ${outputPath}`;
+    }
+    return format ? `${v[tense]} ${format}` : v[tense];
+  }
+
   async execute(params: ComposeParams): Promise<CommonResult> {
     const vault = this.agent.getVault();
     if (!vault) {
@@ -84,6 +96,8 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
     }
 
     const isAudioMix = format === 'audio' && audioMode === 'mix';
+    const validatedTracks = isAudioMix ? tracks : undefined;
+    const validatedFiles = isAudioMix ? undefined : files;
 
     if (isAudioMix) {
       if (!tracks || tracks.length === 0) {
@@ -146,7 +160,7 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
         break;
       default:
         return this.prepareResult(false, undefined,
-          `Unsupported format: "${format}". Use listFormats to see supported formats.`);
+          `Unsupported format: "${String(format)}". Use listFormats to see supported formats.`);
     }
 
     if (!composer.isAvailableOnPlatform) {
@@ -160,12 +174,17 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
 
     try {
       if (isAudioMix) {
-        const trackPaths = tracks!.map(t => t.file);
+        if (!validatedTracks) {
+          return this.prepareResult(false, undefined,
+            'Audio mix mode requires "tracks" array with at least one track');
+        }
+
+        const trackPaths = validatedTracks.map(t => t.file);
         const resolvedFiles = reader.resolveFiles(trackPaths);
 
         input = {
           mode: 'mix',
-          tracks: tracks!.map((t, i) => ({
+          tracks: validatedTracks.map((t, i) => ({
             file: resolvedFiles[i],
             volume: t.volume ?? 1.0,
             offset: t.offset ?? 0,
@@ -174,7 +193,12 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
           })),
         };
       } else {
-        const resolvedFiles = reader.resolveFiles(files!);
+        if (!validatedFiles) {
+          return this.prepareResult(false, undefined,
+            'At least one file path is required in "files" array');
+        }
+
+        const resolvedFiles = reader.resolveFiles(validatedFiles);
         input = { mode: 'concat', files: resolvedFiles };
       }
     } catch (err) {
@@ -244,9 +268,14 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
 
     let outputSize: number;
     try {
-      if (existingFile) {
+      const existingOutput = existingFile;
+      if (existingOutput) {
         // Safe overwrite: write to temp path first, delete old, then rename
         const tempPath = normalizedOutput + '.composing';
+        const app = this.agent.getApp();
+        if (!app) {
+          return this.prepareResult(false, undefined, 'Obsidian app is not available');
+        }
         if (typeof output === 'string') {
           await vault.create(tempPath, output);
           outputSize = new TextEncoder().encode(output).byteLength;
@@ -255,7 +284,7 @@ export class ComposeTool extends BaseTool<ComposeParams, CommonResult> {
           await vault.createBinary(tempPath, arrayBuffer);
           outputSize = output.byteLength;
         }
-        await vault.delete(existingFile);
+        await app.fileManager.trashFile(existingOutput);
         const tempFile = vault.getAbstractFileByPath(tempPath);
         if (tempFile) {
           await vault.rename(tempFile, normalizedOutput);

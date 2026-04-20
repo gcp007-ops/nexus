@@ -6,20 +6,23 @@
 import { FileSystemService } from '../storage/FileSystemService';
 import { IndexManager } from '../storage/IndexManager';
 import { MemoryTrace, StateData } from '../../types/storage/StorageTypes';
-import { IStorageAdapter } from '../../database/interfaces/IStorageAdapter';
 import * as HybridTypes from '../../types/storage/HybridStorageTypes';
 import { TraceMetadata } from '../../database/types/memory/MemoryTypes';
 import { WorkspaceState } from '../../database/types/session/SessionTypes';
-import { StorageAdapterOrGetter, resolveAdapter, withDualBackend } from '../helpers/DualBackendExecutor';
+import { StorageAdapterOrGetter, resolveAdapter, withReadableBackend } from '../helpers/DualBackendExecutor';
 
 /**
  * Dependencies injected from WorkspaceService to avoid circular references.
  * WorkspaceStateService needs session-level operations for referential integrity
  * (e.g., ensuring session exists before creating a state or trace).
  */
+interface SessionLookup {
+  id: string;
+}
+
 export interface WorkspaceStateDeps {
-  getSession: (workspaceId: string, sessionId: string) => Promise<any>;
-  addSession: (workspaceId: string, sessionData: any) => Promise<any>;
+  getSession: (workspaceId: string, sessionId: string) => Promise<SessionLookup | null>;
+  addSession: (workspaceId: string, sessionData: Record<string, unknown>) => Promise<SessionLookup>;
 }
 
 export class WorkspaceStateService {
@@ -81,7 +84,7 @@ export class WorkspaceStateService {
       throw new Error(`Session ${sessionId} not found in workspace ${workspaceId}`);
     }
 
-    const traceId = traceData.id || `trace_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const traceId = traceData.id || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     const trace: MemoryTrace = {
       id: traceId,
       timestamp: traceData.timestamp || Date.now(),
@@ -102,7 +105,7 @@ export class WorkspaceStateService {
    * Get memory traces from session
    */
   async getMemoryTraces(workspaceId: string, sessionId: string): Promise<MemoryTrace[]> {
-    return withDualBackend(
+    return withReadableBackend(
       this.storageAdapterOrGetter,
       async (adapter) => {
         const result = await adapter.getTraces(workspaceId, sessionId);
@@ -165,7 +168,7 @@ export class WorkspaceStateService {
         id: stateId,
         name: hybridState.name,
         created: hybridState.created,
-        state: hybridState.content
+        state: this.coerceWorkspaceState(hybridState.content)
       };
     }
 
@@ -179,12 +182,14 @@ export class WorkspaceStateService {
       throw new Error(`Session ${sessionId} not found in workspace ${workspaceId}`);
     }
 
-    const stateId = stateData.id || `state_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const stateId = stateData.id || `state_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     // Support both new 'state' property and legacy 'snapshot' property
-    const stateContent = stateData.state ||
+    const stateContent = this.coerceWorkspaceState(
+      stateData.state ||
       (stateData as Partial<StateData> & { snapshot?: WorkspaceState }).snapshot ||
-      {} as WorkspaceState;
+      {}
+    );
 
     const state: StateData = {
       id: stateId,
@@ -205,7 +210,7 @@ export class WorkspaceStateService {
    * Get state from session
    */
   async getState(workspaceId: string, sessionId: string, stateId: string): Promise<StateData | null> {
-    return withDualBackend(
+    return withReadableBackend(
       this.storageAdapterOrGetter,
       async (adapter) => {
         const state = await adapter.getState(stateId);
@@ -216,7 +221,7 @@ export class WorkspaceStateService {
           id: state.id,
           name: state.name,
           created: state.created,
-          state: state.content
+          state: this.coerceWorkspaceState(state.content)
         };
       },
       async () => {
@@ -243,7 +248,7 @@ export class WorkspaceStateService {
       return byId;
     }
 
-    return withDualBackend<StateData | null>(
+    return withReadableBackend<StateData | null>(
       this.storageAdapterOrGetter,
       async (adapter) => {
         const result = await adapter.getStates(workspaceId, sessionId, { pageSize: 100 });
@@ -266,5 +271,9 @@ export class WorkspaceStateService {
         ) || null;
       }
     );
+  }
+
+  private coerceWorkspaceState(state: unknown): WorkspaceState {
+    return state as WorkspaceState;
   }
 }

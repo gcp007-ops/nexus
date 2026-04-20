@@ -2,7 +2,8 @@
  * UIStateController - Manages all UI state transitions and visual feedback
  */
 
-import { setIcon, ButtonComponent, Component } from 'obsidian';
+import { setIcon, Component } from 'obsidian';
+import { ManagedTimeoutTracker } from '../utils/ManagedTimeoutTracker';
 
 export interface UIStateControllerEvents {
   onSidebarToggled: (visible: boolean) => void;
@@ -11,12 +12,19 @@ export interface UIStateControllerEvents {
 export class UIStateController {
   private sidebarVisible = false;
   private onOpenSettings?: () => void;
+  private timeouts: ManagedTimeoutTracker;
 
   constructor(
     private containerEl: HTMLElement,
     private events: UIStateControllerEvents,
-    private component?: Component
-  ) {}
+    private component: Component
+  ) {
+    this.timeouts = new ManagedTimeoutTracker(component);
+  }
+
+  private registerClickHandler(element: HTMLElement, handler: () => void): void {
+    this.component.registerDomEvent(element, 'click', handler);
+  }
 
   /**
    * Set callback for opening settings
@@ -36,7 +44,7 @@ export class UIStateController {
    * Show welcome state when no conversation is selected
    * @param hasConfiguredProviders - Whether any LLM providers are set up
    */
-  showWelcomeState(hasConfiguredProviders: boolean = true): void {
+  showWelcomeState(hasConfiguredProviders = true): void {
     const messageDisplay = this.containerEl.querySelector('.message-display-container');
     if (!messageDisplay) return;
 
@@ -53,7 +61,7 @@ export class UIStateController {
       setIcon(welcomeIcon, 'sparkles');
 
       welcomeContent.createEl('div', {
-        text: 'Welcome to Nexus Chat',
+        text: 'Welcome to chat',
         cls: 'chat-welcome-title'
       });
 
@@ -87,13 +95,13 @@ export class UIStateController {
       setIcon(welcomeIcon, 'settings');
 
       welcomeContent.createEl('p', {
-        text: 'Configure an LLM provider to start chatting',
+        text: 'Configure a provider to start chatting.',
         cls: 'chat-welcome-hint'
       });
 
       const settingsBtn = welcomeContent.createEl('button', {
         cls: 'chat-welcome-button',
-        text: 'Open Settings'
+        text: 'Open settings'
       });
       const settingsBtnIcon = settingsBtn.createSpan({ cls: 'chat-welcome-button-icon' });
       setIcon(settingsBtnIcon, 'settings');
@@ -103,7 +111,7 @@ export class UIStateController {
           this.onOpenSettings();
         }
       };
-      this.component!.registerDomEvent(settingsBtn, 'click', settingsHandler);
+      this.registerClickHandler(settingsBtn, settingsHandler);
     }
   }
 
@@ -148,10 +156,7 @@ export class UIStateController {
       const errorEl = container.createDiv('chat-error');
       errorEl.textContent = message;
       
-      // Auto-remove after 5 seconds
-      setTimeout(() => {
-        errorEl.remove();
-      }, 5000);
+      this.timeouts.setTimeout(() => errorEl.remove(), 5000);
     }
   }
 
@@ -160,7 +165,7 @@ export class UIStateController {
    * Note: ChatInput component now manages its own loading state and stop button
    * This method is kept for backward compatibility but does nothing
    */
-  setInputLoading(loading: boolean): void {
+  setInputLoading(_loading: boolean): void {
     // ChatInput component handles its own state now
     // No-op to avoid conflicts with ChatInput's updateUI()
   }
@@ -176,14 +181,6 @@ export class UIStateController {
   }
 
   /**
-   * Update context progress display
-   */
-  updateContextProgress(): void {
-    // This will be handled by the ContextProgressBar component
-    // Method exists for consistency with the original ChatView interface
-  }
-
-  /**
    * Initialize UI event listeners
    */
   initializeEventListeners(): void {
@@ -191,7 +188,7 @@ export class UIStateController {
     const hamburgerButton = this.containerEl.querySelector('.chat-hamburger-button');
     if (hamburgerButton) {
       const hamburgerHandler = () => this.toggleConversationList();
-      this.component!.registerDomEvent(hamburgerButton as HTMLElement, 'click', hamburgerHandler);
+      this.registerClickHandler(hamburgerButton as HTMLElement, hamburgerHandler);
     }
 
     // Backdrop click to close sidebar
@@ -202,15 +199,11 @@ export class UIStateController {
           this.toggleConversationList();
         }
       };
-      this.component!.registerDomEvent(backdrop as HTMLElement, 'click', backdropHandler);
+      this.registerClickHandler(backdrop as HTMLElement, backdropHandler);
     }
   }
 
-  /**
-   * Clean up event listeners
-   */
   cleanup(): void {
-    // Remove event listeners if needed
-    // Most listeners are attached to elements that will be removed with the container
+    // Event listeners are cleaned up via component.registerDomEvent on Component teardown.
   }
 }

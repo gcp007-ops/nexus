@@ -219,19 +219,20 @@ export class StreamingController {
   }
 
   /**
-   * Escape HTML for safe display
-   */
-  private escapeHtml(text: string): string {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
-
-  /**
    * Get active animation count (for debugging/monitoring)
    */
   getActiveAnimationCount(): number {
     return this.activeAnimations.size;
+  }
+
+  /**
+   * Get the message ID of the currently streaming message.
+   * Returns the most recently started streaming message.
+   */
+  getCurrentMessageId(): string | null {
+    // Array.from(map.keys()) returns keys in insertion order. The last one is the most recent.
+    const keys = Array.from(this.streamingStates.keys());
+    return keys.length > 0 ? keys[keys.length - 1] : null;
   }
 
   /**

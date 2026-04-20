@@ -1,4 +1,4 @@
-import { ITool } from './interfaces/ITool';
+import { ITool, ToolStatusTense } from './interfaces/ITool';
 import { CommonParameters, CommonResult } from '../types';
 import {
   getCommonParameterSchema,
@@ -7,7 +7,6 @@ import {
   mergeWithCommonSchema
 } from '../utils/schemaUtils';
 import { parseWorkspaceContext } from '../utils/contextUtils';
-import { getErrorMessage } from '../utils/errorUtils';
 import { enhanceSchemaDocumentation } from '../utils/validationUtils';
 import { JSONSchema } from '../types/schema/JSONSchemaTypes';
 
@@ -85,6 +84,32 @@ export abstract class BaseTool<T extends CommonParameters = CommonParameters, R 
   }
 
   /**
+   * Produce a human-readable, parameter-aware status label for the
+   * ToolStatusBar. Default implementation returns `undefined` so the
+   * status formatter falls back to "Running {name}" / "Ran {name}" /
+   * "Failed to run {name}".
+   *
+   * Subclasses that benefit from parameter interpolation should override
+   * this method. Keep the override a pure function of `params` and
+   * `tense` — it runs in the UI event loop and must be cheap.
+   *
+   * Example:
+   * ```ts
+   * getStatusLabel(params, tense) {
+   *   const verbs = { present: 'Reading', past: 'Read', failed: 'Failed to read' };
+   *   const target = getBaseName(params?.path) ?? 'file';
+   *   return `${verbs[tense]} ${target}`;
+   * }
+   * ```
+   */
+  getStatusLabel(
+    _params: Record<string, unknown> | undefined,
+    _tense: ToolStatusTense
+  ): string | undefined {
+    return undefined;
+  }
+
+  /**
    * Helper method to merge tool-specific schema with common schema and enhance documentation
    * This ensures that every tool has workspace context parameters,
    * and provides clear documentation on which parameters are required vs. optional
@@ -94,7 +119,7 @@ export abstract class BaseTool<T extends CommonParameters = CommonParameters, R 
    */
   protected getMergedSchema(customSchema: JSONSchema): JSONSchema {
     // Get the merged schema with common parameters
-    const mergedSchema = mergeWithCommonSchema(customSchema);
+    const mergedSchema = mergeWithCommonSchema(customSchema as Parameters<typeof mergeWithCommonSchema>[0]);
 
     // Ensure the schema has a type and properties
     mergedSchema.type = mergedSchema.type || 'object';
@@ -208,9 +233,9 @@ export abstract class BaseTool<T extends CommonParameters = CommonParameters, R 
   protected createErrorResult(
     error: string | Error | ValidationError[],
     params?: T,
-    context?: any
+    context?: unknown
   ): R {
-    return ValidationResultHelper.createErrorResult(this as ToolInterface, error, params, context);
+    return ValidationResultHelper.createErrorResult(this as ToolInterface, error, params, this.toRecord(context));
   }
 
   /**
@@ -225,11 +250,11 @@ export abstract class BaseTool<T extends CommonParameters = CommonParameters, R 
    * @returns Standardized success result
    */
   protected createSuccessResult(
-    data: any,
+    data: unknown,
     params?: T,
-    additionalData?: any
+    additionalData?: unknown
   ): R {
-    return ValidationResultHelper.createSuccessResult(this as ToolInterface, data, params, additionalData);
+    return ValidationResultHelper.createSuccessResult(this as ToolInterface, data, params, this.toRecord(additionalData));
   }
 
   /**
@@ -290,5 +315,13 @@ export abstract class BaseTool<T extends CommonParameters = CommonParameters, R 
       return this.createErrorResult(validation.errors, params as unknown as T);
     }
     return null;
+  }
+
+  private toRecord(value: unknown): Record<string, unknown> | undefined {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+
+    return undefined;
   }
 }

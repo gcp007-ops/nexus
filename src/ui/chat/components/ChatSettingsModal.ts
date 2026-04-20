@@ -39,14 +39,14 @@ export class ChatSettingsModal extends Modal {
     this.modelAgentManager = modelAgentManager;
   }
 
-  async onOpen() {
+  onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass('chat-settings-modal');
 
     // Header with buttons
     const header = contentEl.createDiv('chat-settings-header');
-    header.createEl('h2', { text: 'Chat Settings' });
+    header.createEl('h2', { text: 'Chat settings' });
 
     const buttonContainer = header.createDiv('chat-settings-buttons');
     new ButtonComponent(buttonContainer)
@@ -56,10 +56,12 @@ export class ChatSettingsModal extends Modal {
     new ButtonComponent(buttonContainer)
       .setButtonText('Save')
       .setCta()
-      .onClick(() => this.handleSave());
+      .onClick(() => {
+        void this.handleSave();
+      });
 
     // Load data and render
-    await this.loadAndRender(contentEl);
+    void this.loadAndRender(contentEl);
   }
 
   private async loadAndRender(contentEl: HTMLElement): Promise<void> {
@@ -140,8 +142,10 @@ export class ChatSettingsModal extends Modal {
         effort: agentThinking?.effort ?? 'medium'
       },
       temperature: temperature,
-      imageProvider: llmSettings?.defaultImageModel?.provider || 'google',
-      imageModel: llmSettings?.defaultImageModel?.model || 'gemini-2.5-flash-image',
+      imageProvider: this.modelAgentManager.getImageProvider() || llmSettings?.defaultImageModel?.provider || 'google',
+      imageModel: this.modelAgentManager.getImageModel() || llmSettings?.defaultImageModel?.model || 'gemini-2.5-flash-image',
+      transcriptionProvider: this.modelAgentManager.getTranscriptionProvider() || llmSettings?.defaultTranscriptionModel?.provider,
+      transcriptionModel: this.modelAgentManager.getTranscriptionModel() || llmSettings?.defaultTranscriptionModel?.model,
       workspaceId: this.modelAgentManager.getSelectedWorkspaceId(),
       promptId: prompt?.id || prompt?.name || null,
       contextNotes: [...contextNotes]
@@ -177,10 +181,7 @@ export class ChatSettingsModal extends Modal {
 
       // Update workspace
       if (settings.workspaceId) {
-        const workspace = await this.workspaceService.getWorkspace(settings.workspaceId);
-        if (workspace?.context) {
-          await this.modelAgentManager.setWorkspaceContext(settings.workspaceId, workspace.context);
-        }
+        await this.modelAgentManager.setWorkspaceContext(settings.workspaceId);
       } else {
         await this.modelAgentManager.clearWorkspaceContext();
       }
@@ -205,6 +206,15 @@ export class ChatSettingsModal extends Modal {
       // Update context notes
       await this.modelAgentManager.setContextNotes(settings.contextNotes);
 
+      // Update image model
+      this.modelAgentManager.setImageModel(settings.imageProvider, settings.imageModel);
+
+      // Update transcription model
+      this.modelAgentManager.setTranscriptionModel(
+        settings.transcriptionProvider || null,
+        settings.transcriptionModel || null
+      );
+
       // Save to conversation metadata
       if (this.conversationId) {
         await this.modelAgentManager.saveToConversation(this.conversationId);
@@ -216,7 +226,7 @@ export class ChatSettingsModal extends Modal {
     }
   }
 
-  onClose() {
+  onClose(): void {
     this.renderer?.destroy();
     this.renderer = null;
     this.pendingSettings = null;

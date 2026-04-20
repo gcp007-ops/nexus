@@ -9,7 +9,7 @@
  * - FilePickerRenderer (file picker)
  */
 
-import { App, Notice, Component } from 'obsidian';
+import { App, Notice, Component, Modal, ButtonComponent } from 'obsidian';
 import { SettingsRouter } from '../SettingsRouter';
 import { BreadcrumbNav, BreadcrumbNavItem } from '../components/BreadcrumbNav';
 import { WorkflowEditorRenderer, Workflow } from '../../components/workspace/WorkflowEditorRenderer';
@@ -25,7 +25,7 @@ import { v4 as uuidv4 } from '../../utils/uuid';
 import type { ServiceManager } from '../../core/ServiceManager';
 import type { WorkflowRunService } from '../../services/workflows/WorkflowRunService';
 import type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
-import type { TaskMetadata } from '../../database/repositories/interfaces/ITaskRepository';
+import type { ExternalSyncEvent, HybridStorageAdapter } from '../../database/adapters/HybridStorageAdapter';
 
 export interface WorkspacesTabServices {
     app: App;
@@ -44,8 +44,8 @@ export class WorkspacesTab {
     private services: WorkspacesTabServices;
     private workspaces: ProjectWorkspace[] = [];
     private currentWorkspace: Partial<ProjectWorkspace> | null = null;
-    private currentWorkflowIndex: number = -1;
-    private currentFileIndex: number = -1;
+    private currentWorkflowIndex = -1;
+    private currentFileIndex = -1;
     private currentView: WorkspacesView = 'list';
 
     // Renderers
@@ -59,7 +59,7 @@ export class WorkspacesTab {
     private saveTimeout?: ReturnType<typeof setTimeout>;
 
     // Loading state
-    private isLoading: boolean = true;
+    private isLoading = true;
 
     constructor(
         container: HTMLElement,
@@ -84,15 +84,101 @@ export class WorkspacesTab {
         );
 
         if (Array.isArray(services.prefetchedWorkspaces)) {
-            this.workspaces = services.prefetchedWorkspaces!;
+            this.workspaces = services.prefetchedWorkspaces;
             this.isLoading = false;
             this.render();
         } else {
             this.render();
-            this.loadWorkspaces().then(() => {
+            void this.loadWorkspaces().then(() => {
                 this.isLoading = false;
                 this.render();
             });
+        }
+
+        // Refresh the list / active detail when Obsidian Sync lands remote
+        // workspace or task JSONL changes from another device.
+        this.subscribeToExternalSync();
+    }
+
+    /**
+     * Subscribe to the HybridStorageAdapter `external-sync` event so the
+     * workspace list, active workspace detail, and projects pane stay
+     * current when remote edits arrive. Uses `services.component.registerEvent`
+     * for automatic cleanup when the tab's owning component unloads.
+     */
+    private subscribeToExternalSync(): void {
+        const component = this.services.component;
+        const serviceManager = this.services.serviceManager;
+        if (!component || !serviceManager) {
+            return;
+        }
+
+        // getServiceIfReady is sync; tolerate a not-yet-ready adapter —
+        // it just means no subscription (the tab will still reflect the
+        // initial load).
+        const adapter = serviceManager.getServiceIfReady<HybridStorageAdapter>('hybridStorageAdapter');
+        if (!adapter || typeof adapter.onExternalSync !== 'function') {
+            return;
+        }
+
+        const ref = adapter.onExternalSync((event) => {
+            void this.handleExternalSync(event);
+        });
+        component.registerEvent(ref);
+    }
+
+    /**
+     * Re-query and re-render whatever is currently visible. Specifically:
+     * - Any workspace changed → reload list and re-render current view.
+     * - Tasks for the currently-viewed workspace changed → refreshProjects.
+     */
+    private async handleExternalSync(event: ExternalSyncEvent): Promise<void> {
+        const workspaceChanges = event.modified.filter((m) => m.category === 'workspaces');
+        const taskChanges = event.modified.filter((m) => m.category === 'tasks');
+
+        if (workspaceChanges.length > 0) {
+            try {
+                // If the user is editing a workspace detail form, avoid
+                // destroying unsaved inputs with a full re-render.
+                const isEditingDetail = this.currentView === 'detail' && !!this.currentWorkspace?.id;
+                const editedWorkspaceModified = isEditingDetail &&
+                    workspaceChanges.some((m) => m.businessId === this.currentWorkspace!.id);
+
+                await this.loadWorkspaces();
+
+                if (isEditingDetail) {
+                    // The user has a detail form open.  If the externally-
+                    // modified workspace is NOT the one being edited we can
+                    // silently refresh the backing list — the detail view
+                    // stays untouched.  If it IS the edited workspace we
+                    // still skip the re-render to preserve dirty form state;
+                    // the user will pick up the remote changes next time
+                    // they navigate away and back.
+                    if (!editedWorkspaceModified) {
+                        // List data refreshed; no visual change needed.
+                    }
+                    // else: edited workspace was modified externally — keep
+                    // the user's unsaved edits intact.
+                } else {
+                    this.render();
+                }
+            } catch (error) {
+                console.error('[WorkspacesTab] Failed to refresh workspaces on external-sync:', error);
+            }
+        }
+
+        const currentWorkspaceId = this.currentWorkspace?.id;
+        if (
+            taskChanges.length > 0 &&
+            currentWorkspaceId &&
+            (this.currentView === 'projects' || this.currentView === 'project-detail' || this.currentView === 'task-detail') &&
+            taskChanges.some((m) => m.businessId === currentWorkspaceId)
+        ) {
+            try {
+                await this.projectsManager.refreshProjects();
+            } catch (error) {
+                console.error('[WorkspacesTab] Failed to refresh projects on external-sync:', error);
+            }
         }
     }
 
@@ -113,10 +199,10 @@ export class WorkspacesTab {
                     ])
                 ]);
                 if (service) {
-                    workspaceService = service as WorkspaceService;
+                    workspaceService = service;
                     this.services.workspaceService = workspaceService;
                 }
-            } catch (e) {
+            } catch {
                 // Service unavailable
             }
         }
@@ -210,8 +296,8 @@ export class WorkspacesTab {
         return {
             onNavigateList: () => this.showWorkspaceList(),
             onNavigateDetail: () => this.showWorkspaceDetail(),
-            onNavigateProjects: () => this.showProjectsPage(),
-            onNavigateProjectDetail: () => this.showProjectPage(),
+            onNavigateProjects: () => { void this.openProjectsPage(); },
+            onNavigateProjectDetail: () => { void this.openNewProjectAndRender(); },
             onSaveWorkspace: () => this.saveCurrentWorkspace(),
             onDeleteWorkspace: () => this.deleteCurrentWorkspace(),
             onOpenWorkflowEditor: (index) => this.openWorkflowEditor(index),
@@ -219,7 +305,7 @@ export class WorkspacesTab {
             onOpenFilePicker: (index) => this.openFilePicker(index),
             onRefreshDetail: () => this.refreshDetail(),
             getAvailableAgents: () => this.getAvailableAgents(),
-            getTaskService: () => this.projectsManager.getTaskService() as any,
+            getTaskService: () => this.projectsManager.getTaskService(),
             onRefreshProjects: () => this.projectsManager.refreshProjects(),
             onOpenProjectDetail: (project) => { void this.openProjectDetailAndRender(project); },
             safeRegisterDomEvent: (el, eventName, handler) => this.safeRegisterDomEvent(el, eventName, handler)
@@ -240,16 +326,6 @@ export class WorkspacesTab {
         }
         this.currentView = 'detail';
         this.router.showDetail(this.currentWorkspace.id);
-    }
-
-    private showProjectsPage(): void {
-        this.currentView = 'projects';
-        this.render();
-    }
-
-    private showProjectPage(): void {
-        this.currentView = 'project-detail';
-        this.render();
     }
 
     // --- Workspace CRUD ---
@@ -279,10 +355,14 @@ export class WorkspacesTab {
 
         try {
             const existingIndex = this.workspaces.findIndex(w => w.id === this.currentWorkspace?.id);
+            const workspaceId = this.currentWorkspace.id;
+            if (!workspaceId) {
+                return null;
+            }
 
             if (existingIndex >= 0) {
                 await this.services.workspaceService.updateWorkspace(
-                    this.currentWorkspace.id!,
+                    workspaceId,
                     this.currentWorkspace
                 );
                 this.workspaces[existingIndex] = this.currentWorkspace as ProjectWorkspace;
@@ -303,7 +383,7 @@ export class WorkspacesTab {
     private async deleteCurrentWorkspace(): Promise<void> {
         if (!this.currentWorkspace?.id || !this.services.workspaceService) return;
 
-        const confirmed = confirm(`Delete workspace "${this.currentWorkspace.name}"? This cannot be undone.`);
+        const confirmed = await this.confirmDeleteWorkspace();
         if (!confirmed) return;
 
         try {
@@ -316,6 +396,17 @@ export class WorkspacesTab {
             console.error('[WorkspacesTab] Failed to delete workspace:', error);
             new Notice('Failed to delete workspace');
         }
+    }
+
+    private async confirmDeleteWorkspace(): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+            const modal = new WorkspaceDeleteConfirmModal(
+                this.services.app,
+                this.currentWorkspace?.name || 'Workspace',
+                resolve
+            );
+            modal.open();
+        });
     }
 
     // --- Projects (delegated to ProjectsManagerView) ---
@@ -332,6 +423,14 @@ export class WorkspacesTab {
         await this.projectsManager.openProjectDetail(project);
         this.currentView = 'project-detail';
         this.render();
+    }
+
+    private async openNewProjectAndRender(): Promise<void> {
+        const success = await this.projectsManager.openNewProject();
+        if (success) {
+            this.currentView = 'project-detail';
+            this.render();
+        }
     }
 
     // --- Workflow and file picker (already delegated to existing renderers) ---
@@ -579,11 +678,64 @@ export class WorkspacesTab {
 
     private debouncedSave(): void {
         if (this.saveTimeout) clearTimeout(this.saveTimeout);
-        this.saveTimeout = setTimeout(() => { this.saveCurrentWorkspace(); }, 500);
+        this.saveTimeout = setTimeout(() => {
+            void this.saveCurrentWorkspace();
+        }, 500);
     }
 
     destroy(): void {
         if (this.saveTimeout) clearTimeout(this.saveTimeout);
         this.detailRenderer.destroyForm();
+    }
+}
+
+class WorkspaceDeleteConfirmModal extends Modal {
+    private resolved = false;
+
+    constructor(
+        app: App,
+        private readonly workspaceName: string,
+        private readonly onResolve: (confirmed: boolean) => void
+    ) {
+        super(app);
+    }
+
+    onOpen(): void {
+        const { contentEl } = this;
+        contentEl.empty();
+
+        contentEl.createEl('h2', { text: 'Delete workspace?' });
+        contentEl.createEl('p', {
+            text: `Delete workspace "${this.workspaceName}"? This cannot be undone.`,
+            cls: 'setting-item-description'
+        });
+
+        const buttonRow = contentEl.createDiv('modal-button-container');
+
+        new ButtonComponent(buttonRow)
+            .setButtonText('Cancel')
+            .onClick(() => {
+                this.resolve(false);
+                this.close();
+            });
+
+        new ButtonComponent(buttonRow)
+            .setButtonText('Delete')
+            .setCta()
+            .onClick(() => {
+                this.resolve(true);
+                this.close();
+            });
+    }
+
+    onClose(): void {
+        this.resolve(false);
+        this.contentEl.empty();
+    }
+
+    private resolve(confirmed: boolean): void {
+        if (this.resolved) return;
+        this.resolved = true;
+        this.onResolve(confirmed);
     }
 }

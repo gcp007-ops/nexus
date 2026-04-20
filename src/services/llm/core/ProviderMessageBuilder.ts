@@ -14,6 +14,8 @@
 import { ConversationContextBuilder } from '../../chat/ConversationContextBuilder';
 import { ToolResult } from '../adapters/shared/ToolExecutionUtils';
 import { Tool, ToolCall as AdapterToolCall } from '../adapters/types';
+import { shouldPassToolSchemasToProvider } from '../utils/ToolSchemaSupport';
+import { synthesizeToolCallId } from '../utils/toolCallId';
 import { ToolCall as ChatToolCall } from '../../../types/chat/ChatTypes';
 
 // Union type for tool calls from different sources
@@ -24,22 +26,66 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   tool_calls?: ToolCallUnion[];
+  /** Required on `role: 'tool'` messages — must match an assistant's tool_calls[i].id */
+  tool_call_id?: string;
+  /**
+   * OpenRouter reasoning detail entries (opaque provider payload).
+   * Must be preserved on tool-continuation turns for Gemini-via-OpenRouter
+   * or the model loses its chain-of-thought between turns.
+   */
+  reasoning_details?: unknown[];
+  /**
+   * Google Gemini thought signature. Must be echoed back on continuation
+   * requests after a tool call; dropping it degrades reasoning silently.
+   */
+  thought_signature?: string;
+  /**
+   * Legacy OpenAI `function` role name field. Some older stored conversations
+   * and some OpenAI-compatible providers still attach this to tool/function
+   * messages; stripping it can break strict schema validation.
+   */
+  name?: string;
 }
 
 // Google-specific message format
 export interface GoogleMessage {
   role: 'user' | 'model' | 'function';
-  parts: Array<{ text?: string; functionCall?: any; functionResponse?: any }>;
+  parts: Array<GoogleMessagePart>;
+}
+
+interface GoogleFunctionCall {
+  name?: string;
+  args?: string;
+}
+
+interface GoogleFunctionResponse {
+  name?: string;
+  response?: Record<string, unknown>;
+}
+
+interface GoogleMessagePart {
+  text?: string;
+  functionCall?: GoogleFunctionCall;
+  functionResponse?: GoogleFunctionResponse;
+}
+
+interface OpenAIContinuationItem {
+  role?: 'user' | 'assistant' | 'tool' | 'system';
+  content?: string;
+  type?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: string;
 }
 
 // Internal options type used during streaming orchestration
 export interface GenerateOptionsInternal {
   model: string;
   systemPrompt?: string;
-  conversationHistory?: GoogleMessage[] | ConversationMessage[] | any[]; // any[] for OpenAI Responses API
+  conversationHistory?: GoogleMessage[] | ConversationMessage[] | OpenAIContinuationItem[];
   tools?: Tool[];
-  onToolEvent?: (event: 'started' | 'completed', data: any) => void;
-  onUsageAvailable?: (usage: any, cost?: any) => void;
+  onToolEvent?: (event: 'started' | 'completed', data: unknown) => void;
+  onUsageAvailable?: (usage: unknown, cost?: unknown) => void;
   enableThinking?: boolean;
   thinkingEffort?: 'low' | 'medium' | 'high';
   previousResponseId?: string; // OpenAI Responses API
@@ -50,8 +96,8 @@ export interface StreamingOptions {
   model?: string;
   systemPrompt?: string;
   tools?: Tool[];
-  onToolEvent?: (event: 'started' | 'completed', data: any) => void;
-  onUsageAvailable?: (usage: any, cost?: any) => void;
+  onToolEvent?: (event: 'started' | 'completed', data: unknown) => void;
+  onUsageAvailable?: (usage: unknown, cost?: unknown) => void;
   sessionId?: string;
   workspaceId?: string;
   conversationId?: string;
@@ -60,6 +106,10 @@ export interface StreamingOptions {
   topP?: number;
   frequencyPenalty?: number;
   presencePenalty?: number;
+  imageProvider?: 'google' | 'openrouter';
+  imageModel?: string;
+  transcriptionProvider?: string;
+  transcriptionModel?: string;
   enableThinking?: boolean;
   thinkingEffort?: 'low' | 'medium' | 'high';
   // Responses API (OpenAI/LM Studio): ID from first response, reused for all continuations
@@ -193,9 +243,30 @@ export class ProviderMessageBuilder {
       // Build a full input array: prior messages + user prompt + function_call + function_call_output items.
       const inputItems: Array<Record<string, unknown>> = [];
 
-      // Add prior conversation messages
+      // Add prior conversation messages, converting tool-related messages to Responses API format
       for (const msg of previousMessages) {
         if (msg.role === 'system') continue; // system prompt goes in instructions
+        if (msg.role === 'tool') continue; // tool results are represented as function_call_output below
+
+        // Convert assistant messages with tool_calls to function_call items
+        if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+          // Add any text content as a regular message first
+          if (msg.content) {
+            inputItems.push({ role: 'assistant', content: msg.content });
+          }
+          for (const tc of msg.tool_calls) {
+            const name = ('name' in tc && tc.name) ? tc.name : tc.function?.name || '';
+            const args = tc.function?.arguments || '{}';
+            inputItems.push({
+              type: 'function_call',
+              call_id: tc.id,
+              name,
+              arguments: args
+            });
+          }
+          continue;
+        }
+
         inputItems.push({ role: msg.role, content: msg.content });
       }
 
@@ -204,25 +275,31 @@ export class ProviderMessageBuilder {
         inputItems.push({ role: 'user', content: userPrompt });
       }
 
+      // Synthesize ids for any tool calls missing them. Codex/Responses API
+      // strictly requires call_id on every function_call and function_call_output.
+      const synthesizedIds = toolCalls.map((tc) =>
+        tc.id || synthesizeToolCallId('codex')
+      );
+
       // Add function_call items (what the model called)
-      for (const tc of toolCalls) {
-        const name = ('name' in tc && tc.name) ? tc.name as string : tc.function?.name || '';
+      for (let i = 0; i < toolCalls.length; i++) {
+        const tc = toolCalls[i];
+        const name = ('name' in tc && tc.name) ? tc.name : tc.function?.name || '';
         const args = tc.function?.arguments || '{}';
         inputItems.push({
           type: 'function_call',
-          call_id: tc.id,
+          call_id: synthesizedIds[i],
           name,
           arguments: args
         });
       }
 
-      // Add function_call_output items (what the tools returned)
+      // Add function_call_output items (what the tools returned) with matching call_id
       for (let i = 0; i < toolResults.length; i++) {
         const result = toolResults[i];
-        const tc = toolCalls[i];
         inputItems.push({
           type: 'function_call_output',
-          call_id: tc?.id || result.id,
+          call_id: synthesizedIds[i] || result.id || `call_synth_codex_result_${Date.now()}_${i}`,
           output: result.success
             ? JSON.stringify(result.result || {})
             : JSON.stringify({ error: result.error || 'Tool execution failed' })
@@ -346,7 +423,7 @@ export class ProviderMessageBuilder {
         model,
         systemPrompt: extractedSystemPrompt,
         conversationHistory: googleConversationHistory,
-        tools: options?.tools,
+        tools: shouldPassToolSchemasToProvider(provider) ? options?.tools : undefined,
         onToolEvent: options?.onToolEvent,
         onUsageAvailable: options?.onUsageAvailable,
         enableThinking: options?.enableThinking,
@@ -364,7 +441,7 @@ export class ProviderMessageBuilder {
       generateOptions = {
         model,
         systemPrompt: systemPrompt || extractedSystemPrompt,
-        tools: options?.tools,
+        tools: shouldPassToolSchemasToProvider(provider) ? options?.tools : undefined,
         onToolEvent: options?.onToolEvent,
         onUsageAvailable: options?.onUsageAvailable,
         enableThinking: options?.enableThinking,
