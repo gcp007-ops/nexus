@@ -836,6 +836,20 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       expect(call.params.content).toBe(' inline ');
     });
 
+    it('anonymous heredoc body may document named syntax without being consumed', () => {
+      // Documentation-style payload: an anonymous body mentions the literal
+      // `<<FOO...FOO` named-heredoc syntax. Because anon is extracted BEFORE
+      // named, the anon body is protected — the named matcher never sees
+      // these mentions. Symmetric to the pre-existing "named allows >>>"
+      // guard, which covers the inverse collision.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'content write "doc.md" <<<Named heredoc syntax: <<FOO body FOO captures through balanced NAME.>>>',
+      });
+      expect(call.params.content).toBe(
+        'Named heredoc syntax: <<FOO body FOO captures through balanced NAME.'
+      );
+    });
+
     it('multiline named heredoc composes with a following command (comma terminator)', () => {
       // Regression: before the comma lookahead was added to the multiline
       // close, `<<TAG\nbody\nTAG, content write ...` failed as "unclosed"

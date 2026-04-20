@@ -458,14 +458,36 @@ const HEREDOC_PLACEHOLDER_SUFFIX = '__';
  * input with blocks replaced by stable identifier placeholders, plus the
  * blocks for later restoration. Throws on unclosed blocks.
  *
- * Order matters: named heredocs (`<<NAME...NAME`) are matched before anonymous
- * (`<<<...>>>`) so that `<<NAME...NAME` is not partially consumed by the
- * anonymous matcher.
+ * Order matters: anonymous heredocs (`<<<...>>>`) are extracted BEFORE named
+ * (`<<NAME...NAME`). This protects the body of an anonymous block from having
+ * its content consumed by the named matcher — e.g., documentation payloads
+ * that mention the literal string `<<NAME` or `<<FOO...FOO` inside `<<<...>>>`.
+ *
+ * The inverse collision (a named body containing a literal `<<<`) is the
+ * canonical motivation for the named form existing — users pick named
+ * precisely when their payload contains `>>>`. The two forms therefore cover
+ * each other's escape scenarios: use `<<<...>>>` when the body mentions
+ * `<<NAME`; use `<<BODY...BODY` when the body contains `>>>`.
  */
 export function extractRawBlocks(input: string): { processed: string; blocks: RawBlock[] } {
   const blocks: RawBlock[] = [];
   let processed = input;
   let blockIdx = 0;
+
+  // Anonymous heredoc: <<<...>>> (lazy match, stops at first `>>>`).
+  processed = processed.replace(/<<<([\s\S]*?)>>>/g, (_full: string, content: string) => {
+    const placeholder = `${HEREDOC_PLACEHOLDER_PREFIX}${blockIdx++}${HEREDOC_PLACEHOLDER_SUFFIX}`;
+    blocks.push({ placeholder, content });
+    return placeholder;
+  });
+
+  // Detect orphan `<<<` (open without close) left after the anon pass.
+  const orphanIdx = processed.indexOf('<<<');
+  if (orphanIdx !== -1) {
+    throw new Error(
+      `Unclosed heredoc block "<<<" at position ${orphanIdx}. Expected ">>>" to close.`
+    );
+  }
 
   // Named heredoc: <<NAME ... NAME (NAME = 1–32 uppercase letters/digits/underscore)
   //
@@ -528,21 +550,6 @@ export function extractRawBlocks(input: string): { processed: string; blocks: Ra
       processed.substring(0, openIdx) +
       placeholder +
       processed.substring(closeEnd);
-  }
-
-  // Anonymous heredoc: <<<...>>> (lazy match, stops at first `>>>`).
-  processed = processed.replace(/<<<([\s\S]*?)>>>/g, (_full: string, content: string) => {
-    const placeholder = `${HEREDOC_PLACEHOLDER_PREFIX}${blockIdx++}${HEREDOC_PLACEHOLDER_SUFFIX}`;
-    blocks.push({ placeholder, content });
-    return placeholder;
-  });
-
-  // Detect orphan `<<<` (open without close).
-  const orphanIdx = processed.indexOf('<<<');
-  if (orphanIdx !== -1) {
-    throw new Error(
-      `Unclosed heredoc block "<<<" at position ${orphanIdx}. Expected ">>>" to close.`
-    );
   }
 
   return { processed, blocks };
