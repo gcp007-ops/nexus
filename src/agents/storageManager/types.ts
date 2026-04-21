@@ -428,6 +428,32 @@ export interface ArchiveParams extends CommonParameters {
 }
 
 /**
+ * Arguments for deleting a file or folder.
+ * Fork-local (gcp007-ops) — replaces runtime monkey-patch.
+ */
+export interface DeleteParams extends CommonParameters {
+  /**
+   * Path to file or folder to delete
+   */
+  path: string;
+  /**
+   * If true, permanently delete (skips trash, irreversible).
+   * Default false (moves to system trash — recoverable).
+   */
+  permanent?: boolean;
+}
+
+/**
+ * Result of deleting a file or folder
+ */
+export interface DeleteResult {
+  /** Whether the operation was successful */
+  success: boolean;
+  /** Error message if delete failed */
+  error?: string;
+}
+
+/**
  * Result of archiving a file or folder
  */
 export interface ArchiveResult {

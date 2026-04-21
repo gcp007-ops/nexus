@@ -7,6 +7,7 @@ import {
   MoveTool,
   CopyTool,
   ArchiveTool,
+  DeleteTool,
   OpenTool
 } from './tools';
 import { sanitizeVaultName } from '../../utils/vaultUtils';
@@ -64,6 +65,12 @@ export class StorageManagerAgent extends BaseAgent {
       description: 'Safely archive a file or folder (moves to .archive/ with timestamp)',
       version: '1.0.0',
       factory: () => new ArchiveTool(app),
+    });
+    this.registerLazyTool({
+      slug: 'delete', name: 'Delete',
+      description: 'Delete a file or folder (moves to system trash by default — recoverable; permanent=true bypasses trash)',
+      version: '1.0.0',
+      factory: () => new DeleteTool(app),
     });
     this.registerLazyTool({
       slug: 'open', name: 'Open',
