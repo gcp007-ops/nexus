@@ -229,10 +229,34 @@ function buildStubRegistry(): Map<string, IAgent> {
     }),
   ]);
 
+  // oneOfAgent → setProp(value: oneOf[string|number|boolean|array<string>], required)
+  // Mirrors the real `contentManager.setProperty.value` schema so the CLI
+  // coercion path for issue #172 is exercised end-to-end through
+  // `normalizeExecutionCalls` without depending on the full ContentManager
+  // agent. Alias is `one-of` (see `toKebabCase`).
+  const oneOfAgent = makeStubAgent('oneOfAgent', [
+    makeStubTool('setProp', {
+      type: 'object',
+      properties: {
+        value: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'number' },
+            { type: 'boolean' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Value to set (scalar or array of strings)',
+        },
+      },
+      required: ['value'],
+    }),
+  ]);
+
   return new Map<string, IAgent>([
     ['contentManager', contentAgent],
     ['storageManager', storageAgent],
     ['numericAgent', coerceAgent],
+    ['oneOfAgent', oneOfAgent],
     ['toolManager', makeStubAgent('toolManager', [])], // excluded from --help
   ]);
 }
@@ -270,7 +294,7 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
     it('"--help" expands to all agents except toolManager', () => {
       const result = makeNormalizer().normalizeDiscoveryRequests({ tool: '--help' });
       const agents = result.map(r => r.agent).sort();
-      expect(agents).toEqual(['contentManager', 'numericAgent', 'storageManager']);
+      expect(agents).toEqual(['contentManager', 'numericAgent', 'oneOfAgent', 'storageManager']);
     });
 
     it('throws on unknown agent token', () => {
@@ -556,6 +580,50 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
         tool: 'numeric convert --tags \'["só um"]\'',
       });
       expect(call.params.tags).toEqual(['só um']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #172: `oneOf: [string|number|boolean, array<string>]` slot.
+  // Previously `getSchemaType` had no branch for `oneOf`, so the type marker
+  // fell through to `'unknown'` and `coerceValue` returned `raw` verbatim.
+  // A multi-item CSV like `"a,b,c"` reached the tool as the literal string
+  // `"a,b,c"` and corrupted the frontmatter. Fix: detect oneOf-with-array,
+  // return marker `oneOfArray`, and branch in coerceValue on JSON array
+  // literal vs CSV split vs single-item scalar.
+  // -------------------------------------------------------------------------
+
+  describe('normalizeExecutionCalls — oneOf array|scalar coercion (Issue #172)', () => {
+    it('single segment preserves raw scalar string (no array wrap)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "single-tag"',
+      });
+      expect(call.params.value).toBe('single-tag');
+    });
+
+    it('CSV multi-segment coerces to string[] (fix target for #172)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "a,b,c"',
+      });
+      expect(call.params.value).toEqual(['a', 'b', 'c']);
+    });
+
+    it('JSON array literal coerces to string[]', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop \'["alpha","beta","gamma"]\'',
+      });
+      expect(call.params.value).toEqual(['alpha', 'beta', 'gamma']);
+    });
+
+    it('outer-quoted item with internal comma collapses to scalar', () => {
+      // Shell tokenizer strips the outer single quotes, leaving
+      // `"multi, comma"`. splitCsvRespectingQuotes then honors the inner
+      // double quotes and yields a single item, so the oneOfArray branch
+      // collapses to a scalar string (precedent: #163 splitCsvRespectingQuotes).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop \'"multi, comma"\'',
+      });
+      expect(call.params.value).toBe('multi, comma');
     });
   });
 

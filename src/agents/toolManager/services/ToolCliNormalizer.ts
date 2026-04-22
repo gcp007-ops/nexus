@@ -70,6 +70,20 @@ function getSchemaType(schema: Record<string, unknown>): string {
   if (typeof schema.type === 'string') {
     return schema.type;
   }
+  // `oneOf` with an array option (e.g. `setProperty.value`) previously fell
+  // through to `unknown`, which meant `coerceValue` had no branch to hit and
+  // returned the raw string verbatim. A CSV multi-item input like `"a,b,c"`
+  // therefore reached the tool as the literal string `"a,b,c"` instead of the
+  // array the caller intended. Flag oneOf-with-array here so coerceValue can
+  // branch on whether the raw looks like a JSON array literal or a CSV.
+  if (Array.isArray(schema.oneOf)) {
+    const hasArrayOption = schema.oneOf.some(
+      (opt: unknown) => isRecord(opt) && opt.type === 'array'
+    );
+    if (hasArrayOption) {
+      return 'oneOfArray';
+    }
+  }
   return 'unknown';
 }
 
@@ -287,6 +301,29 @@ function coerceValue(raw: string, type: string): unknown {
     } catch {
       return raw;
     }
+  }
+
+  if (type === 'oneOfArray') {
+    // `oneOf: [string|number|boolean, array<string>]` slot. JSON array literal
+    // wins first; otherwise split on top-level commas. A single-item result
+    // collapses to a scalar (the outer quotes were already stripped by the
+    // tokenizer / CSV splitter) so the caller sees a string, not `["x"]`.
+    // Multi-item results become `string[]` for the array branch of oneOf.
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch {
+        // Malformed JSON → fall through to CSV split.
+      }
+    }
+    const items = splitCsvRespectingQuotes(raw);
+    if (items.length >= 2) return items;
+    if (items.length === 1) return items[0];
+    return raw;
   }
 
   return raw;

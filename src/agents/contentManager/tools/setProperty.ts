@@ -80,6 +80,17 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
               }
             }
             frontmatter[property] = merged;
+          } else if (Array.isArray(existing) && !Array.isArray(value)) {
+            // Appending a single item to an array field is semantically
+            // unambiguous — promote scalar to [value] and union-dedup. Without
+            // this, `set-property tags "new" --mode merge` over an existing
+            // array errored, forcing a `content write --overwrite` of the
+            // whole file.
+            const merged = [...existing];
+            if (!merged.includes(value)) {
+              merged.push(value);
+            }
+            frontmatter[property] = merged;
           } else if (Array.isArray(existing) !== Array.isArray(value)) {
             mergeError =
               `Cannot merge: existing value is ${Array.isArray(existing) ? 'array' : 'scalar'} ` +
