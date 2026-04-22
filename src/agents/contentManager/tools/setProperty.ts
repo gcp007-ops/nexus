@@ -69,26 +69,38 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
         if (mode === 'merge') {
           const existing = frontmatter[property];
 
+          // Promote scalar string value to single-item array when existing
+          // field is an array. Rationale: CLI single-item calls (e.g.,
+          // `set-property tags "nova-tag" --mode merge`) were previously
+          // rejected as type-mismatch (array vs scalar), forcing callers
+          // into wasteful workarounds. A scalar string in merge intent over
+          // an existing array is unambiguous: append the item.
+          // Paired with ToolCliNormalizer oneOfArray coercion (multi-item
+          // CSV → array) so both N=1 and N>=2 flows work without overwrite.
+          const normalizedValue =
+            Array.isArray(existing) && typeof value === 'string'
+              ? [value]
+              : value;
+
           if (existing === undefined || existing === null) {
-            frontmatter[property] = value;
-          } else if (isStringArray(existing) && isStringArray(value)) {
+            frontmatter[property] = normalizedValue;
+          } else if (isStringArray(existing) && isStringArray(normalizedValue)) {
             const merged = [...existing];
-            const newList = value;
-            for (const item of newList) {
+            for (const item of normalizedValue) {
               if (!merged.includes(item)) {
                 merged.push(item);
               }
             }
             frontmatter[property] = merged;
-          } else if (Array.isArray(existing) !== Array.isArray(value)) {
+          } else if (Array.isArray(existing) !== Array.isArray(normalizedValue)) {
             mergeError =
               `Cannot merge: existing value is ${Array.isArray(existing) ? 'array' : 'scalar'} ` +
-              `but new value is ${Array.isArray(value) ? 'array' : 'scalar'}. ` +
+              `but new value is ${Array.isArray(normalizedValue) ? 'array' : 'scalar'}. ` +
               `Use mode "replace" to overwrite, or ensure both values are the same type.`;
             return;
           } else {
             // Scalar + Scalar: equivalent to replace
-            frontmatter[property] = value;
+            frontmatter[property] = normalizedValue;
           }
         } else {
           frontmatter[property] = value;

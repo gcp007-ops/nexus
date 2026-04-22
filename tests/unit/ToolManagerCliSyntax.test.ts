@@ -224,6 +224,16 @@ function buildStubRegistry(): Map<string, IAgent> {
         objects: { type: 'array', items: { type: 'object' } },
         config: { type: 'object' },
         label: { type: 'string' },
+        // oneOf polymorphic value — mirrors setProperty.value schema.
+        // Used by the "oneOf-with-array disambiguation" test group below.
+        polyValue: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'number' },
+            { type: 'boolean' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+        },
       },
       required: [],
     }),
@@ -535,6 +545,48 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
         tool: 'numeric convert --tags "alpha,beta,gamma"',
       });
       expect(call.params.tags).toEqual(['alpha', 'beta', 'gamma']);
+    });
+
+    it('oneOf schema with array branch: single segment → raw scalar string', () => {
+      // Regression gate. setProperty.value is `oneOf[string, number, boolean,
+      // array<string>]`; before the fix, getSchemaType returned 'unknown' for
+      // oneOf schemas, so the raw string passed through as-is (correct for
+      // single-item scalar intent, but wrongly also for CSV). Confirm scalar
+      // path stays scalar: no accidental array promotion.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --poly-value "concluida"',
+      });
+      expect(call.params.polyValue).toBe('concluida');
+    });
+
+    it('oneOf schema with array branch: CSV multi-segment → string[] coercion', () => {
+      // Fix target: `set-property tags "a,b,c" --mode merge` was coerced to
+      // a single string "a,b,c" because oneOf schemas hit the 'unknown'
+      // fallthrough. Now the polymorphic marker disambiguates by input shape.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --poly-value "alpha,beta,gamma"',
+      });
+      expect(call.params.polyValue).toEqual(['alpha', 'beta', 'gamma']);
+    });
+
+    it('oneOf schema with array branch: JSON array literal → string[] coercion', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --poly-value \'["one","two","three"]\'',
+      });
+      expect(call.params.polyValue).toEqual(['one', 'two', 'three']);
+    });
+
+    it('oneOf schema with array branch: outer-quoted item with internal comma → scalar', () => {
+      // Precedent: splitCsvRespectingQuotes preserves commas inside quotes
+      // (#163). Here the whole input is ONE quoted segment containing a
+      // literal comma — should stay scalar, not split.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'numeric convert --poly-value "\\"Silva, João\\""',
+      });
+      // The tokenizer strips outer quotes, leaving "Silva, João" as raw.
+      // splitTopLevelSegments sees it as a single segment (no unquoted comma).
+      // Scalar intent preserved.
+      expect(call.params.polyValue).toBe('Silva, João');
     });
 
     it('preserves existing CSV syntax (no regression)', () => {

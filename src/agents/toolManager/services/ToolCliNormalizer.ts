@@ -70,6 +70,25 @@ function getSchemaType(schema: Record<string, unknown>): string {
   if (typeof schema.type === 'string') {
     return schema.type;
   }
+  // `oneOf` schema: tool declares value can be scalar OR array. The CLI parser
+  // cannot statically choose; return a polymorphic marker so `coerceValue` can
+  // disambiguate at runtime based on input shape (CSV top-level segments or
+  // JSON array literal → array; otherwise → raw scalar).
+  // Origin: setProperty.value accepts `oneOf [string, number, boolean,
+  // array<string>]`; without oneOf awareness, parser returned 'unknown' and
+  // string CSV like "a,b,c" was never split into an array — merge logic in
+  // setProperty then rejected array+scalar type mismatch.
+  if (Array.isArray(schema.oneOf)) {
+    const arrayOption = schema.oneOf.find(
+      (opt): opt is Record<string, unknown> =>
+        isRecord(opt) && opt.type === 'array'
+    );
+    if (arrayOption) {
+      const items = isRecord(arrayOption.items) ? arrayOption.items : {};
+      const itemType = typeof items.type === 'string' ? items.type : 'unknown';
+      return `oneOfArray<${itemType}>`;
+    }
+  }
   return 'unknown';
 }
 
@@ -279,6 +298,37 @@ function coerceValue(raw: string, type: string): unknown {
       return jsonItems.map((item: unknown) => coerceArrayItem(item, itemType));
     }
     return splitCsvRespectingQuotes(raw).map(item => coerceValue(item, itemType));
+  }
+
+  if (type.startsWith('oneOfArray<')) {
+    // Polymorphic schema (e.g., setProperty.value accepts string | number |
+    // boolean | array<string>). Disambiguate by input shape:
+    //   - JSON array literal "[...]" → array
+    //   - CSV with ≥2 top-level segments (respecting quotes) → array
+    //   - single segment → scalar (returns stripped value; downstream merge
+    //     logic in setProperty promotes to [value] when existing field is
+    //     an array)
+    // `splitCsvRespectingQuotes` is used for both paths so outer-quote
+    // stripping is consistent (e.g., `"Silva, João"` → single segment
+    // `Silva, João` with literal comma preserved, not split).
+    const itemType = type.slice('oneOfArray<'.length, -1);
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: unknown) => coerceArrayItem(item, itemType));
+        }
+      } catch {
+        // Malformed JSON → fall through to CSV heuristic.
+      }
+    }
+    const segments = splitCsvRespectingQuotes(raw);
+    if (segments.length > 1) {
+      return segments.map(item => coerceValue(item, itemType));
+    }
+    // Single segment: scalar with outer quotes stripped.
+    return segments.length === 1 ? segments[0] : raw;
   }
 
   if (type === 'object') {
