@@ -625,6 +625,80 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       });
       expect(call.params.value).toBe('multi, comma');
     });
+
+    it('empty JSON array literal yields empty array', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[]"',
+      });
+      expect(call.params.value).toEqual([]);
+    });
+
+    it('JSON array with non-string items preserves parsed types', () => {
+      // oneOf allows number/boolean/string scalars in its non-array arms.
+      // When the caller explicitly writes a JSON array, we honor the parsed
+      // types verbatim — downstream schema validation decides whether the
+      // mix is acceptable for a given slot. This is a characterization pin:
+      // no per-item coercion is applied to the array branch.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[1,2,3]"',
+      });
+      expect(call.params.value).toEqual([1, 2, 3]);
+    });
+
+    it('empty-string value preserved as empty scalar (not dropped, not empty array)', () => {
+      // `splitCsvRespectingQuotes("")` returns `[]`, which the oneOfArray
+      // branch treats as the empty-length fall-through: return raw. This
+      // avoids silently coercing a missing value to `[]` (which would
+      // masquerade as a successful write).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop ""',
+      });
+      expect(call.params.value).toBe('');
+    });
+
+    it('whitespace-only value preserved as raw scalar', () => {
+      // Trimmed items drop; zero items means no CSV match, so we return the
+      // raw whitespace unchanged. Parity with the EC-4 rule for numeric
+      // slots (whitespace-only is not silently coerced to 0/empty-array).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "   "',
+      });
+      expect(call.params.value).toBe('   ');
+    });
+
+    it('bracket-wrapped malformed JSON falls through to CSV split', () => {
+      // `[a,b,c]` wraps in brackets so the JSON branch is attempted, fails
+      // on unquoted identifiers, and falls through to splitCsvRespectingQuotes.
+      // Outer brackets stay attached to the first/last items. Matches the
+      // array<string> branch's fallback behavior (see Bug #2 characterization).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[a,b,c]"',
+      });
+      expect(call.params.value).toEqual(['[a', 'b', 'c]']);
+    });
+
+    it('bracket-prefix-only (no closing bracket) skips JSON and splits as CSV', () => {
+      // Starts with `[` but doesn't end with `]` → the JSON branch's
+      // startsWith/endsWith gate is not satisfied, so JSON.parse is never
+      // attempted. The single-item CSV result collapses to scalar.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[broken"',
+      });
+      expect(call.params.value).toBe('[broken');
+    });
+
+    it('numeric-looking scalar stays a string (parser does not second-guess oneOf branch)', () => {
+      // oneOf includes {type: 'number'}, but the CLI parser has no way to
+      // know which branch the caller intended. Single-item CSV result is
+      // returned as a string; downstream schema validation (or the receiving
+      // tool) handles type coercion if it wants. Pinned to prevent a well-
+      // meaning "smart" coercion from sneaking in later and changing
+      // behavior for existing callers that expect strings.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "42"',
+      });
+      expect(call.params.value).toBe('42');
+    });
   });
 
   // -------------------------------------------------------------------------
