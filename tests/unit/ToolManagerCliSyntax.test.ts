@@ -229,10 +229,34 @@ function buildStubRegistry(): Map<string, IAgent> {
     }),
   ]);
 
+  // oneOfAgent → setProp(value: oneOf[string|number|boolean|array<string>], required)
+  // Mirrors the real `contentManager.setProperty.value` schema so the CLI
+  // coercion path for issue #172 is exercised end-to-end through
+  // `normalizeExecutionCalls` without depending on the full ContentManager
+  // agent. Alias is `one-of` (see `toKebabCase`).
+  const oneOfAgent = makeStubAgent('oneOfAgent', [
+    makeStubTool('setProp', {
+      type: 'object',
+      properties: {
+        value: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'number' },
+            { type: 'boolean' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description: 'Value to set (scalar or array of strings)',
+        },
+      },
+      required: ['value'],
+    }),
+  ]);
+
   return new Map<string, IAgent>([
     ['contentManager', contentAgent],
     ['storageManager', storageAgent],
     ['numericAgent', coerceAgent],
+    ['oneOfAgent', oneOfAgent],
     ['toolManager', makeStubAgent('toolManager', [])], // excluded from --help
   ]);
 }
@@ -270,7 +294,7 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
     it('"--help" expands to all agents except toolManager', () => {
       const result = makeNormalizer().normalizeDiscoveryRequests({ tool: '--help' });
       const agents = result.map(r => r.agent).sort();
-      expect(agents).toEqual(['contentManager', 'numericAgent', 'storageManager']);
+      expect(agents).toEqual(['contentManager', 'numericAgent', 'oneOfAgent', 'storageManager']);
     });
 
     it('throws on unknown agent token', () => {
@@ -556,6 +580,124 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
         tool: 'numeric convert --tags \'["só um"]\'',
       });
       expect(call.params.tags).toEqual(['só um']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #172: `oneOf: [string|number|boolean, array<string>]` slot.
+  // Previously `getSchemaType` had no branch for `oneOf`, so the type marker
+  // fell through to `'unknown'` and `coerceValue` returned `raw` verbatim.
+  // A multi-item CSV like `"a,b,c"` reached the tool as the literal string
+  // `"a,b,c"` and corrupted the frontmatter. Fix: detect oneOf-with-array,
+  // return marker `oneOfArray`, and branch in coerceValue on JSON array
+  // literal vs CSV split vs single-item scalar.
+  // -------------------------------------------------------------------------
+
+  describe('normalizeExecutionCalls — oneOf array|scalar coercion (Issue #172)', () => {
+    it('single segment preserves raw scalar string (no array wrap)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "single-tag"',
+      });
+      expect(call.params.value).toBe('single-tag');
+    });
+
+    it('CSV multi-segment coerces to string[] (fix target for #172)', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "a,b,c"',
+      });
+      expect(call.params.value).toEqual(['a', 'b', 'c']);
+    });
+
+    it('JSON array literal coerces to string[]', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop \'["alpha","beta","gamma"]\'',
+      });
+      expect(call.params.value).toEqual(['alpha', 'beta', 'gamma']);
+    });
+
+    it('outer-quoted item with internal comma collapses to scalar', () => {
+      // Shell tokenizer strips the outer single quotes, leaving
+      // `"multi, comma"`. splitCsvRespectingQuotes then honors the inner
+      // double quotes and yields a single item, so the oneOfArray branch
+      // collapses to a scalar string (precedent: #163 splitCsvRespectingQuotes).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop \'"multi, comma"\'',
+      });
+      expect(call.params.value).toBe('multi, comma');
+    });
+
+    it('empty JSON array literal yields empty array', () => {
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[]"',
+      });
+      expect(call.params.value).toEqual([]);
+    });
+
+    it('JSON array with non-string items preserves parsed types', () => {
+      // oneOf allows number/boolean/string scalars in its non-array arms.
+      // When the caller explicitly writes a JSON array, we honor the parsed
+      // types verbatim — downstream schema validation decides whether the
+      // mix is acceptable for a given slot. This is a characterization pin:
+      // no per-item coercion is applied to the array branch.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[1,2,3]"',
+      });
+      expect(call.params.value).toEqual([1, 2, 3]);
+    });
+
+    it('empty-string value preserved as empty scalar (not dropped, not empty array)', () => {
+      // `splitCsvRespectingQuotes("")` returns `[]`, which the oneOfArray
+      // branch treats as the empty-length fall-through: return raw. This
+      // avoids silently coercing a missing value to `[]` (which would
+      // masquerade as a successful write).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop ""',
+      });
+      expect(call.params.value).toBe('');
+    });
+
+    it('whitespace-only value preserved as raw scalar', () => {
+      // Trimmed items drop; zero items means no CSV match, so we return the
+      // raw whitespace unchanged. Parity with the EC-4 rule for numeric
+      // slots (whitespace-only is not silently coerced to 0/empty-array).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "   "',
+      });
+      expect(call.params.value).toBe('   ');
+    });
+
+    it('bracket-wrapped malformed JSON falls through to CSV split', () => {
+      // `[a,b,c]` wraps in brackets so the JSON branch is attempted, fails
+      // on unquoted identifiers, and falls through to splitCsvRespectingQuotes.
+      // Outer brackets stay attached to the first/last items. Matches the
+      // array<string> branch's fallback behavior (see Bug #2 characterization).
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[a,b,c]"',
+      });
+      expect(call.params.value).toEqual(['[a', 'b', 'c]']);
+    });
+
+    it('bracket-prefix-only (no closing bracket) skips JSON and splits as CSV', () => {
+      // Starts with `[` but doesn't end with `]` → the JSON branch's
+      // startsWith/endsWith gate is not satisfied, so JSON.parse is never
+      // attempted. The single-item CSV result collapses to scalar.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[broken"',
+      });
+      expect(call.params.value).toBe('[broken');
+    });
+
+    it('numeric-looking scalar stays a string (parser does not second-guess oneOf branch)', () => {
+      // oneOf includes {type: 'number'}, but the CLI parser has no way to
+      // know which branch the caller intended. Single-item CSV result is
+      // returned as a string; downstream schema validation (or the receiving
+      // tool) handles type coercion if it wants. Pinned to prevent a well-
+      // meaning "smart" coercion from sneaking in later and changing
+      // behavior for existing callers that expect strings.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "42"',
+      });
+      expect(call.params.value).toBe('42');
     });
   });
 

@@ -10,6 +10,69 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 /**
+ * Outcome of a merge-mode decision for `setProperty`. Extracted as a pure
+ * function so every branch (including the scalar-into-array promotion added
+ * for #172) is covered by unit tests without needing an Obsidian App mock.
+ */
+export type MergeResult =
+  | { kind: 'replace'; value: unknown }
+  | { kind: 'error'; message: string };
+
+/**
+ * Decide what a merge-mode `setProperty` call should write, given the current
+ * frontmatter value and the new input. Pure: no side effects, no IO.
+ *
+ * Branches:
+ *   - `existing` absent → replace with incoming value.
+ *   - both `string[]` → union with dedup (order preserved).
+ *   - array existing + scalar incoming → promote scalar to `[value]` and
+ *     union-dedup. Fix for #172: previously errored with a type-mismatch and
+ *     made single-item append via CLI impossible.
+ *   - scalar existing + array incoming → error. Semantically ambiguous (is
+ *     the existing scalar one of the new items, or should it be discarded?).
+ *   - both scalars, or both arrays of a non-string shape → replace. The
+ *     latter is a pre-#172 characterization: non-string-array merge is a
+ *     silent replace rather than an error or union. Preserving existing
+ *     behavior to keep the fix narrowly scoped.
+ */
+export function computeMergeResult(existing: unknown, value: unknown): MergeResult {
+  if (existing === undefined || existing === null) {
+    return { kind: 'replace', value };
+  }
+
+  if (isStringArray(existing) && isStringArray(value)) {
+    const merged = [...existing];
+    for (const item of value) {
+      if (!merged.includes(item)) {
+        merged.push(item);
+      }
+    }
+    return { kind: 'replace', value: merged };
+  }
+
+  if (Array.isArray(existing) && !Array.isArray(value)) {
+    const merged = [...existing];
+    if (!merged.includes(value)) {
+      merged.push(value);
+    }
+    return { kind: 'replace', value: merged };
+  }
+
+  if (Array.isArray(existing) !== Array.isArray(value)) {
+    return {
+      kind: 'error',
+      message:
+        `Cannot merge: existing value is ${Array.isArray(existing) ? 'array' : 'scalar'} ` +
+        `but new value is ${Array.isArray(value) ? 'array' : 'scalar'}. ` +
+        `Use mode "replace" to overwrite, or ensure both values are the same type.`,
+    };
+  }
+
+  // Scalar + Scalar (or array + non-string-array): replace.
+  return { kind: 'replace', value };
+}
+
+/**
  * Location: src/agents/contentManager/tools/setProperty.ts
  *
  * Tool for setting frontmatter properties on notes.
@@ -67,29 +130,12 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
 
       await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
         if (mode === 'merge') {
-          const existing = frontmatter[property];
-
-          if (existing === undefined || existing === null) {
-            frontmatter[property] = value;
-          } else if (isStringArray(existing) && isStringArray(value)) {
-            const merged = [...existing];
-            const newList = value;
-            for (const item of newList) {
-              if (!merged.includes(item)) {
-                merged.push(item);
-              }
-            }
-            frontmatter[property] = merged;
-          } else if (Array.isArray(existing) !== Array.isArray(value)) {
-            mergeError =
-              `Cannot merge: existing value is ${Array.isArray(existing) ? 'array' : 'scalar'} ` +
-              `but new value is ${Array.isArray(value) ? 'array' : 'scalar'}. ` +
-              `Use mode "replace" to overwrite, or ensure both values are the same type.`;
+          const outcome = computeMergeResult(frontmatter[property], value);
+          if (outcome.kind === 'error') {
+            mergeError = outcome.message;
             return;
-          } else {
-            // Scalar + Scalar: equivalent to replace
-            frontmatter[property] = value;
           }
+          frontmatter[property] = outcome.value;
         } else {
           frontmatter[property] = value;
         }
