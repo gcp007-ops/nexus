@@ -6,11 +6,17 @@ Ponteiro técnico mínimo do fork `gcp007-ops/nexus` (upstream: `ProfSynapse/nex
 
 ---
 
-## Estado: zero divergência funcional
+## Estado: 1 commit funcional + infra (paridade 5.8.4)
 
-Desde 2026-04-20 (ciclo 5.8.2), o fork roda **puro upstream** em código. Único delta vs `origin/main` é este arquivo + [OFFERINGS.md](./OFFERINGS.md) + [.github/workflows/upstream-sync.yml](./.github/workflows/upstream-sync.yml) — tudo meta/infra, nada funcional.
+Base: `origin/main` em `5.8.4` (`9fdb4e20`) + `011343f9` (task-board autorefresh pós-tag).
 
-Próximo sync upstream é fast-forward trivial esperado.
+**Cherry-picks locais preservados:**
+
+- `feat(storageManager): add DeleteTool to replace runtime monkey-patch` (origem `c3eb2656`, replantado em syncs via cherry-pick) — elimina o último monkey-patch runtime (`nexus-monkey-patch.ts` no ThinkBox scripts), migrando a ferramenta `storage delete` para commit no `storageManager` do fork.
+
+**Meta/infra:** este arquivo + [OFFERINGS.md](./OFFERINGS.md) + [.github/workflows/upstream-sync.yml](./.github/workflows/upstream-sync.yml).
+
+Próximos syncs upstream: reset-hard + cherry-pick do DeleteTool é o padrão (mesmo usado em 5.8.1, 5.8.2, 5.8.4). Conflito esperado em `src/utils/connectorContent.ts` (auto-gen; resolver tomando `ours`=upstream + rebuild regenera).
 
 ---
 
