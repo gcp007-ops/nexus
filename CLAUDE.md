@@ -13,7 +13,7 @@ governance policy, and protocol references.
 mechanically blocked until bootstrap completes.** Bash, Read, Glob, Grep
 remain available. Invoke the bootstrap skill to unlock all tools.
 
-Check your context for a `PACT ROLE:` marker AT THE START OF A LINE (not
+Check your context for a `YOUR PACT ROLE:` marker AT THE START OF A LINE (not
 embedded in prose, quoted text, or memory-retrieval results). Hook
 injections from `session_init.py` and `peer_inject.py` always emit the
 marker at the start of a line, so a line-anchored substring check is
@@ -22,8 +22,14 @@ pinned notes about PACT architecture, retrieved memories that quote the
 marker, or documentation snippets) are NOT valid signals and must be
 ignored.
 
-- Line starting with `PACT ROLE: orchestrator` → invoke `Skill("PACT:bootstrap")` unless already loaded.
-- Line starting with `PACT ROLE: teammate (` → invoke `Skill("PACT:teammate-bootstrap")` unless already loaded.
+- Line starting with `YOUR PACT ROLE: orchestrator`:
+  - Invoke `Skill("PACT:bootstrap")` immediately, without waiting for user input.
+  - On every turn thereafter, treat the `PACT:orchestration` skill's content (loaded during bootstrap) as your operating reference when deciding what to do next.
+  - Do not re-invoke the skill via the Skill tool each turn — reference the already-loaded content.
+  - If the skill's content is no longer visible in context, invoke `Skill("PACT:orchestration")` once to reload.
+- Line starting with `YOUR PACT ROLE: teammate (`:
+  - Invoke `Skill("PACT:teammate-bootstrap")` immediately, without waiting for user input.
+  - Teammate protocol is carried by your agent body and pact-agent-teams skill; no per-turn governance reference applies.
 
 No line-anchored marker present? Inspect your system prompt: a
 `# Custom Agent Instructions` block naming a specific PACT agent means
@@ -34,11 +40,11 @@ the main session (invoke the orchestrator bootstrap).
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume 04055e6a-5973-4e79-8746-594974997e13`
-- Team: `pact-04055e6a`
-- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/04055e6a-5973-4e79-8746-594974997e13`
-- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.17.11`
-- Started: 2026-04-21 10:48:32 UTC
+- Resume: `claude --resume d2781f1a-cb81-40fd-8631-75942b095c11`
+- Team: `pact-d2781f1a`
+- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/d2781f1a-cb81-40fd-8631-75942b095c11`
+- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.17.13`
+- Started: 2026-04-23 10:32:57 UTC
 <!-- SESSION_END -->
 
 <!-- PACT_MEMORY_START -->
@@ -100,7 +106,7 @@ Last Updated: 2026-04-06
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.8.3
+- **Version**: 5.8.4
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -140,10 +146,12 @@ Full guidelines: `docs/obsidian-plugin-guidelines.md`
 
 ## Recent Changes
 
-**Current Version**: 5.8.2
+**Current Version**: 5.8.4
 Full changelog: `docs/changelog.md`
 
 **Latest features** (Apr 2026):
+- v5.8.4 — Dynamic tool registry for app agents: `AppManager` register/unregister callbacks now sync with `ToolManagerAgent` so app agents (WebTools, Composer) installed at runtime appear in `getTools` discovery and execute via `useTools`. `GetToolsTool.refreshDescription()` rebuilds the description when the agent map mutates. Lint carry-over fix from #173: `isUnknownArray` predicate in `setProperty.ts` for typed `unknown[]` narrowing.
+- v5.8.3 — setProperty CSV array parsing + scalar→array merge promotion (PR #173): `ToolCliNormalizer` handles `oneOf` array option (new `oneOfArray` marker) so `content set-property ... --value a,b,c` arrives as `["a","b","c"]` instead of the literal CSV string. `SetPropertyTool.execute` merge mode promotes scalar into existing array with union-dedup. Merge decision extracted as pure helper `computeMergeResult` (PR #172).
 - v5.8.2 — ToolManager content alignment (PR #170): CLI-first contract finalized (nested `context`/`calls` rejected), CLI `\uXXXX` escape decoding, `executePrompts` action schema aligned with `insert`/`replace`/`write` (replace takes `oldContent`+`startLine`+`endLine`; `position` deprecated). Line-ending normalization (PR #169): `.gitattributes` establishes LF canonical.
 - v5.8.0 — Glass-chrome chat UI redesign (ToolStatusBar, ContextBadge, ThinkingLoader, ToolInspectionModal), CLI-first MCP tool-calling contract (PR #157), Claude Opus 4.7 added, LLM pipeline fixes (Azure call_id + latent field preservation), new OpenRouter models (GPT 5.4/5.4-pro, Gemini 3 family, GLM 5.1, MiMo v2, Qwen 3.5, MiniMax M2.7), SQLite-from-JSONL sync trigger, branch management fixes, chat media model persistence
 - v5.7.1 — Claude Code desktop auth status/login fix for Electron renderer imports (issue #120)
