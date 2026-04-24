@@ -136,6 +136,15 @@ function unescapeQuotedContent(value: string): string {
   // Single-pass scan so `\\` consumes the backslash first. A sequential
   // .replace() chain would let `\\n` collide with `\n` when the double
   // backslash ran last.
+  //
+  // Unknown-escape policy: any `\X` where X is outside the canonical set
+  // (`\n`, `\r`, `\t`, `\"`, `\'`, `\\`, `\uXXXX`) drops the backslash and
+  // emits X verbatim — the POSIX-shell convention for a backslash inside a
+  // double-quoted string. This keeps LLM-authored markdown payloads with
+  // literal backticks (`` \`code\` ``), fenced blocks, and wikilink-style
+  // references intact when written through `content write`/`insert`/`replace`.
+  // Callers that need a literal `\X` in the output can write `\\X`, which
+  // collapses to `\X` via the `case '\\':` branch.
   let out = '';
   for (let i = 0; i < value.length; i += 1) {
     if (value[i] !== '\\' || i + 1 >= value.length) {
@@ -158,7 +167,7 @@ function unescapeQuotedContent(value: string): string {
       case '"': out += '"'; break;
       case '\'': out += '\''; break;
       case '\\': out += '\\'; break;
-      default: out += '\\' + next;
+      default: out += next;
     }
     i += 1;
   }

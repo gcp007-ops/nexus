@@ -1592,3 +1592,109 @@ describe('coerceValue — array<boolean> canonical-literal enforcement (Backend 
     expect(err.message).toMatch(/Boolean value accepts only "true" or "false", got "nope"/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Backtick literal in quoted positional — CODE-NexusParserBacktickEscape
+// ---------------------------------------------------------------------------
+//
+// Before the fix, `unescapeQuotedContent` preserved the leading backslash for
+// any `\X` sequence outside the canonical set (`\n`, `\r`, `\t`, `\"`, `\'`,
+// `\\`, `\uXXXX`). An LLM writing markdown payloads like `\`code\`` — a
+// common POSIX/markdown-style "literal backtick" convention — had both
+// backslashes preserved verbatim in the output, producing `\`code\`` instead
+// of the intended `` `code` ``. Any fenced code block, inline code span, or
+// CLI reference in the payload (e.g. `\`projectId\``, wikilink-like refs)
+// was silently corrupted when written through `content write`/`insert`/`replace`.
+//
+// Fix (2026-04-24): make the default branch of `unescapeQuotedContent`
+// consume the backslash and emit only the next character — aligns with
+// POSIX shell convention inside double quotes. Literal `\X` can still be
+// produced by writing `\\X` (which already collapses to `\X` via the existing
+// `case '\\\\':` branch).
+//
+// See: `Producao/ThinkBox/Observacoes/OBS-2026-04-22-crases-escapadas-cli-write.md`
+//      `Producao/ThinkBox/Observacoes/OBS-2026-04-24-nexus-content-replace-rejeita-oldcontent-identico.md`
+//      `_Base/Code/CODE-NexusParserBacktickEscape.md`
+
+describe('backtick literal inside quoted positional (CODE-NexusParserBacktickEscape)', () => {
+  it('preserves literal backtick in a quoted positional value', () => {
+    // Tool string: content write "x.md" "`code`" — no escapes anywhere.
+    // Current behavior already works; pin as regression guard.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "`code`"',
+    });
+    expect(call.params.content).toBe('`code`');
+  });
+
+  it('consumes backslash before unknown-escape backtick (\\` → `)', () => {
+    // Tool string (raw JS, so every `\\` is one literal backslash):
+    //   content write "x.md" "\`code\`"
+    // Here the payload has 2 chars between quotes opening the value:
+    // backslash + backtick (literal). POSIX-shell semantics: `\X` inside a
+    // double-quoted string drops the backslash when X has no special meaning.
+    // Fix commits to that behavior, so the unescaped value is `` `code` ``.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "\\`code\\`"',
+    });
+    expect(call.params.content).toBe('`code`');
+  });
+
+  it('preserves literal backslash+backtick when double-escaped (\\\\` → \\`)', () => {
+    // Tool string: content write "x.md" "\\`code\\`"
+    // The `\\` collapses to `\` via the existing `case '\\\\':` branch,
+    // and the backtick is emitted as-is. Gives the caller a canonical way
+    // to keep a literal `\\` in the output even after the default-branch fix.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "\\\\`code\\\\`"',
+    });
+    expect(call.params.content).toBe('\\`code\\`');
+  });
+
+  it('preserves triple-backtick fence (naked) in a quoted positional', () => {
+    // Fenced code blocks are the highest-volume callsite of this bug; pin
+    // that naked triple backticks flow through untouched.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "```dataview\\nLIST\\n```"',
+    });
+    expect(call.params.content).toBe('```dataview\nLIST\n```');
+  });
+
+  it('consumes backslash before any non-canonical escape letter (\\a → a)', () => {
+    // Characterization of the default-branch fix: any `\X` where X is not in
+    // the canonical set collapses to X. Before the fix this was `\a`.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "\\a\\b\\f\\v"',
+    });
+    expect(call.params.content).toBe('abfv');
+  });
+
+  it('does not disturb canonical escapes (\\n, \\t, \\r, \\", \\\\)', () => {
+    // Regression guard for the fix: the default-branch change must not
+    // affect the explicit switch cases.
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "line1\\nline2\\tend\\r\\"q\\"\\\\tail"',
+    });
+    expect(call.params.content).toBe('line1\nline2\tend\r"q"\\tail');
+  });
+
+  it('does not disturb unicode escapes (\\uXXXX)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "x.md" "\\u00e7\\u00e3o"',
+    });
+    expect(call.params.content).toBe('ção');
+  });
+
+  it('tokenizeWithMeta exposes the fix directly on the raw token value', () => {
+    // Spot-check at the lowest-level API used by both executor and display
+    // paths, so the fix surfaces in parseCliForDisplay as well.
+    const tokens = tokenizeWithMeta('"\\`x\\`"');
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].value).toBe('`x`');
+    expect(tokens[0].wasQuoted).toBe(true);
+  });
+
+  it('parseCliForDisplay inherits the backtick fix', () => {
+    const [segment] = parseCliForDisplay('content write --content "\\`inline\\`"');
+    expect(segment.parameters.content).toBe('`inline`');
+  });
+});
