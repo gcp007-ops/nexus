@@ -6,17 +6,15 @@ Ponteiro técnico mínimo do fork `gcp007-ops/nexus` (upstream: `ProfSynapse/nex
 
 ---
 
-## Estado: 1 commit funcional + infra (paridade 5.8.4)
+## Estado: zero divergência funcional (paridade 5.8.4)
 
 Base: `origin/main` em `5.8.4` (`9fdb4e20`) + `011343f9` (task-board autorefresh pós-tag).
 
-**Cherry-picks locais preservados:**
-
-- `feat(storageManager): add DeleteTool to replace runtime monkey-patch` (origem `c3eb2656`, replantado em syncs via cherry-pick) — elimina o último monkey-patch runtime (`nexus-monkey-patch.ts` no ThinkBox scripts), migrando a ferramenta `storage delete` para commit no `storageManager` do fork.
+**Zero cherry-picks funcionais.** O DeleteTool (origem `c3eb2656` em 2026-04-21) foi revertido em 2026-04-23 (commit `654ccfc2`) após reexame: tool destrutivo sem caller interno no ecossistema (grep confirmou zero uso em `obsidian-thinkbox-scripts` e `nexus/src`), exposto apenas via MCP à LLM onde `storage archive` (recoverable, timestamped em `.archive/`) cobre 100% dos casos legítimos. `--permanent=true` bypass-trash era risco sem benefício.
 
 **Meta/infra:** este arquivo + [OFFERINGS.md](./OFFERINGS.md) + [.github/workflows/upstream-sync.yml](./.github/workflows/upstream-sync.yml).
 
-Próximos syncs upstream: reset-hard + cherry-pick do DeleteTool é o padrão (mesmo usado em 5.8.1, 5.8.2, 5.8.4). Conflito esperado em `src/utils/connectorContent.ts` (auto-gen; resolver tomando `ours`=upstream + rebuild regenera).
+Próximos syncs upstream: fast-forward trivial esperado; sem cherry-pick recurring.
 
 ---
 
