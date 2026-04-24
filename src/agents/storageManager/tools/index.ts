@@ -4,5 +4,4 @@ export * from './createFolder';
 export * from './move';
 export * from './copy';
 export * from './archive';
-export * from './delete';
 export * from './open';
