@@ -88,12 +88,22 @@ function getSchemaType(schema: Record<string, unknown>): string {
 }
 
 export function splitTopLevelSegments(input: string): string[] {
+  // A top-level comma is a command separator only when the next character is
+  // whitespace (or end of input). A comma glued to a non-whitespace character
+  // (`--paths a,b,c`, `--file-types yaml,yml`) is a CSV separator that belongs
+  // to the flag value; keep it in the current segment so the downstream value
+  // parser (`splitCsvRespectingQuotes`, #163) can split it once the schema
+  // tells us the flag is `array<string>`. The canonical multi-command idiom
+  // `cmd1 ..., cmd2 ...` still splits because it has whitespace after the
+  // comma — every existing multi-command test in this suite uses that form.
   const segments: string[] = [];
   let current = '';
   let quote: '"' | '\'' | null = null;
   let escaped = false;
 
-  for (const char of input) {
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+
     if (escaped) {
       current += char;
       escaped = false;
@@ -113,11 +123,19 @@ export function splitTopLevelSegments(input: string): string[] {
     }
 
     if (char === ',' && !quote) {
-      const trimmed = current.trim();
-      if (trimmed.length > 0) {
-        segments.push(trimmed);
+      const next = input[i + 1];
+      const isCommandSeparator = next === undefined || /\s/.test(next);
+      if (isCommandSeparator) {
+        const trimmed = current.trim();
+        if (trimmed.length > 0) {
+          segments.push(trimmed);
+        }
+        current = '';
+        continue;
       }
-      current = '';
+      // Comma is glued to a non-whitespace character — treat as part of the
+      // current segment (typically a CSV flag value like `a,b,c`).
+      current += char;
       continue;
     }
 

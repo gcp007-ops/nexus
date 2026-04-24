@@ -1698,3 +1698,110 @@ describe('backtick literal inside quoted positional (CODE-NexusParserBacktickEsc
     expect(segment.parameters.content).toBe('`inline`');
   });
 });
+
+// ---------------------------------------------------------------------------
+// splitTopLevelSegments: comma is a command separator only when followed by
+// whitespace or end-of-input (CODE-NexusParserSplitTopLevelSegments)
+// ---------------------------------------------------------------------------
+//
+// `splitTopLevelSegments` was already quote-aware (per #163 the value-parser
+// layer got its own `splitCsvRespectingQuotes`), but the top-level splitter
+// itself still treated every unquoted comma as a command separator. A bare
+// CSV-style flag value like `--paths a,b,c` therefore exploded into three
+// "commands" (`agent tool --paths a`, `b`, `c`) — the second one failing with
+// `Unknown agent "b"`. The only workaround was to quote the value
+// (`--paths "a,b,c"`), which the 2026-04-24 audit flagged as forgettable
+// and forcing the operator down a pseudo-shell-escaping rabbit hole.
+//
+// Fix (2026-04-24): at the top level, only treat an unquoted comma as a
+// command separator when the next character is whitespace (or end of input).
+// A comma glued to a non-whitespace character (`a,b`, `yaml,yml`) stays
+// inside the current segment so the downstream value parser
+// (`splitCsvRespectingQuotes`) can do its CSV split. The classic multi-command
+// idiom — `cmd1 ..., cmd2 ...`, with a space after the comma — still splits,
+// which matches every existing usage in this suite.
+//
+// See: `_Base/Code/CODE-NexusParserSplitTopLevelSegments.md`,
+//      OBS-2026-04-24-nexus-usetools-parser-array-csv-split-como-comando,
+//      NexusAdequacao-INI log entry of 2026-04-19 EOD (gap originally spotted).
+
+describe('splitTopLevelSegments: comma-before-non-whitespace is not a command separator', () => {
+  it('raw CSV value after an array<string> flag stays in the same segment', () => {
+    // Pre-fix: split produced 3 "commands", second one failed with
+    // `Unknown agent "csv"`. Post-fix: one segment, CSV expanded in the value
+    // parser via splitCsvRespectingQuotes.
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'storage archive --paths bare,csv,values',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.paths).toEqual(['bare', 'csv', 'values']);
+  });
+
+  it('multi-command idiom with "comma + space" still splits', () => {
+    // Regression guard for the canonical multi-command form used throughout
+    // this suite (see the existing `splits multi-command batches on
+    // top-level commas` test). The fix is scoped to "comma + non-whitespace".
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content read "a.md", content read "b.md"',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].params.path).toBe('a.md');
+    expect(calls[1].params.path).toBe('b.md');
+  });
+
+  it('multi-command with raw CSV flag in the first command plus tail command', () => {
+    // Mixed case: both "bare CSV keeps commas" and "comma + space still
+    // splits" rules fire in the same input.
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'storage archive --paths bare,csv, content read "b.md"',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].params.paths).toEqual(['bare', 'csv']);
+    expect(calls[1].params.path).toBe('b.md');
+  });
+
+  it('comma inside quoted string in multi-command stays shielded', () => {
+    // Regression guard for the pre-existing quote-tracking; crossed with
+    // the new rule to confirm no interaction.
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content write "a.md" "one, two, three", content write "b.md" "body"',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].params.content).toBe('one, two, three');
+    expect(calls[1].params.path).toBe('b.md');
+  });
+
+  it('comma immediately followed by tab separates commands', () => {
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content read "a.md",\tcontent read "b.md"',
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('comma immediately followed by newline separates commands', () => {
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content read "a.md",\ncontent read "b.md"',
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('trailing comma at end of input drops the empty tail segment', () => {
+    // EOF after a comma is treated as a separator; the tail is empty and
+    // filtered by the `trimmed.length > 0` guard. Matches pre-fix behavior.
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'content read "a.md",',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.path).toBe('a.md');
+  });
+
+  it('bare CSV already quoted (backward compat with #163 workaround)', () => {
+    // Users who learned the `"a,b,c"` workaround keep working — quotes fire
+    // before the new lookahead check.
+    const calls = makeNormalizer().normalizeExecutionCalls({
+      tool: 'storage archive --paths "a,b,c"',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.paths).toEqual(['a', 'b', 'c']);
+  });
+});
