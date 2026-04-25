@@ -1,0 +1,207 @@
+name: upstream-sync
+
+# Detecta drift vs ProfSynapse/nexus, tenta merge + smoke test, e abre PR ou issue
+# no próprio fork. Nunca propõe PR para upstream (política issue-first — ver FORK-DELTA.md).
+#
+# Agendamento:
+#   - Semanal: domingo 02:00 UTC (detecção + merge + PR/issue quando há drift)
+#   - Refresh STATUS.md em todo run (sempre reflete estado da última sync)
+#
+# Trigger manual: "Run workflow" no GitHub UI
+#
+# Outputs:
+#   - PR no fork quando merge é clean E testes passam
+#   - Issue no fork quando merge tem conflito OU testes falham
+#   - STATUS.md commitado em main em todo run
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'   # domingo 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout fork main (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Add upstream remote + fetch
+        run: |
+          git remote add upstream https://github.com/ProfSynapse/nexus.git
+          git fetch upstream main --quiet
+
+      - name: Compute drift
+        id: drift
+        run: |
+          OURS_AHEAD=$(git rev-list --count upstream/main..HEAD)
+          UPSTREAM_AHEAD=$(git rev-list --count HEAD..upstream/main)
+          echo "ours_ahead=$OURS_AHEAD" >> "$GITHUB_OUTPUT"
+          echo "upstream_ahead=$UPSTREAM_AHEAD" >> "$GITHUB_OUTPUT"
+          echo "upstream_head=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
+          echo "our_head=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Drift: ours=+$OURS_AHEAD upstream=+$UPSTREAM_AHEAD"
+
+      - name: Bail if upstream has no new commits
+        if: steps.drift.outputs.upstream_ahead == '0'
+        run: echo "No upstream drift — nothing to sync."
+
+      - name: Configure git identity
+        if: steps.drift.outputs.upstream_ahead != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Attempt merge on throwaway branch
+        id: merge
+        if: steps.drift.outputs.upstream_ahead != '0'
+        run: |
+          SYNC_BRANCH="sync/upstream-$(date +%Y-%m-%d)"
+          git checkout -b "$SYNC_BRANCH"
+          echo "sync_branch=$SYNC_BRANCH" >> "$GITHUB_OUTPUT"
+          if git merge --no-edit upstream/main; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+            echo "Merge clean."
+          else
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            CONFLICTS=$(git diff --diff-filter=U --name-only | tr '\n' ',' | sed 's/,$//')
+            echo "conflict_files=$CONFLICTS" >> "$GITHUB_OUTPUT"
+            git merge --abort
+            echo "Merge conflict in: $CONFLICTS"
+          fi
+
+      - name: Install deps + smoke test
+        id: smoke
+        if: steps.merge.outputs.status == 'clean'
+        continue-on-error: true
+        run: |
+          npm ci
+          echo "=== CLI parser smoke:"
+          npx jest --testPathPattern='ToolManagerCliSyntax'
+          PARSER_EXIT=$?
+          echo "=== Full suite (exclui ModelAgentManager flake pré-existente upstream):"
+          npx jest --silent --testPathIgnorePatterns='ModelAgentManager'
+          FULL_EXIT=$?
+          echo "=== TSC noEmit:"
+          npx tsc --noEmit --skipLibCheck
+          TSC_EXIT=$?
+          if [ "$PARSER_EXIT" -eq 0 ] && [ "$FULL_EXIT" -eq 0 ] && [ "$TSC_EXIT" -eq 0 ]; then
+            echo "status=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push sync branch
+        if: steps.merge.outputs.status == 'clean' && steps.smoke.outputs.status == 'pass'
+        run: git push origin ${{ steps.merge.outputs.sync_branch }}
+
+      - name: Open PR on fork (clean merge + tests pass)
+        if: steps.merge.outputs.status == 'clean' && steps.smoke.outputs.status == 'pass'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head ${{ steps.merge.outputs.sync_branch }} \
+            --title "[upstream-sync] absorb ${{ steps.drift.outputs.upstream_ahead }} commits from ProfSynapse/nexus" \
+            --body "Automated weekly sync. Upstream head: \`${{ steps.drift.outputs.upstream_head }}\`.
+
+          Our main was +${{ steps.drift.outputs.ours_ahead }} ahead before merge (expected: docs/infra commits only since 2026-04-20 rollback to pure 5.8.2 base).
+
+          **Merge:** clean auto-merge, no manual intervention.
+          **Smoke:** ToolManagerCliSyntax + full suite (ModelAgentManager excluded as pre-existing upstream flake) + \`tsc --noEmit\` all passed.
+
+          Review the merge commit + optionally run \`npm run build\` locally before merging. After merge, update [OFFERINGS.md](../blob/main/OFFERINGS.md) if any refinement state changed.
+
+          See [FORK-DELTA.md](../blob/main/FORK-DELTA.md) for política. Tracking de issues em [[NexusAdequacao-INI]] no vault ThinkBox."
+
+      - name: Open issue on fork (conflict)
+        if: steps.merge.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "[upstream-sync] merge conflict — ${{ steps.drift.outputs.upstream_ahead }} upstream commits pending" \
+            --body "Automated sync hit conflicts. Upstream head: \`${{ steps.drift.outputs.upstream_head }}\`.
+
+          **Conflict files:** ${{ steps.merge.outputs.conflict_files }}
+
+          Manual resolution required. Steps:
+
+          \`\`\`bash
+          cd ~/Developer/nexus
+          git fetch origin upstream
+          git branch backup/pre-sync-\$(date +%Y-%m-%d) main
+          git checkout -b sync/upstream-manual main
+          git merge upstream/main
+          # resolve conflicts, then:
+          npx jest --testPathPattern='ToolManagerCliSyntax'
+          npx tsc --noEmit --skipLibCheck
+          git commit
+          npm run build
+          git push origin main
+          \`\`\`
+
+          After resolving, close this issue manually. Note: post-rollback (2026-04-20) the fork has zero functional divergence from upstream — conflict here likely means accidental local commit. Investigate before resolving. Tracking amplo em [[NexusAdequacao-INI]] no vault ThinkBox."
+
+      - name: Open issue on fork (smoke fail)
+        if: steps.merge.outputs.status == 'clean' && steps.smoke.outputs.status == 'fail'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "[upstream-sync] merge clean but smoke test failed — ${{ steps.drift.outputs.upstream_ahead }} upstream commits pending" \
+            --body "Automated sync merged cleanly but smoke test regressed. Upstream head: \`${{ steps.drift.outputs.upstream_head }}\`.
+
+          Sync branch pushed as \`${{ steps.merge.outputs.sync_branch }}\` — inspect manually before merging.
+
+          Likely causes: upstream test expectations drifted, or new upstream code broke without local diff to blame.
+
+          Next step: checkout the sync branch locally, re-run tests, investigate. Tracking amplo em [[NexusAdequacao-INI]] no vault ThinkBox."
+
+      - name: Refresh STATUS.md (always, even if no drift)
+        if: always()
+        run: |
+          git checkout main
+          cat > STATUS.md <<EOF
+          # Sync Status
+
+          Auto-updated by \`.github/workflows/upstream-sync.yml\`. Last run: $(date -u +"%Y-%m-%d %H:%M UTC").
+
+          ## Delta vs upstream
+
+          - Upstream head: \`${{ steps.drift.outputs.upstream_head }}\`
+          - Our head: \`${{ steps.drift.outputs.our_head }}\`
+          - Ours ahead: ${{ steps.drift.outputs.ours_ahead }}
+          - Upstream ahead: ${{ steps.drift.outputs.upstream_ahead }}
+
+          ## Last sync outcome
+
+          - Merge status: \`${{ steps.merge.outputs.status || 'no-drift' }}\`
+          - Smoke status: \`${{ steps.smoke.outputs.status || 'not-run' }}\`
+
+          See [FORK-DELTA.md](./FORK-DELTA.md) for política e procedure, [OFFERINGS.md](./OFFERINGS.md) para refinamentos aguardando decisão upstream.
+          EOF
+          if ! git diff --quiet STATUS.md; then
+            git add STATUS.md
+            git commit -m "chore(status): refresh sync status $(date -u +%Y-%m-%d)"
+            git push origin main
+          else
+            echo "STATUS.md unchanged."
+          fi

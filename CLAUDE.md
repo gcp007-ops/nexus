@@ -40,11 +40,11 @@ the main session (invoke the orchestrator bootstrap).
 <!-- SESSION_START -->
 ## Current Session
 <!-- Auto-managed by session_init hook. Overwritten each session. -->
-- Resume: `claude --resume b59a09f0-f6d9-4a71-921c-f1f06e6be6fe`
-- Team: `pact-b59a09f0`
-- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/b59a09f0-f6d9-4a71-921c-f1f06e6be6fe`
-- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.19.2`
-- Started: 2026-04-25 18:05:49 UTC
+- Resume: `claude --resume d2781f1a-cb81-40fd-8631-75942b095c11`
+- Team: `pact-d2781f1a`
+- Session dir: `/Users/jrosenbaum/.claude/pact-sessions/claudesidian-mcp/d2781f1a-cb81-40fd-8631-75942b095c11`
+- Plugin root: `/Users/jrosenbaum/.claude/plugins/cache/pact-marketplace/PACT/3.17.13`
+- Started: 2026-04-23 10:32:57 UTC
 <!-- SESSION_END -->
 
 <!-- PACT_MEMORY_START -->
@@ -55,10 +55,6 @@ the main session (invoke the orchestrator bootstrap).
 <!-- pinned: 2026-04-20 -->
 ### Line endings: LF canonical via `.gitattributes` (as of v5.8.2 / PR #169)
 Repo has `.gitattributes` declaring LF canonical across `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`/`.json`/`.md`/`.css`/`.html`/`.yml`/`.sh` + binary markers for images/audio/fonts/pdfs. If you see CRLF in the tree, it's a local-editor bug — fix the editor, don't chase it with tool normalization. Never reintroduce CRLF. If 500+ files show modified with tiny `--ignore-cr-at-eol` delta, someone's editor wrote CRLF — re-run `git add --renormalize .` on that subset, don't let it land.
-
-<!-- pinned: 2026-04-23 -->
-### Dynamic ToolManager sync: deferred refactor (issue #174)
-`AgentRegistrationService.syncToolManagerAgent` + `ToolManagerAgent.registerDynamicAgent/unregisterDynamicAgent` is a callback-wrap bridge that keeps `getTools` discovery in sync when `AppManager` installs/uninstalls app agents at runtime (v5.8.4). Works today because `AppManager` is the only dynamic registrar. **Does not compose** for a second one. When a remote-MCP loader / plugin-extension agent / other dynamic registrar lands, refactor to event-based: add `onAgentRegistered`/`onAgentUnregistered` to `AgentManager`, have `ToolManagerAgent` subscribe in its constructor, delete the bridge + the `instanceof ToolManagerAgent` concrete import in `AgentRegistrationService`. Do NOT do this refactor speculatively — wait for the triggering consumer. Tracking: https://github.com/ProfSynapse/nexus/issues/174.
 
 <!-- pinned: 2026-04-20 -->
 ### ToolManager MCP contract: CLI-first only (as of v5.8.2 / PR #170)
@@ -110,7 +106,7 @@ Last Updated: 2026-04-06
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.8.5
+- **Version**: 5.8.4
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -150,11 +146,10 @@ Full guidelines: `docs/obsidian-plugin-guidelines.md`
 
 ## Recent Changes
 
-**Current Version**: 5.8.5
+**Current Version**: 5.8.4
 Full changelog: `docs/changelog.md`
 
 **Latest features** (Apr 2026):
-- v5.8.5 — Tool Manager CLI parser hardening + Task Board liveness: PR #181 narrows `splitTopLevelSegments` so a comma is a structural command separator only when followed by whitespace/EOF (CSV array flag values like `--paths a,b,c` no longer explode into three pseudo-commands). PR #180 fixes `unescapeQuotedContent` default branch — `\X` outside the canonical set (`\n \r \t \" \' \\ \uXXXX`) now drops the phantom backslash (POSIX-shell semantics) instead of silently corrupting backticks/`$`/`#`/parens. PR #176 wires the Task Board view to storage external-sync events through the existing `TaskBoardSyncCoordinator` and emits update notifications on note-link mutations so card metadata stays live.
 - v5.8.4 — Dynamic tool registry for app agents: `AppManager` register/unregister callbacks now sync with `ToolManagerAgent` so app agents (WebTools, Composer) installed at runtime appear in `getTools` discovery and execute via `useTools`. `GetToolsTool.refreshDescription()` rebuilds the description when the agent map mutates. Lint carry-over fix from #173: `isUnknownArray` predicate in `setProperty.ts` for typed `unknown[]` narrowing.
 - v5.8.3 — setProperty CSV array parsing + scalar→array merge promotion (PR #173): `ToolCliNormalizer` handles `oneOf` array option (new `oneOfArray` marker) so `content set-property ... --value a,b,c` arrives as `["a","b","c"]` instead of the literal CSV string. `SetPropertyTool.execute` merge mode promotes scalar into existing array with union-dedup. Merge decision extracted as pure helper `computeMergeResult` (PR #172).
 - v5.8.2 — ToolManager content alignment (PR #170): CLI-first contract finalized (nested `context`/`calls` rejected), CLI `\uXXXX` escape decoding, `executePrompts` action schema aligned with `insert`/`replace`/`write` (replace takes `oldContent`+`startLine`+`endLine`; `position` deprecated). Line-ending normalization (PR #169): `.gitattributes` establishes LF canonical.
@@ -422,3 +417,10 @@ Key files: `src/ui/chat/components/suggesters/`, `MessageEnhancer.ts`, `SystemPr
 - **WebLLM/Nexus**: Nexus Quark (4B, 4K context), `<tool_call>` format. May crash on Apple Silicon.
 - **Storage**: Branches as JSONL events, SQLite v11 schema (4 task tables added in v9, workflow columns in v10, archive flag in v11), tool names use `agent_tool` format.
 - **Apps & Vault Access**: App agents that produce files must have vault access wired through `BaseAppAgent`. Use `vault.createBinary()` for binary outputs (audio, images) and `vault.create()` for text. Always ensure parent directories exist before writing.
+
+## Current Session
+<!-- Auto-managed by session_init hook. Overwritten each session. -->
+- Resume: `claude --resume a89883a5-9570-4c8e-a9b5-b53f8ae4ad39`
+- Team: `pact-a89883a5`
+- Started: 2026-04-06 20:25:34 UTC
+<!-- SESSION_END -->
