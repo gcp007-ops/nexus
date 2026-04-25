@@ -10,7 +10,7 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 ## Active offerings
 
-### `ContentReplaceTool` NFC/NFD comparator tolerance — awaiting decision on [#182](https://github.com/ProfSynapse/nexus/issues/182)
+### `ContentReplaceTool` NFC/NFD comparator tolerance — PR open [#183](https://github.com/ProfSynapse/nexus/pull/183) for [#182](https://github.com/ProfSynapse/nexus/issues/182)
 
 **Branch:** [`fix/parser-replace-content-not-found-normalization`](https://github.com/gcp007-ops/nexus/tree/fix/parser-replace-content-not-found-normalization) (rebased onto upstream v5.8.5)
 **Commit:** [`e5926a17`](https://github.com/gcp007-ops/nexus/commit/e5926a17) — sits directly on `848c39a9` (v5.8.5 tip). Original pre-rebase hash: `f3c38993`.
@@ -20,11 +20,11 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 **Scope:** 1 new helper + 2 call-sites switched + sliding-window pre-normalization for O(N) instead of O(N*M) inner-loop normalize calls; 6 new regression cases (file-NFC/old-NFD real-world repro, file-NFD/old-NFC inverse drift, sliding-window survives drift, multi-line mixed normalization, truly-absent guard, ASCII no-op guard) + 1 fixture sanity. ReplaceTool: 33/33 (27 prior + 6 new). Full suite on rebased base: 2412 pass + 13 skip, zero regressions (the pre-existing `ModelAgentManager:242` flake remains excluded; +3 net pass vs the pre-rebase run reflects upstream's own #179/#181 test additions in v5.8.5). `tsc --noEmit` clean, `eslint .` clean, `esbuild` production clean.
 
-**Live deploy:** `.obsidian/plugins/nexus/main.js` md5 `07e43a3620ae8b41880f57754fdc4bc8` (pre-585-sync `8c0fead538421257a8c4190171c8d026` which was the v5.8.4-base build with #179 + #181 + #182 stacked). Smokes via MCP post-reload pending operator-side verification on the v5.8.5 base.
+**Live deploy:** `.obsidian/plugins/nexus/main.js` md5 `07e43a3620ae8b41880f57754fdc4bc8` (pre-585-sync `8c0fead538421257a8c4190171c8d026` which was the v5.8.4-base build with #179 + #181 + #182 stacked). 4/4 live MCP smokes PASS post-reload on the v5.8.5 base (incident-shape repro + #181 retest + #179 retest + truly-absent regression guard).
 
 **Stacking note:** branch was previously stacked over `fix/parser-split-top-level-segments-quotes` (#181) and `fix/parser-backtick-unknown-escape` (#179) for local-deploy continuity. After v5.8.5 absorbed #179 + #181 (commits `1d308cbf` / `75f18123` / `68439360`) the prior two branches are now redundant and have been parked as historical (see "History"); the #182 branch was rebased to sit directly on top of upstream `main`.
 
-**Offer pattern:** follow #172 / #179 / #181 — reference impl ready on branch; awaiting maintainer decision on whether to cherry-pick, request PR, or decline.
+**Offer pattern:** PR opened on operator authorization 2026-04-25 (PR #183). Awaiting maintainer review.
 
 Desde 2026-04-20 o fork roda puro upstream em código. Novos refinamentos locais seguirão o padrão:
 
