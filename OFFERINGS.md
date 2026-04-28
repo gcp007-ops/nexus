@@ -22,7 +22,7 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 **Stacking note:** stacked on `fix/parser-replace-content-not-found-normalization` (#182) for local deploy continuity. When #182 is absorbed upstream, this branch will be rebased onto the new base.
 
-**Offer pattern:** issue-first per post-#172 convention. PR open if maintainer invites — happy to adjust to Via A (auto-quote) or other shape if preferred.
+**Status:** issue-only per post-#172 convention. Fix is deployed locally in fork; reported upstream for visibility, absorption pattern at maintainer discretion.
 
 ### `ContentReplaceTool` NFC/NFD comparator tolerance — PR open [#183](https://github.com/ProfSynapse/nexus/pull/183) for [#182](https://github.com/ProfSynapse/nexus/issues/182)
 
