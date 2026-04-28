@@ -10,6 +10,20 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 ## Active offerings
 
+### `WriteTool` YAML frontmatter validation guard — issue open [#185](https://github.com/ProfSynapse/nexus/issues/185)
+
+**Branch:** [`fix/content-write-yaml-frontmatter-validation`](https://github.com/gcp007-ops/nexus/tree/fix/content-write-yaml-frontmatter-validation) (stacked on `fix/parser-replace-content-not-found-normalization` / #182)
+**Commit:** [`37d9b53b`](https://github.com/gcp007-ops/nexus/commit/37d9b53b) — sits on `e5926a17` (#182 tip).
+**Opened:** 2026-04-28
+
+**Summary:** `contentManager.write` was a pure passthrough — payloads were persisted verbatim with no parse of the frontmatter block. A malformed frontmatter line (e.g. unquoted value containing `:`) succeeded silently, but every subsequent `set-property` on the same file crashed inside Obsidian's `processFrontMatter` parser with a message pointing at the broken YAML line, not the field the operator was trying to update — turning a one-line input mistake into a multi-call cascade. Fix (Via B): detect the frontmatter block (`---` ... `---`), parse via the `yaml` package already in `package.json`, write bytes verbatim when parse succeeds, reject with a line-pointed error + quoting hint when parse fails. Bytes are never modified by the guard, so caller-provided formatting (comments, field order, indentation, deliberate quoting) is preserved when the input is valid.
+
+**Scope:** 1 helper + 1 caller-site call in `write.ts` (35 lines added, 0 removed); 8 new test cases in `tests/unit/ContentWriteFrontmatterGuard.test.ts` (4 reject + 3 preserve + 1 cascade-elimination invariant). Full suite on the #182 base: 2420 pass + 13 skip + 1 pre-existing flake (`ModelAgentManager:242`, unrelated). `tsc --noEmit` clean, `eslint .` clean, `esbuild` production clean. Build md5 (post-fix): `f82f5ea8f99aaaffad6e180be52897a8`.
+
+**Stacking note:** stacked on `fix/parser-replace-content-not-found-normalization` (#182) for local deploy continuity. When #182 is absorbed upstream, this branch will be rebased onto the new base.
+
+**Offer pattern:** issue-first per post-#172 convention. PR open if maintainer invites — happy to adjust to Via A (auto-quote) or other shape if preferred.
+
 ### `ContentReplaceTool` NFC/NFD comparator tolerance — PR open [#183](https://github.com/ProfSynapse/nexus/pull/183) for [#182](https://github.com/ProfSynapse/nexus/issues/182)
 
 **Branch:** [`fix/parser-replace-content-not-found-normalization`](https://github.com/gcp007-ops/nexus/tree/fix/parser-replace-content-not-found-normalization) (rebased onto upstream v5.8.5)
