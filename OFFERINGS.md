@@ -10,7 +10,17 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 ## Active offerings
 
-_None — fork está em paridade funcional com upstream `5.8.6`. Defects ContentManager conhecidos: nenhum._
+### `loadWorkspace` silently returns sessions/states empty — issue open [#190](https://github.com/ProfSynapse/nexus/issues/190)
+
+**Branch:** [`fix/loadworkspace-states-empty-defensive-filter`](https://github.com/gcp007-ops/nexus/tree/fix/loadworkspace-states-empty-defensive-filter) (rebased onto `de49d797` v5.8.6)
+**Commit:** [`47392f0f`](https://github.com/gcp007-ops/nexus/commit/47392f0f)
+**Opened:** 2026-04-28
+
+**Summary:** `WorkspaceDataFetcher.fetchWorkspaceStates` and `fetchWorkspaceSessions` apply a defensive client-side filter testing for `state.workspaceId` / `state.state?.workspaceId` paths that `MemoryService.getStates` does not preserve on its mapped output (`{ id, name, created, state: {} as WorkspaceState }`). The adapter SQL (`StateRepository`, `SessionRepository`) already filters by `WHERE workspaceId = ?`, so the client-side filter is redundant — and was actively harmful, silently dropping 100% of items. Fix removes both client-side filters and their false-positive warning logs; adapter SQL remains the single source of truth for workspace isolation. `listStates` and `MemorySearchProcessor.searchStates` were unaffected (they only consume `state.id` / `state.name`).
+
+**Scope:** 2 hunks in `src/agents/memoryManager/services/WorkspaceDataFetcher.ts` removing the filter blocks; 6 new test cases in `tests/unit/WorkspaceDataFetcher.test.ts` (states/sessions not silently dropped, pagination preserved, empty-workspace sanity, nested-tag pass-through). Suite on rebased base: 2418 pass + 16 skip, zero regressions. `tsc --noEmit --skipLibCheck` clean, `eslint .` clean. Build md5: `5ab852ef9010198bd41ccd1b608eeaa2`.
+
+**Status:** issue-only per post-#172 convention. Fix is deployed locally in fork; reported upstream for visibility, absorption pattern at maintainer discretion.
 
 ---
 
