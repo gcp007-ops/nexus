@@ -10,6 +10,20 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 ## Active offerings
 
+### `ContentReplaceTool` NFKC compatibility tolerance (follow-up to #182) — issue open [#186](https://github.com/ProfSynapse/nexus/issues/186)
+
+**Branch:** [`fix/content-replace-nfkc-normalization`](https://github.com/gcp007-ops/nexus/tree/fix/content-replace-nfkc-normalization) (stacked on `fix/content-write-yaml-frontmatter-validation` / #185, which is itself stacked on `fix/parser-replace-content-not-found-normalization` / #182)
+**Commit:** [`f98f25da`](https://github.com/gcp007-ops/nexus/commit/f98f25da) — sits on `37d9b53b` (#185 tip).
+**Opened:** 2026-04-28
+
+**Summary:** #182 deployed `.normalize('NFC')` in `normalizeForCompare` and was declared resolved. Four days later, `content replace` started failing again with the same cascade symptom on PT-BR text containing ordinal indicators (`º`, `ª`), the ellipsis (`…`), or NBSP. Empirical bisect via Node REPL refuted the initial hypothesis (`§` U+00A7 is byte-identical under NFC and NFKC — red herring) and pinpointed compatibility decomposition as the actual vector: characters that NFC preserves but NFKC simplifies (`º` → `o`, `ª` → `a`, `…` → `...`, NBSP → space). Mechanism: an upstream layer (LLM tokenizer, Anthropic SDK, or MCP transport) NFKC-normalizes the `oldContent` payload before reaching `replace.ts`; the file on disk preserves the original compatibility form; NFC on the comparator side does not undo NFKC. Fix: upgrade `normalizeForCompare` from NFC to NFKC. NFKC strictly subsumes NFC for canonical equivalence and additionally reconciles compatibility decomposition. Bytes written are unchanged — fix is bounded to the equality check.
+
+**Scope:** 1-character functional change (`'NFC'` → `'NFKC'`) plus rewritten JSDoc in `replace.ts` (~27 lines total); 4 new test cases in `tests/unit/ReplaceTool.test.ts` under `'Unicode compatibility normalization tolerance (F8 follow-up)'` for `º`, `ª`, `…`, NBSP. ReplaceTool: 37/37 (33 prior + 4 new). Full suite: 2424 pass + 13 skip + 1 pre-existing flake (`ModelAgentManager:242`, unrelated). `tsc --noEmit` clean, `eslint .` clean, `esbuild` production clean. Build md5 (post-fix): `83984db82877bdde758b53d529330f09`.
+
+**Stacking note:** stacked on `fix/content-write-yaml-frontmatter-validation` (#185), which is on `fix/parser-replace-content-not-found-normalization` (#182). When upstream absorbs anything in this chain, rebase the rest down.
+
+**Status:** issue-only per post-#172 convention. Fix is deployed locally in fork; reported upstream for visibility, absorption pattern at maintainer discretion.
+
 ### `WriteTool` YAML frontmatter validation guard — issue open [#185](https://github.com/ProfSynapse/nexus/issues/185)
 
 **Branch:** [`fix/content-write-yaml-frontmatter-validation`](https://github.com/gcp007-ops/nexus/tree/fix/content-write-yaml-frontmatter-validation) (stacked on `fix/parser-replace-content-not-found-normalization` / #182)
