@@ -48,6 +48,39 @@ export const NEXUS_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
+      name: 'contentManager_insert',
+      description: 'Insert content into a note file at a specific position.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to the file to update' },
+          content: { type: 'string', description: 'Content to insert' },
+          position: { type: 'string', description: 'Insertion position' },
+          lineNumber: { type: 'number', description: 'Optional line number' },
+        },
+        required: ['path', 'content', 'position'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'contentManager_replace',
+      description: 'Replace text in a note file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to the file to update' },
+          search: { type: 'string', description: 'Text to find' },
+          replace: { type: 'string', description: 'Replacement text' },
+        },
+        required: ['path', 'search', 'replace'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'storageManager_move',
       description: 'Move a file or folder to a new location.',
       parameters: {
@@ -57,6 +90,49 @@ export const NEXUS_TOOLS: Tool[] = [
           destination: { type: 'string', description: 'Destination path' },
         },
         required: ['path', 'destination'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'storageManager_copy',
+      description: 'Copy a file or folder to a new location.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Current path of the file or folder' },
+          destination: { type: 'string', description: 'Destination path' },
+        },
+        required: ['path', 'destination'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'storageManager_archive',
+      description: 'Archive a file or folder.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path of the file or folder to archive' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'storageManager_createFolder',
+      description: 'Create a new folder.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path of the folder to create' },
+        },
+        required: ['path'],
       },
     },
   },
@@ -84,6 +160,22 @@ export const NEXUS_TOOLS: Tool[] = [
         properties: {
           query: { type: 'string', description: 'Search query text' },
           limit: { type: 'number', description: 'Maximum number of results to return' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'searchManager_searchDirectory',
+      description: 'Search for files and folders by path or name.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Directory search query text' },
+          paths: { type: 'array', items: { type: 'string' }, description: 'Paths to search within' },
+          searchType: { type: 'string', description: 'Search type filter' },
         },
         required: ['query'],
       },

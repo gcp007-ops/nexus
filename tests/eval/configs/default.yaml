@@ -18,6 +18,8 @@ defaults:
   temperature: 0
   maxRetries: 1
   retryDelayMs: 2000
+  retryBackoffMultiplier: 2
+  retryMaxDelayMs: 30000
   timeout: 120000
   systemPrompt: default
 

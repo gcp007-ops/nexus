@@ -24,6 +24,10 @@ export async function loadScenarios(
   basePath?: string
 ): Promise<EvalScenario[]> {
   const cwd = basePath || process.cwd();
+  const directPath = path.resolve(cwd, pattern);
+  if (fs.existsSync(directPath) && fs.statSync(directPath).isFile()) {
+    return loadScenarioFiles([directPath]);
+  }
 
   // Extract the base directory and file suffix from the pattern
   // e.g., "tests/eval/scenarios/**/*.eval.yaml" -> dir="tests/eval/scenarios", suffix=".eval.yaml"
@@ -43,9 +47,13 @@ export async function loadScenarios(
     return [];
   }
 
+  return loadScenarioFiles(files.sort());
+}
+
+function loadScenarioFiles(files: string[]): EvalScenario[] {
   const scenarios: EvalScenario[] = [];
 
-  for (const file of files.sort()) {
+  for (const file of files) {
     const raw = fs.readFileSync(file, 'utf-8');
     const parsed = parseYaml(raw);
     const fileName = path.basename(file);
