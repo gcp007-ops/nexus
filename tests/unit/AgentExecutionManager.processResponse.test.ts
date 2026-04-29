@@ -1,6 +1,7 @@
 /**
  * AgentExecutionManager — coverage of the user-visible message + correctedId
- * semantic introduced in commit b90ce865 (B4 of review/workspace-memory-batch).
+ * semantic introduced in commit b90ce865 and pinned by 4f07aaf1
+ * (B4 of review/workspace-memory-batch).
  *
  * Surface tested: `executeAgentTool` end-to-end, focusing on
  * `addSessionInstructions` (private). The flow:
@@ -9,17 +10,11 @@
  *   3. The agent returns a CommonResult; AEM enriches it with
  *      `sessionIdCorrection: { originalId, correctedId, message }`.
  *
- * Pre-b90ce865, `correctedId` was the standardized internal session ID.
- * Post-b90ce865, `correctedId === originalSessionId` (the human-readable
- * handle the model originally sent). External consumers that read
- * `sessionIdCorrection.correctedId` to update their session pointer
- * will get the friendly handle, not the internal UUID.
- *
- * NOTE: this test asserts the **current post-b90ce865 behavior**.
- * If the coder reverts that semantic flip ("revert" decision), the
- * assertion in the first test below should change to assert
- * `correctedId === <internal validated id>` instead of `originalHandle`.
- * TODO: confirm with coder decision (flip|revert) before merge.
+ * Contract (locked in by 4f07aaf1): correctedId === originalSessionId —
+ * the human-readable handle the model sent, NOT the internal UUID.
+ * The internal UUID stays hidden from the model. External consumers
+ * that read sessionIdCorrection.correctedId to update their session
+ * pointer keep using the friendly handle.
  */
 
 import { AgentExecutionManager } from '../../src/server/execution/AgentExecutionManager';
@@ -65,7 +60,7 @@ function makeRegistry(agent: IAgent): AgentRegistry {
 }
 
 describe('AgentExecutionManager.executeAgentTool — sessionIdCorrection semantic', () => {
-  it('sets correctedId to the original human-readable handle (post-b90ce865) and surfaces the new message', async () => {
+  it('sets correctedId to the original human-readable handle and surfaces the keep-using-handle message', async () => {
     const agent = makeAgent('runStub', () => ({
       success: true,
       data: { ok: true },
@@ -107,10 +102,12 @@ describe('AgentExecutionManager.executeAgentTool — sessionIdCorrection semanti
     expect(result.sessionIdCorrection).toBeDefined();
     expect(result.sessionIdCorrection!.originalId).toBe('planning chat');
 
-    // Current b90ce865 semantic: correctedId === originalSessionId (the friendly handle).
+    // Contract (4f07aaf1): correctedId mirrors originalSessionId — the friendly
+    // handle the model sent. The internal UUID 's-internal-uuid' must NOT leak.
     expect(result.sessionIdCorrection!.correctedId).toBe('planning chat');
+    expect(result.sessionIdCorrection!.correctedId).not.toBe('s-internal-uuid');
 
-    // New user-facing message guides the model to keep using the friendly name.
+    // User-facing message guides the model to keep using the friendly handle.
     expect(result.sessionIdCorrection!.message).toMatch(/human-readable session name/i);
     expect(result.sessionIdCorrection!.message).not.toMatch(/standardized/i);
   });
