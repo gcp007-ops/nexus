@@ -110,7 +110,7 @@ Last Updated: 2026-04-06
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.8.7
+- **Version**: 5.8.8
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -154,6 +154,7 @@ Full guidelines: `docs/obsidian-plugin-guidelines.md`
 Full changelog: `docs/changelog.md`
 
 **Latest features** (Apr 2026):
+- v5.8.8 - Workspace/memory/search batch + hydration race fix: PR #192 threads `workspaceId` through the session handle pipeline and partitions `sessionHandleMap` per workspace so sessions no longer leak across workspaces. PR #193 adds `WorkspaceFolderWatcher`, expands `WorkspaceContextBuilder`, and dedupes `recordActivityTrace` against the explicit-getSession path. PR #194 expands `MemorySearchProcessor` with CLI-trace pretty-printing and `useTools` result expansion (tracked as Phase 2 extraction candidate at 914 LoC). PR #195 plumbs `displaySessionId`/`sessionName` through the tool batch, request handlers, and connector while keeping `correctedId === originalSessionId` internal. PR #196 expands the eval harness with retry on transient errors, structured YAML config, broader scenario coverage, and a `/nexus-eval-harness` skill. PR #197 fixes issue #190: SQLite-hydration read race in `withReadableBackend` no longer falls through to legacy during the 1-3s warm hydration window (or 30-60s on cold boot) — `loadWorkspace` no longer returns "Workspace not found" and `listStates` no longer silently returns `[]` immediately after `Cmd+P → Reload`. `HybridStorageAdapter.waitForQueryReady` is now event-based (settled by phase transitions) with the 60s timeout demoted to a safety net.
 - v5.8.7 - Workspace/state memory tool fixes: PR #191 makes workspace names first-class handles across create/load/update/list state flows, removes create response UUID requirements, routes saved states through the current runtime session ID instead of default session placeholders, removes public session CRUD exposure, improves workspace settings refresh/delete UX, and adds focused unit coverage for the end-to-end workspace/state paths.
 - v5.8.6 - Content safety + model/provider fixes: PR #183 makes `content replace` tolerate Unicode normalization drift between file bytes and `oldContent`, while preserving untouched file bytes; PR #184 hardens those regression fixtures so future editor/tool normalization cannot turn them into tautologies. PR #187 validates leading Obsidian frontmatter before write/create/overwrite, rejects malformed or non-mapping YAML without rewriting valid bytes, and extends replace comparison to NFKC compatibility-normalized text such as ordinals, ellipses, and NBSPs. PR #188 adds GPT-5.5 / GPT-5.5 Pro across OpenAI and OpenRouter, adds GPT-5.5 to Codex defaults/fallbacks, and introduces a reusable live provider smoke test. PR #189 fixes Claude Code auth detection on Windows by preferring `.cmd`/`.bat` npm wrappers, adding `%APPDATA%\npm` discovery, and routing Claude headless spawning through the shared wrapper-aware process path.
 - v5.8.5 — Tool Manager CLI parser hardening + Task Board liveness: PR #181 narrows `splitTopLevelSegments` so a comma is a structural command separator only when followed by whitespace/EOF (CSV array flag values like `--paths a,b,c` no longer explode into three pseudo-commands). PR #180 fixes `unescapeQuotedContent` default branch — `\X` outside the canonical set (`\n \r \t \" \' \\ \uXXXX`) now drops the phantom backslash (POSIX-shell semantics) instead of silently corrupting backticks/`$`/`#`/parens. PR #176 wires the Task Board view to storage external-sync events through the existing `TaskBoardSyncCoordinator` and emits update notifications on note-link mutations so card metadata stays live.
@@ -251,6 +252,16 @@ agents/
 
 ### Open PRs
 None.
+
+### Recently Merged (workspace/memory/search batch, 2026-04-29)
+All 5 slices of `review/workspace-memory-batch` shipped to main:
+- **#192** — B1 session-workspace-handle (thread workspaceId, workspace partitioning, sessionHandleMap eviction)
+- **#193** — B2 workspace-folder-watcher (folder watcher + WorkspaceContextBuilder expansion + recordActivityTrace dedup)
+- **#194** — B3 search-memory-processor-expansion (CLI-trace pretty-printing + useTools result expansion; MemorySearchProcessor.ts at 914 LoC, Phase 2 extraction tracked as `TraceMatchExpander`/`UseToolsResultFormatter` when next touched)
+- **#195** — B4 tool-batch-display-session-id (displaySessionId/sessionName plumbing through tool batch + handlers + connector; correctedId=originalSessionId stays internal)
+- **#196** — B5 eval-harness-expansion (retry, structured config, scenario coverage, `/nexus-eval-harness` skill)
+
+Pre-existing `ModelAgentManager.test.ts` failure persists on main — out-of-scope, predates the batch.
 
 ### Current Work
 
