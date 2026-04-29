@@ -27,7 +27,17 @@ export interface SessionSummary {
 }
 
 /**
- * State summary returned from fetch operations
+ * State summary returned from fetch operations.
+ *
+ * Schema is intentionally narrowed to {name, tags} — id, description, sessionId,
+ * created, and workspaceId were dropped. State *names* are valid handles for
+ * load-state while scoped to the workspace, so internal storage ids are not
+ * exposed to the model. The only consumer is `loadWorkspace` (see its `states`
+ * schema in tools/workspaces/loadWorkspace.ts), which mirrors this shape.
+ *
+ * If a future caller needs id/sessionId, fetch them via the workspace state
+ * service rather than widening this surface — keeping the LLM-visible payload
+ * minimal is deliberate.
  */
 export interface StateSummary {
   name: string;

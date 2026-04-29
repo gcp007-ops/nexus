@@ -163,6 +163,14 @@ export class MemoryService {
     return withDualBackend(
       this.storageAdapterOrGetter,
       async (adapter) => {
+        // Pre-check session existence (replaces the prior catch-and-retry pattern
+        // around addTrace). Dedup is now explicit: getSession + create-if-missing,
+        // so concurrent first-traces for the same new sessionId may both pass the
+        // existence check and the second adapter.createSession will surface a
+        // duplicate-key error from the storage layer rather than racing through
+        // the implicit retry. Acceptable here because the adapter is the
+        // authoritative dedup point and the SQLite UNIQUE constraint is the
+        // backstop.
         const existingSession = await adapter.getSession(sessionId);
         if (!existingSession) {
           await adapter.createSession(workspaceId, {
