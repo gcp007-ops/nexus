@@ -169,6 +169,7 @@ export class ServiceRegistrar {
             await this.context.serviceManager.getService('memoryService');
             await this.context.serviceManager.getService('sessionService');
             await this.context.serviceManager.getService('sessionContextManager');
+            await this.context.serviceManager.getService('workspaceFolderWatcher');
 
             // Now initialize business services
             await this.context.serviceManager.getService('defaultWorkspaceManager');

@@ -157,6 +157,7 @@ export class WorkspaceEventApplier {
     if (event.data.description !== undefined) { updates.push('description = ?'); values.push(event.data.description); }
     if (event.data.endTime !== undefined) { updates.push('endTime = ?'); values.push(event.data.endTime); }
     if (event.data.isActive !== undefined) { updates.push('isActive = ?'); values.push(event.data.isActive ? 1 : 0); }
+    if (event.data.workspaceId !== undefined) { updates.push('workspaceId = ?'); values.push(event.data.workspaceId); }
 
     if (updates.length > 0) {
       values.push(event.sessionId);

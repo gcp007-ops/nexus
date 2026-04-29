@@ -14,13 +14,17 @@
  * - Get recently modified files in workspace
  */
 
-import { App, TFolder } from 'obsidian';
+import { App, TFile, TFolder } from 'obsidian';
 
 /**
  * Interface for workspace data
  */
 interface IWorkspaceData {
   rootFolder: string;
+}
+
+interface IVaultLike {
+  getFiles(): TFile[];
 }
 
 /**
@@ -157,27 +161,58 @@ export class WorkspaceFileCollector {
    */
   getRecentFilesInWorkspace(
     workspace: IWorkspaceData,
-    cacheManager: ICacheManager | null
+    cacheManager: ICacheManager | null,
+    app?: App
   ): RecentFileInfo[] {
     try {
-      if (!cacheManager) {
-        return [];
+      const recentFiles = cacheManager?.getRecentFiles(5, workspace.rootFolder) || [];
+
+      if (recentFiles.length > 0) {
+        // Map IndexedFile[] to simple {path, modified} objects
+        return recentFiles.map((file) => ({
+          path: file.path,
+          modified: file.modified
+        }));
       }
 
-      const recentFiles = cacheManager.getRecentFiles(5, workspace.rootFolder);
-
-      if (!recentFiles || recentFiles.length === 0) {
-        return [];
-      }
-
-      // Map IndexedFile[] to simple {path, modified} objects
-      return recentFiles.map((file) => ({
-        path: file.path,
-        modified: file.modified
-      }));
+      return app ? this.getRecentFilesFromVault(workspace, app.vault) : [];
 
     } catch {
-      return [];
+      try {
+        return app ? this.getRecentFilesFromVault(workspace, app.vault) : [];
+      } catch {
+        return [];
+      }
     }
   }
+
+  private getRecentFilesFromVault(workspace: IWorkspaceData, vault: IVaultLike): RecentFileInfo[] {
+    const rootFolder = normalizeRootFolder(workspace.rootFolder);
+    return vault.getFiles()
+      .filter(file => isWorkspaceFile(file, rootFolder))
+      .filter(file => file.extension === 'md' || file.extension === 'canvas')
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, 5)
+      .map(file => ({
+        path: file.path,
+        modified: file.stat.mtime
+      }));
+  }
+}
+
+function normalizeRootFolder(rootFolder: string): string {
+  const trimmed = rootFolder.trim();
+  if (!trimmed || trimmed === '/') {
+    return '';
+  }
+
+  return trimmed.replace(/^\/+|\/+$/g, '');
+}
+
+function isWorkspaceFile(file: TFile, rootFolder: string): boolean {
+  if (!rootFolder) {
+    return true;
+  }
+
+  return file.path === rootFolder || file.path.startsWith(`${rootFolder}/`);
 }

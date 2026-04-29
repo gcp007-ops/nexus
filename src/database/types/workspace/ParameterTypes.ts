@@ -106,11 +106,7 @@ export interface LoadWorkspaceResult extends CommonResult {
       created: number;
     }>;
     states: Array<{
-      id: string;
       name: string;
-      description?: string;
-      sessionId?: string;
-      created: number;
       tags?: string[];
     }>;
     prompt?: {

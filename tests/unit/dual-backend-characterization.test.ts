@@ -501,30 +501,108 @@ describe('MemoryService dual-backend characterization', () => {
       expect(result.items[0].state.state?.metadata.tags).toEqual(['test', 'verification']);
     });
 
-    it('recordActivityTrace creates the missing adapter session with the same generated ID', async () => {
+    it('recordActivityTrace creates the missing adapter session before writing the trace', async () => {
       const ws = { getWorkspace: jest.fn(), getMemoryTraces: jest.fn() } as WorkspaceServiceLike;
       const adapter = createMockAdapter(true);
-      adapter.addTrace
-        .mockRejectedValueOnce(new Error('session not found'))
-        .mockResolvedValueOnce('trace-1');
+      adapter.getSession.mockResolvedValue(null);
+      adapter.addTrace.mockResolvedValue('trace-1');
 
       const service = new MemoryService(plugin, ws, adapter);
       const result = await service.recordActivityTrace({
         workspaceId: 'ws1',
         timestamp: 1000,
         type: 'action',
-        content: 'created from diagnostic'
+        content: 'created from diagnostic',
+        metadata: {
+          context: {
+            workspaceId: 'ws1',
+            sessionId: 'ignored-here',
+            memory: 'Need to verify recent session listing.',
+            goal: 'Investigate workspace session population'
+          }
+        }
       });
 
       const createdSessionId = adapter.createSession.mock.calls[0][1].id;
       expect(createdSessionId).toMatch(/^session_/);
       expect(adapter.createSession).toHaveBeenCalledWith('ws1', expect.objectContaining({
-        id: createdSessionId
+        id: createdSessionId,
+        name: `Session ${createdSessionId}`,
+        description: 'Need to verify recent session listing.'
       }));
-      expect(adapter.addTrace).toHaveBeenNthCalledWith(2, 'ws1', createdSessionId, expect.objectContaining({
+      expect(adapter.addTrace).toHaveBeenCalledWith('ws1', createdSessionId, expect.objectContaining({
         content: 'created from diagnostic'
       }));
       expect(result).toBe('trace-1');
+    });
+
+    it('recordActivityTrace uses explicit sessionName instead of goal when auto-creating a missing session', async () => {
+      const ws = { getWorkspace: jest.fn(), getMemoryTraces: jest.fn() } as WorkspaceServiceLike;
+      const adapter = createMockAdapter(true);
+      adapter.getSession.mockResolvedValue(null);
+      adapter.addTrace.mockResolvedValue('trace-1');
+
+      const service = new MemoryService(plugin, ws, adapter);
+      await service.recordActivityTrace({
+        workspaceId: 'ws1',
+        sessionId: 's-20260429111500',
+        timestamp: 1000,
+        type: 'action',
+        content: 'created from diagnostic',
+        metadata: {
+          context: {
+            workspaceId: 'ws1',
+            sessionId: 's-20260429111500',
+            sessionName: 'focused trace session',
+            memory: 'Need to verify recent session listing.',
+            goal: 'Inspect memory, content, storage, and search agent commands'
+          }
+        }
+      });
+
+      expect(adapter.createSession).toHaveBeenCalledWith('ws1', expect.objectContaining({
+        id: 's-20260429111500',
+        name: 'focused trace session',
+        description: 'Need to verify recent session listing.'
+      }));
+    });
+
+    it('recordActivityTrace stores default-routed traces under the explicit context workspace', async () => {
+      const ws = {
+        getWorkspace: jest.fn(),
+        getMemoryTraces: jest.fn(),
+        getWorkspaceByNameOrId: jest.fn().mockResolvedValue({ id: 'ws-target' })
+      } as WorkspaceServiceLike & { getWorkspaceByNameOrId: jest.Mock };
+      const adapter = createMockAdapter(true);
+      adapter.getSession.mockResolvedValue(null);
+      adapter.addTrace.mockResolvedValue('trace-1');
+
+      const service = new MemoryService(plugin, ws, adapter);
+      await service.recordActivityTrace({
+        workspaceId: 'default',
+        sessionId: 's-20260429113826',
+        timestamp: 1000,
+        type: 'tool_call',
+        content: 'Used tool',
+        metadata: {
+          context: {
+            workspaceId: 'E2E Focused Trace Search Test 2',
+            sessionId: 's-20260429113826',
+            sessionName: 'focused trace session',
+            memory: 'Testing trace routing.',
+            goal: 'Write a probe file.'
+          }
+        }
+      });
+
+      expect(ws.getWorkspaceByNameOrId).toHaveBeenCalledWith('E2E Focused Trace Search Test 2');
+      expect(adapter.createSession).toHaveBeenCalledWith('ws-target', expect.objectContaining({
+        id: 's-20260429113826',
+        name: 'focused trace session'
+      }));
+      expect(adapter.addTrace).toHaveBeenCalledWith('ws-target', 's-20260429113826', expect.objectContaining({
+        content: 'Used tool'
+      }));
     });
 
     it('createMemoryTrace reuses one generated session ID for save and reload', async () => {

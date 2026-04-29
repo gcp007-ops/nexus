@@ -93,6 +93,20 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
         })
     },
 
+    // Workspace folder watcher (keeps workspace root paths synced after folder moves/renames)
+    {
+        name: 'workspaceFolderWatcher',
+        dependencies: ['workspaceService'],
+        create: defineService(async (context) => {
+            const { WorkspaceFolderWatcher } = await import('../../services/workspace/WorkspaceFolderWatcher');
+            const workspaceService = await context.serviceManager.getService<WorkspaceService>('workspaceService');
+
+            const watcher = new WorkspaceFolderWatcher(context.app, workspaceService);
+            watcher.startWhenReady();
+            return watcher;
+        })
+    },
+
     // Default workspace manager (ensures default workspace exists)
     {
         name: 'defaultWorkspaceManager',

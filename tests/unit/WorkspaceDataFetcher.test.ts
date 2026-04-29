@@ -36,13 +36,8 @@ describe('WorkspaceDataFetcher', () => {
     });
     expect(result.items).toEqual([
       {
-        id: 'state-1',
         name: 'Planning checkpoint',
-        description: 'Checkpoint description',
-        sessionId: 'session-1',
-        created: 123,
-        tags: [],
-        workspaceId: undefined
+        tags: []
       }
     ]);
     expect(result.totalItems).toBe(1);
@@ -99,7 +94,7 @@ describe('WorkspaceDataFetcher', () => {
     });
   });
 
-  it('surfaces state metadata tags and real session IDs from adapter-backed state lists', async () => {
+  it('surfaces only state names and tags in workspace load summaries', async () => {
     const fetcher = new WorkspaceDataFetcher();
     const memoryService = {
       getSessions: jest.fn(),
@@ -137,13 +132,8 @@ describe('WorkspaceDataFetcher', () => {
     });
 
     expect(result.items[0]).toEqual({
-      id: 'state-1',
       name: 'Verification checkpoint',
-      description: 'Checkpoint description',
-      sessionId: 'session-1',
-      created: 789,
-      tags: ['test', 'verification'],
-      workspaceId: 'workspace-1'
+      tags: ['test', 'verification']
     });
   });
 
