@@ -45,6 +45,13 @@ export class WorkspaceSessionService {
       // Ensure workspace exists before creating session (referential integrity)
       let existingWorkspace = await this.workspaceDeps.getWorkspace(workspaceId);
       if (!existingWorkspace) {
+        existingWorkspace = await this.workspaceDeps.getWorkspaceByNameOrId(workspaceId);
+        if (existingWorkspace) {
+          workspaceId = existingWorkspace.id;
+        }
+      }
+
+      if (!existingWorkspace) {
         if (workspaceId === GLOBAL_WORKSPACE_ID) {
           existingWorkspace = await this.workspaceDeps.getWorkspaceByNameOrId(DEFAULT_WORKSPACE_NAME);
           if (existingWorkspace) {
@@ -71,6 +78,34 @@ export class WorkspaceSessionService {
         endTime: sessionData.endTime,
         isActive: sessionData.isActive ?? true
       };
+
+      if (hybridSession.id) {
+        const existingSession = await adapter.getSession(hybridSession.id);
+        if (existingSession) {
+          if (existingSession.workspaceId !== workspaceId) {
+            if (!adapter.moveSessionToWorkspace) {
+              throw new Error(`Session ${hybridSession.id} already belongs to workspace ${existingSession.workspaceId}`);
+            }
+            await adapter.moveSessionToWorkspace(hybridSession.id, workspaceId);
+          }
+          await adapter.updateSession(workspaceId, hybridSession.id, {
+            description: hybridSession.description,
+            endTime: hybridSession.endTime,
+            isActive: hybridSession.isActive
+          });
+          await adapter.updateWorkspace(workspaceId, { lastAccessed: Date.now() });
+          return {
+            id: hybridSession.id,
+            name: existingSession.name,
+            description: hybridSession.description,
+            startTime: existingSession.startTime,
+            endTime: hybridSession.endTime,
+            isActive: hybridSession.isActive,
+            memoryTraces: {},
+            states: {}
+          };
+        }
+      }
 
       const sessionId = await adapter.createSession(workspaceId, hybridSession);
       await adapter.updateWorkspace(workspaceId, { lastAccessed: Date.now() });
@@ -181,6 +216,9 @@ export class WorkspaceSessionService {
       async (adapter) => {
         const session = await adapter.getSession(sessionId);
         if (!session) {
+          return null;
+        }
+        if (session.workspaceId !== workspaceId) {
           return null;
         }
         return {

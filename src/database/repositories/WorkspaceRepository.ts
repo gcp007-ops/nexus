@@ -295,9 +295,15 @@ export class WorkspaceRepository
 
     let whereClause = '';
     const params: SqliteValue[] = [];
+    const filters: string[] = [];
+
+    if (options?.search && options.search.trim()) {
+      const searchTerm = `%${options.search.trim().toLowerCase()}%`;
+      filters.push('(LOWER(name) LIKE ? OR LOWER(COALESCE(description, \'\')) LIKE ? OR LOWER(rootFolder) LIKE ?)');
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
 
     if (options?.filter) {
-      const filters: string[] = [];
       if (options.filter.isActive !== undefined) {
         filters.push('isActive = ?');
         params.push(options.filter.isActive ? 1 : 0);
@@ -306,9 +312,14 @@ export class WorkspaceRepository
         filters.push('isArchived = ?');
         params.push(options.filter.isArchived ? 1 : 0);
       }
-      if (filters.length > 0) {
-        whereClause = `WHERE ${filters.join(' AND ')}`;
+      if (typeof options.filter.rootFolder === 'string') {
+        filters.push('rootFolder = ?');
+        params.push(options.filter.rootFolder);
       }
+    }
+
+    if (filters.length > 0) {
+      whereClause = `WHERE ${filters.join(' AND ')}`;
     }
 
     const baseQuery = `SELECT * FROM workspaces ${whereClause} ORDER BY ${sortBy} ${sortOrder}`;

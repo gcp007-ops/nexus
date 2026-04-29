@@ -4,7 +4,7 @@
 // Dependencies: WorkspaceService (legacy) or IStorageAdapter (new) for all data access
 
 import { Plugin } from 'obsidian';
-import { WorkspaceService } from '../../../services/WorkspaceService';
+import { GLOBAL_WORKSPACE_ID, WorkspaceService } from '../../../services/WorkspaceService';
 import { IStorageAdapter } from '../../../database/interfaces/IStorageAdapter';
 import {
   WorkspaceMemoryTrace,
@@ -145,7 +145,7 @@ export class MemoryService {
    * Record activity trace in a session
    */
   async recordActivityTrace(trace: Omit<WorkspaceMemoryTrace, 'id'>): Promise<string> {
-    const workspaceId = trace.workspaceId;
+    const workspaceId = await this.resolveTraceWorkspaceId(trace);
     const sessionId = trace.sessionId || this.createSessionId();
 
     const tracePayload = {
@@ -163,21 +163,25 @@ export class MemoryService {
     return withDualBackend(
       this.storageAdapterOrGetter,
       async (adapter) => {
-        try {
-          return await adapter.addTrace(workspaceId, sessionId, tracePayload);
-        } catch (error) {
-          if ((error as Error).message?.includes('session')) {
-            await adapter.createSession(workspaceId, {
-              id: sessionId,
-              name: `Session ${new Date().toLocaleString()}`,
-              description: 'Auto-created session',
-              startTime: Date.now(),
-              isActive: true
-            });
-            return await adapter.addTrace(workspaceId, sessionId, tracePayload);
-          }
-          throw error;
+        const existingSession = await adapter.getSession(sessionId);
+        if (!existingSession) {
+          await adapter.createSession(workspaceId, {
+            id: sessionId,
+            name: this.buildSessionName({ ...trace, sessionId }),
+            description: this.buildSessionDescription(trace),
+            startTime: Date.now(),
+            isActive: true
+          });
+        } else if (existingSession.workspaceId !== workspaceId && adapter.moveSessionToWorkspace) {
+          await adapter.moveSessionToWorkspace(sessionId, workspaceId);
+          await adapter.updateSession(workspaceId, sessionId, {
+            name: existingSession.name,
+            description: existingSession.description,
+            endTime: existingSession.endTime,
+            isActive: existingSession.isActive
+          });
         }
+        return await adapter.addTrace(workspaceId, sessionId, tracePayload);
       },
       async () => {
         const workspace = await this.workspaceService.getWorkspace(workspaceId);
@@ -188,7 +192,8 @@ export class MemoryService {
         if (!workspace.sessions[sessionId]) {
           await this.workspaceService.addSession(workspaceId, {
             id: sessionId,
-            name: `Session ${new Date().toLocaleString()}`,
+            name: this.buildSessionName({ ...trace, sessionId }),
+            description: this.buildSessionDescription(trace),
             startTime: Date.now(),
             isActive: true,
             memoryTraces: {},
@@ -200,6 +205,71 @@ export class MemoryService {
         return createdTrace.id;
       }
     );
+  }
+
+  private async resolveTraceWorkspaceId(trace: Omit<WorkspaceMemoryTrace, 'id'>): Promise<string> {
+    const context = this.extractTraceContext(trace.metadata);
+    const contextWorkspaceId = typeof context.workspaceId === 'string' ? context.workspaceId.trim() : '';
+    const preferredWorkspaceId =
+      contextWorkspaceId && trace.workspaceId === GLOBAL_WORKSPACE_ID
+        ? contextWorkspaceId
+        : trace.workspaceId;
+
+    if (!preferredWorkspaceId) {
+      return trace.workspaceId;
+    }
+
+    try {
+      const workspace = await this.workspaceService.getWorkspaceByNameOrId(preferredWorkspaceId);
+      return workspace?.id || preferredWorkspaceId;
+    } catch {
+      return preferredWorkspaceId;
+    }
+  }
+
+  private buildSessionName(trace: Omit<WorkspaceMemoryTrace, 'id'>): string {
+    const context = this.extractTraceContext(trace.metadata);
+    const sessionName = typeof context.sessionName === 'string' ? context.sessionName.trim() : '';
+    if (sessionName) {
+      return this.truncateSessionText(sessionName, 80);
+    }
+
+    const displaySessionId = typeof context.displaySessionId === 'string' ? context.displaySessionId.trim() : '';
+    if (displaySessionId) {
+      return this.truncateSessionText(displaySessionId, 80);
+    }
+
+    if (trace.sessionId) {
+      return `Session ${trace.sessionId}`;
+    }
+
+    return 'Auto-created session';
+  }
+
+  private buildSessionDescription(trace: Omit<WorkspaceMemoryTrace, 'id'>): string {
+    const context = this.extractTraceContext(trace.metadata);
+    const memory = typeof context.memory === 'string' ? context.memory.trim() : '';
+    if (memory) {
+      return this.truncateSessionText(memory, 180);
+    }
+
+    return 'Auto-created session';
+  }
+
+  private extractTraceContext(metadata: unknown): Record<string, unknown> {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return {};
+    }
+
+    const metadataRecord = metadata as Record<string, unknown>;
+    const context = metadataRecord.context;
+    return context && typeof context === 'object' && !Array.isArray(context)
+      ? context as Record<string, unknown>
+      : {};
+  }
+
+  private truncateSessionText(value: string, maxLength: number): string {
+    return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
   }
 
   /**
@@ -360,6 +430,14 @@ export class MemoryService {
     stateData: WorkspaceState,
     name?: string
   ): Promise<string> {
+    await this.workspaceService.addSession(workspaceId, {
+      id: sessionId,
+      name: this.buildStateSessionName(stateData, name),
+      description: this.buildStateSessionDescription(stateData),
+      startTime: Date.now(),
+      isActive: true
+    });
+
     const state = await this.workspaceService.addState(workspaceId, sessionId, {
       id: stateData.id,  // Pass the ID to preserve it
       name: name || stateData.name || 'Unnamed State',
@@ -370,6 +448,28 @@ export class MemoryService {
     });
 
     return state.id;
+  }
+
+  private buildStateSessionName(stateData: WorkspaceState, name?: string): string {
+    const activeTask = typeof stateData.context?.activeTask === 'string'
+      ? stateData.context.activeTask.trim()
+      : '';
+    if (activeTask) {
+      return this.truncateSessionText(activeTask, 80);
+    }
+
+    return this.truncateSessionText(name || stateData.name || `Session ${new Date().toLocaleString()}`, 80);
+  }
+
+  private buildStateSessionDescription(stateData: WorkspaceState): string {
+    const conversationContext = typeof stateData.context?.conversationContext === 'string'
+      ? stateData.context.conversationContext.trim()
+      : '';
+    if (conversationContext) {
+      return this.truncateSessionText(conversationContext, 180);
+    }
+
+    return stateData.description || 'Auto-created session for state storage';
   }
 
   /**

@@ -30,13 +30,8 @@ export interface SessionSummary {
  * State summary returned from fetch operations
  */
 export interface StateSummary {
-  id: string;
   name: string;
-  description?: string;
-  sessionId?: string;
-  created: number;
   tags?: string[];
-  workspaceId?: string;
 }
 
 /**
@@ -181,13 +176,8 @@ export class WorkspaceDataFetcher {
           };
         }
       }) => ({
-        id: state.id,
         name: state.name || 'Untitled State',
-        description: state.description || state.state?.description,
-        sessionId: state.sessionId || state.state?.sessionId,
-        created: state.created ?? state.timestamp ?? 0,
-        tags: state.tags || state.state?.state?.metadata?.tags || state.state?.metadata?.tags || [],
-        workspaceId: state.state?.workspaceId || state.workspaceId // Include for validation
+        tags: state.tags || state.state?.state?.metadata?.tags || state.state?.metadata?.tags || []
       }));
 
       // Return with pagination metadata from the original result

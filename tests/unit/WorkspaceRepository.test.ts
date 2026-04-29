@@ -106,4 +106,26 @@ describe('WorkspaceRepository', () => {
       [1]
     );
   });
+
+  it('supports filtering by rootFolder', async () => {
+    (deps.sqliteCache.queryOne as jest.Mock).mockResolvedValue({ count: 0 });
+
+    await repo.getWorkspaces({ filter: { rootFolder: 'Subfolder B/Project' } });
+
+    expect(deps.sqliteCache.queryOne).toHaveBeenCalledWith(
+      expect.stringContaining('rootFolder = ?'),
+      ['Subfolder B/Project']
+    );
+  });
+
+  it('applies search to workspace name lookups', async () => {
+    (deps.sqliteCache.queryOne as jest.Mock).mockResolvedValue({ count: 0 });
+
+    await repo.getWorkspaces({ search: 'Default Workspace', pageSize: 100 });
+
+    expect(deps.sqliteCache.queryOne).toHaveBeenCalledWith(
+      expect.stringContaining('LOWER(name) LIKE ?'),
+      ['%default workspace%', '%default workspace%', '%default workspace%']
+    );
+  });
 });

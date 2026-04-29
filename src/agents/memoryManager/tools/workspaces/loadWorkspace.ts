@@ -205,7 +205,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       // Collect files using file collector
       const cacheManager = this.agent.getCacheManager();
-      const recentFiles = this.fileCollector.getRecentFilesInWorkspace(workspace, cacheManager);
+      const recentFiles = this.fileCollector.getRecentFilesInWorkspace(workspace, cacheManager, app);
 
       // Build workspace structure using file collector
       // recursive defaults to false (top-level only)
@@ -468,25 +468,9 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
               items: {
                 type: 'object',
                 properties: {
-                  id: {
-                    type: 'string',
-                    description: 'State ID'
-                  },
                   name: {
                     type: 'string',
-                    description: 'State name'
-                  },
-                  description: {
-                    type: 'string',
-                    description: 'State description'
-                  },
-                  sessionId: {
-                    type: 'string',
-                    description: 'Session ID this state belongs to'
-                  },
-                  created: {
-                    type: 'number',
-                    description: 'State creation timestamp'
+                    description: 'State name. Use this name with load-state while scoped to the same workspace.'
                   },
                   tags: {
                     type: 'array',
@@ -494,9 +478,9 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
                     description: 'State tags'
                   }
                 },
-                required: ['id', 'name', 'created']
+                required: ['name']
               },
-              description: 'States in this workspace (paginated)'
+              description: 'Saved states in this workspace (paginated). State names are valid handles for load-state; IDs and session IDs are intentionally omitted.'
             },
             prompt: {
               type: 'object',
