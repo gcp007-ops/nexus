@@ -172,6 +172,7 @@ export class HybridStorageAdapter implements IStorageAdapter {
     percent: 0,
     statusText: ''
   };
+  private queryReadyWaiters: Array<(ready: boolean) => void> = [];
 
   // Deferred initialization support
   private initPromise: Promise<void> | null = null;
@@ -522,6 +523,7 @@ export class HybridStorageAdapter implements IStorageAdapter {
       percent: 100,
       statusText: 'Local chat index updated'
     };
+    this.settleQueryReadyWaiters(true);
   }
 
   private failStartupHydration(error: string): void {
@@ -535,6 +537,7 @@ export class HybridStorageAdapter implements IStorageAdapter {
       statusText: 'Local chat index update failed',
       error
     };
+    this.settleQueryReadyWaiters(false);
   }
 
   private clearStartupHydrationState(): void {
@@ -547,6 +550,16 @@ export class HybridStorageAdapter implements IStorageAdapter {
       percent: 0,
       statusText: ''
     };
+    this.settleQueryReadyWaiters(true);
+  }
+
+  private settleQueryReadyWaiters(ready: boolean): void {
+    if (this.queryReadyWaiters.length === 0) return;
+    const waiters = this.queryReadyWaiters;
+    this.queryReadyWaiters = [];
+    for (const resolve of waiters) {
+      try { resolve(ready); } catch { /* swallow — waiter already settled */ }
+    }
   }
 
   /**
@@ -730,22 +743,37 @@ export class HybridStorageAdapter implements IStorageAdapter {
     return this.initialized && !this.initError;
   }
 
-  async waitForQueryReady(maxWaitMs = 60_000): Promise<boolean> {
-    const ready = await this.waitForReady();
-    if (!ready) {
-      return false;
-    }
+  waitForQueryReady(maxWaitMs = 60_000): Promise<boolean> {
+    if (this.isQueryReady()) return Promise.resolve(true);
+    if (this.initialized && this.initError) return Promise.resolve(false);
 
-    const deadline = Date.now() + maxWaitMs;
-    while (this.startupHydrationState.phase === 'running') {
-      if (Date.now() >= deadline) {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const settle = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.queryReadyWaiters = this.queryReadyWaiters.filter(w => w !== settle);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
         console.error('[HybridStorageAdapter] waitForQueryReady timed out after', maxWaitMs, 'ms');
-        return false;
-      }
-      await new Promise(resolve => setTimeout(resolve, 250));
-    }
+        settle(false);
+      }, maxWaitMs);
+      this.queryReadyWaiters.push(settle);
 
-    return this.isQueryReady();
+      if (!this.initialized && this.initPromise) {
+        this.initPromise
+          .then(() => {
+            if (this.initError) {
+              settle(false);
+            } else if (this.isQueryReady()) {
+              settle(true);
+            }
+          })
+          .catch(() => settle(false));
+      }
+    });
   }
 
   /**

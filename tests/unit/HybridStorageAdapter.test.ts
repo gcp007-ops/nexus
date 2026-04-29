@@ -103,6 +103,86 @@ describe('HybridStorageAdapter', () => {
     });
   });
 
+  describe('waitForQueryReady (event-based)', () => {
+    type AdapterPrivates = HybridStorageAdapter & {
+      initialized: boolean;
+      initError: Error | null;
+      initPromise?: Promise<void>;
+      startupHydrationState: { phase: 'idle' | 'running' | 'complete' | 'error'; [k: string]: unknown };
+      queryReadyWaiters: Array<(ready: boolean) => void>;
+      completeStartupHydration: () => void;
+      failStartupHydration: (error: string) => void;
+      clearStartupHydrationState: () => void;
+    };
+
+    function makeAdapter(phase: 'idle' | 'running' | 'complete' | 'error' = 'running'): AdapterPrivates {
+      const a = Object.create(HybridStorageAdapter.prototype) as AdapterPrivates;
+      a.initialized = true;
+      a.initError = null;
+      a.startupHydrationState = {
+        phase,
+        isBlocking: phase === 'running',
+        stage: '',
+        progress: 0,
+        total: 1,
+        percent: 0,
+        statusText: ''
+      };
+      a.queryReadyWaiters = [];
+      return a;
+    }
+
+    it('returns true immediately when already query-ready', async () => {
+      const a = makeAdapter('idle');
+      await expect(a.waitForQueryReady(50)).resolves.toBe(true);
+    });
+
+    it('resolves true when completeStartupHydration fires', async () => {
+      const a = makeAdapter('running');
+      const pending = a.waitForQueryReady(5_000);
+      expect(a.queryReadyWaiters).toHaveLength(1);
+      a.completeStartupHydration();
+      await expect(pending).resolves.toBe(true);
+      expect(a.queryReadyWaiters).toHaveLength(0);
+    });
+
+    it('resolves true when clearStartupHydrationState fires', async () => {
+      const a = makeAdapter('running');
+      const pending = a.waitForQueryReady(5_000);
+      a.clearStartupHydrationState();
+      await expect(pending).resolves.toBe(true);
+    });
+
+    it('resolves false when failStartupHydration fires', async () => {
+      const a = makeAdapter('running');
+      const pending = a.waitForQueryReady(5_000);
+      a.failStartupHydration('boom');
+      await expect(pending).resolves.toBe(false);
+    });
+
+    it('resolves false on timeout when no transition fires', async () => {
+      const a = makeAdapter('running');
+      const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        await expect(a.waitForQueryReady(20)).resolves.toBe(false);
+        expect(a.queryReadyWaiters).toHaveLength(0);
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it('settles all concurrent waiters at the same transition', async () => {
+      const a = makeAdapter('running');
+      const p1 = a.waitForQueryReady(5_000);
+      const p2 = a.waitForQueryReady(5_000);
+      const p3 = a.waitForQueryReady(5_000);
+      expect(a.queryReadyWaiters).toHaveLength(3);
+      a.completeStartupHydration();
+      await expect(Promise.all([p1, p2, p3])).resolves.toEqual([true, true, true]);
+      expect(a.queryReadyWaiters).toHaveLength(0);
+    });
+  });
+
   describe('reconcileMissingConversations', () => {
     it('replays missing conversation JSONL files into SQLite cache', async () => {
       const adapter = Object.create(HybridStorageAdapter.prototype) as HybridStorageAdapter & {

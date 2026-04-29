@@ -111,4 +111,82 @@ describe('DualBackendExecutor', () => {
 
     expect(result).toBe('adapter');
   });
+
+  it('withReadableBackend awaits waitForQueryReady when hydrating, then uses adapter on success', async () => {
+    let queryReady = false;
+    const adapter = createAdapter({
+      isReady: () => true,
+      isQueryReady: () => queryReady,
+      waitForQueryReady: async () => {
+        queryReady = true;
+        return true;
+      }
+    } as Partial<IStorageAdapter> & {
+      isQueryReady?: () => boolean;
+      waitForQueryReady?: () => Promise<boolean>;
+    });
+
+    const result = await withReadableBackend(
+      adapter,
+      async () => 'adapter',
+      async () => 'legacy'
+    );
+
+    expect(result).toBe('adapter');
+  });
+
+  it('withReadableBackend falls through to legacy when waitForQueryReady resolves false', async () => {
+    const adapter = createAdapter({
+      isReady: () => true,
+      isQueryReady: () => false,
+      waitForQueryReady: async () => false
+    } as Partial<IStorageAdapter> & {
+      isQueryReady?: () => boolean;
+      waitForQueryReady?: () => Promise<boolean>;
+    });
+
+    const result = await withReadableBackend(
+      adapter,
+      async () => 'adapter',
+      async () => 'legacy'
+    );
+
+    expect(result).toBe('legacy');
+  });
+
+  it('withReadableBackend does not call waitForQueryReady when adapter is already query-ready', async () => {
+    const waitSpy = jest.fn(async () => true);
+    const adapter = createAdapter({
+      isReady: () => true,
+      isQueryReady: () => true,
+      waitForQueryReady: waitSpy
+    } as Partial<IStorageAdapter> & {
+      isQueryReady?: () => boolean;
+      waitForQueryReady?: () => Promise<boolean>;
+    });
+
+    const result = await withReadableBackend(
+      adapter,
+      async () => 'adapter',
+      async () => 'legacy'
+    );
+
+    expect(result).toBe('adapter');
+    expect(waitSpy).not.toHaveBeenCalled();
+  });
+
+  it('withReadableBackend falls through immediately when adapter has no waitForQueryReady (back-compat)', async () => {
+    const adapter = createAdapter({
+      isReady: () => true,
+      isQueryReady: () => false
+    });
+
+    const result = await withReadableBackend(
+      adapter,
+      async () => 'adapter',
+      async () => 'legacy'
+    );
+
+    expect(result).toBe('legacy');
+  });
 });
