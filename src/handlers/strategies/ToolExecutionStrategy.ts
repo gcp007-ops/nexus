@@ -305,9 +305,16 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
         const enhancedParams = validatedParams as EnhancedToolParams;
 
         // Session validation is now handled in buildRequestContext() to avoid duplication.
-        // Keep the session *name* stable; only update the description with explicit
-        // long-lived session memory. The current goal changes every tool call and
-        // should not overwrite the human-readable session title.
+        //
+        // BEHAVIOR CHANGE (B4): the session description is no longer derived from
+        // `context.goal`. Pre-B4 this branch read `context.goal || context.sessionDescription`;
+        // that conflated the per-call objective with the long-lived session label and
+        // caused the description to churn on every tool call. Under the B1/B4 contract
+        // `goal` is request-scoped (workspaceId/sessionId/memory/goal/constraints are
+        // top-level CLI fields) and is preserved on `params.context.goal` for
+        // downstream tooling — it just does not overwrite the persistent session
+        // description any more. Callers that previously sent only `goal` to update
+        // the description must now send `sessionDescription` explicitly.
         const sessionGoal = enhancedParams.context?.sessionDescription;
         if (this.sessionContextManager &&
             enhancedParams.context?.sessionId &&
