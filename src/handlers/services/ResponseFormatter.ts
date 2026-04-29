@@ -86,6 +86,11 @@ export class ResponseFormatter implements IResponseFormatter {
     }
 
     private formatWithSessionInstructions(result: ToolExecutionResult, sessionInfo: SessionInfo): MCPContentResponse {
+        // The pre-B4 implementation called this.formatSessionInstructions(sessionInfo.sessionId, result)
+        // here, which stamped the *internal* validated sessionId onto the result envelope
+        // for the model to echo back. That contradicted the B1/B4 contract where the
+        // internal UUID must stay hidden — the model is told to keep using its
+        // friendly handle (displaySessionId) instead. The call is intentionally omitted.
         let responseText = "";
 
         // Compact session handle notice when a duplicate readable name was adjusted.
