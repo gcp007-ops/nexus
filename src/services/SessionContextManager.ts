@@ -15,6 +15,7 @@ export interface WorkspaceContext {
 
 interface SessionServiceLike {
   getSession(sessionId: string): Promise<SessionData | null> | SessionData | null;
+  getAllSessions?(workspaceId?: string): Promise<SessionData[]> | SessionData[];
   createSession(sessionData: {
     name: string;
     description: string;
@@ -22,6 +23,16 @@ interface SessionServiceLike {
     id: string;
   }): Promise<unknown> | void;
   updateSession(sessionData: SessionData): Promise<unknown> | void;
+  registerOnSessionDeleted?(listener: SessionDeletedListener): () => void;
+}
+
+export type SessionDeletedListener = (sessionId: string, workspaceId: string) => void;
+
+export interface SessionValidationResult {
+  id: string;
+  created: boolean;
+  displaySessionId: string;
+  displaySessionIdChanged: boolean;
 }
 
 /**
@@ -37,6 +48,19 @@ export class SessionContextManager {
   
   // Map of sessionId -> workspace context
   private sessionContextMap: Map<string, WorkspaceContext> = new Map();
+
+  // Map of model-facing session handles to internal unique session IDs.
+  // Keyed by `${workspaceId}::${handle}` so the same friendly handle ("research")
+  // in different workspaces resolves to distinct internal sessions instead of
+  // aliasing — workspaces are UX scoping, and reusing names across them is
+  // expected. The map stores the originating workspaceId so eviction on session
+  // delete (registerOnSessionDeleted) can purge both the input handle entry and
+  // the display-name entry without scanning the whole map.
+  private sessionHandleMap: Map<string, { id: string; displaySessionId: string; workspaceId: string }> = new Map();
+
+  // Disposer for the session-deleted subscription so re-wiring or teardown can
+  // unregister cleanly.
+  private sessionDeletedUnsubscribe: (() => void) | null = null;
   
   // Default workspace context for new sessions (global)
   private defaultWorkspaceContext: WorkspaceContext | null = null;
@@ -49,7 +73,39 @@ export class SessionContextManager {
    * This is called during plugin initialization
    */
   setSessionService(sessionService: SessionServiceLike): void {
+    if (this.sessionDeletedUnsubscribe) {
+      this.sessionDeletedUnsubscribe();
+      this.sessionDeletedUnsubscribe = null;
+    }
     this.sessionService = sessionService;
+    if (sessionService.registerOnSessionDeleted) {
+      this.sessionDeletedUnsubscribe = sessionService.registerOnSessionDeleted(
+        (sessionId, workspaceId) => this.evictSessionHandles(sessionId, workspaceId)
+      );
+    }
+  }
+
+  /**
+   * Build the partition key used for sessionHandleMap lookups.
+   * Friendly handles are unique only within a workspace; the same string in two
+   * workspaces must map to two distinct sessions.
+   */
+  private handleKey(workspaceId: string, handle: string): string {
+    return `${workspaceId}::${handle}`;
+  }
+
+  /**
+   * Remove sessionHandleMap entries for a deleted session in a given workspace.
+   * Called from the session-deleted listener registered on SessionService.
+   */
+  evictSessionHandles(sessionId: string, workspaceId = 'default'): void {
+    for (const [key, entry] of this.sessionHandleMap.entries()) {
+      if (entry.id === sessionId && entry.workspaceId === workspaceId) {
+        this.sessionHandleMap.delete(key);
+      }
+    }
+    this.sessionContextMap.delete(sessionId);
+    this.instructedSessions.delete(sessionId);
   }
   
   /**
@@ -174,7 +230,22 @@ export class SessionContextManager {
    */
   clearAll(): void {
     this.sessionContextMap.clear();
+    this.sessionHandleMap.clear();
+    this.instructedSessions.clear();
     this.defaultWorkspaceContext = null;
+  }
+
+  /**
+   * ServiceContainer-detected cleanup hook. Runs on plugin teardown
+   * (ServiceContainer.clear) so the in-memory handle map and session-deleted
+   * subscription do not survive a plugin reload.
+   */
+  cleanup(): void {
+    if (this.sessionDeletedUnsubscribe) {
+      this.sessionDeletedUnsubscribe();
+      this.sessionDeletedUnsubscribe = null;
+    }
+    this.clearAll();
   }
   
   /**
@@ -194,21 +265,49 @@ export class SessionContextManager {
    * @param sessionDescription Optional session description for auto-creation
    * @returns Object with validated session ID and creation status
    */
-  async validateSessionId(sessionId: string, sessionDescription?: string): Promise<{id: string, created: boolean}> {
+  async validateSessionId(
+    sessionId: string,
+    sessionDescription?: string,
+    workspaceId = 'default'
+  ): Promise<SessionValidationResult> {
     
     // If no session ID is provided, generate a new one in our standard format
     if (!sessionId) {
       logger.systemWarn('Empty sessionId provided for validation, generating a new one');
       const newId = generateSessionId();
       await this.createAutoSession(newId, 'Default Session', sessionDescription);
-      return {id: newId, created: true};
+      return {
+        id: newId,
+        created: true,
+        displaySessionId: 'Default Session',
+        displaySessionIdChanged: true
+      };
     }
     
     // If the session ID doesn't match our standard format, it's a friendly name - create session
     if (!isStandardSessionId(sessionId)) {
+      const existingHandle = this.sessionHandleMap.get(this.handleKey(workspaceId, sessionId));
+      if (existingHandle) {
+        return {
+          id: existingHandle.id,
+          created: false,
+          displaySessionId: existingHandle.displaySessionId,
+          displaySessionIdChanged: existingHandle.displaySessionId !== sessionId
+        };
+      }
+
       const newId = generateSessionId();
-      await this.createAutoSession(newId, sessionId, sessionDescription);
-      return {id: newId, created: true};
+      const displaySessionId = await this.createUniqueSessionDisplayName(sessionId, workspaceId);
+      const handleEntry = { id: newId, displaySessionId, workspaceId };
+      this.sessionHandleMap.set(this.handleKey(workspaceId, sessionId), handleEntry);
+      this.sessionHandleMap.set(this.handleKey(workspaceId, displaySessionId), handleEntry);
+      await this.createAutoSession(newId, displaySessionId, sessionDescription, workspaceId);
+      return {
+        id: newId,
+        created: true,
+        displaySessionId,
+        displaySessionIdChanged: displaySessionId !== sessionId
+      };
     }
     
     // Session ID is in standard format - check if it exists in our context map first
@@ -216,7 +315,7 @@ export class SessionContextManager {
     // it means the session was already bound - no need to check database
     if (this.sessionContextMap.has(sessionId)) {
       logger.systemLog(`Session ${sessionId} found in context map - already bound to workspace`);
-      return {id: sessionId, created: false};
+      return {id: sessionId, created: false, displaySessionId: sessionId, displaySessionIdChanged: false};
     }
 
     // Check database if not in context map
@@ -228,15 +327,15 @@ export class SessionContextManager {
     try {
       const existingSession = await this.sessionService.getSession(sessionId);
       if (existingSession) {
-        return {id: sessionId, created: false};
+        return {id: sessionId, created: false, displaySessionId: sessionId, displaySessionIdChanged: false};
       } else {
         await this.createAutoSession(sessionId, `Session ${sessionId}`, sessionDescription);
-        return {id: sessionId, created: true};
+        return {id: sessionId, created: true, displaySessionId: sessionId, displaySessionIdChanged: false};
       }
     } catch (error) {
       logger.systemWarn(`Error checking session existence: ${error instanceof Error ? error.message : String(error)}`);
       // Fallback to returning the session ID without verification
-      return {id: sessionId, created: false};
+      return {id: sessionId, created: false, displaySessionId: sessionId, displaySessionIdChanged: false};
     }
   }
 
@@ -247,10 +346,15 @@ export class SessionContextManager {
    * @param sessionName Friendly name provided by LLM
    * @param sessionDescription Optional session description
    */
-  private async createAutoSession(sessionId: string, sessionName: string, sessionDescription?: string): Promise<void> {
+  private async createAutoSession(
+    sessionId: string,
+    sessionName: string,
+    sessionDescription?: string,
+    explicitWorkspaceId?: string
+  ): Promise<void> {
     // ✅ CRITICAL FIX: Use workspace from sessionContextMap if available
     const context = this.sessionContextMap.get(sessionId);
-    const workspaceId = context?.workspaceId || 'default';
+    const workspaceId = explicitWorkspaceId || context?.workspaceId || 'default';
 
     logger.systemLog(`Auto-created session: ${sessionId} with name "${sessionName}", workspace "${workspaceId}", and description "${sessionDescription || 'No description'}"`);
 
@@ -272,6 +376,41 @@ export class SessionContextManager {
     } else {
       logger.systemWarn(`SessionService not available - session ${sessionId} not saved to database`);
     }
+  }
+
+  private async createUniqueSessionDisplayName(baseName: string, workspaceId: string): Promise<string> {
+    const usedNames = new Set<string>();
+    for (const entry of this.sessionHandleMap.values()) {
+      // Only collide names within the same workspace — same handle in two
+      // workspaces is allowed (workspaces are UX scoping).
+      if (entry.workspaceId === workspaceId) {
+        usedNames.add(entry.displaySessionId.toLowerCase());
+      }
+    }
+
+    if (this.sessionService?.getAllSessions) {
+      try {
+        const sessions = await this.sessionService.getAllSessions(workspaceId);
+        for (const session of sessions) {
+          if (session.name) {
+            usedNames.add(session.name.toLowerCase());
+          }
+        }
+      } catch {
+        // Best effort only; storage-level uniqueness is not required for the
+        // internal ID, but unique display handles prevent ambiguous future use.
+      }
+    }
+
+    const normalizedBaseName = baseName.trim() || 'Session';
+    let candidate = normalizedBaseName;
+    let suffix = 2;
+    while (usedNames.has(candidate.toLowerCase())) {
+      candidate = `${normalizedBaseName}-${suffix}`;
+      suffix += 1;
+    }
+
+    return candidate;
   }
   
   /**
