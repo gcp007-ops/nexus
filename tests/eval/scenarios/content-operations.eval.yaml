@@ -4,6 +4,13 @@
 - name: simple-read
   description: Direct request to read a specific file
   toolSet: meta
+  seedFiles:
+    docs/api-reference.md: |
+      # API Reference
+
+      Endpoints:
+      - GET /users
+      - POST /users
   turns:
     - userMessage: "Show me the contents of docs/api-reference.md"
       expectedTools:
@@ -169,6 +176,13 @@
 - name: replace-content
   description: User asks to replace specific text in a note
   toolSet: meta
+  seedFiles:
+    notes/config.md: |
+      # Config
+
+      environment: staging
+      apiBaseUrl: https://staging.example.com
+      deployTarget: staging
   turns:
     - userMessage: "In notes/config.md, replace 'staging' with 'production' everywhere"
       expectedTools:

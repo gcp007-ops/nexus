@@ -25,6 +25,8 @@ export interface EvalDefaults {
   temperature: number;
   maxRetries: number;
   retryDelayMs: number;
+  retryBackoffMultiplier: number;
+  retryMaxDelayMs: number;
   timeout: number;
   systemPrompt: string;
 }
@@ -36,6 +38,17 @@ export interface EvalConfig {
   defaults: EvalDefaults;
   capture: CaptureConfig;
   scenarios: string;
+  /**
+   * Optional scenario tool-surface filter.
+   * - 'all': run every scenario regardless of toolSet
+   * - 'meta': production two-tool architecture only
+   * - 'nexus' / 'simple': targeted legacy/direct tool surfaces
+   */
+  scenarioToolSet?: ToolSetType | 'all';
+  /**
+   * Optional scenario-name filter for focused debugging runs.
+   */
+  scenarioNames?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +84,11 @@ export type ToolSetType = 'meta' | 'nexus' | 'simple';
 export interface EvalScenario {
   name: string;
   description: string;
+  /**
+   * Files to seed into the headless live test vault before this scenario runs.
+   * Mock mode ignores this because mockResponses provide tool outputs directly.
+   */
+  seedFiles?: Record<string, string>;
   providers?: string[];
   models?: string[];
   temperature?: number;
@@ -131,6 +149,7 @@ export interface ScenarioResult {
   totalDurationMs: number;
   retryCount: number;
   error?: string;
+  tracePath?: string;
 }
 
 export interface EvalRunResult {

@@ -64,12 +64,23 @@ export function generateReport(runResult: EvalRunResult, config: EvalConfig): st
       if (fail.error) {
         lines.push(`- **Error**: ${fail.error}`);
       }
+      if (fail.tracePath) {
+        lines.push(`- **Trace**: ${fail.tracePath}`);
+      }
 
       for (const turn of fail.turns.filter((t) => !t.passed)) {
         lines.push(`- **Turn ${turn.turnIndex + 1}**: ${turn.errors.join('; ')}`);
+        if (turn.textContent.trim()) {
+          lines.push(`  - Response: ${formatInlineSnippet(turn.textContent, 1000)}`);
+        }
         if (turn.actualToolCalls.length > 0) {
           const callNames = turn.actualToolCalls.map((c) => c.name).join(', ');
           lines.push(`  - Actual calls: [${callNames}]`);
+          for (const call of turn.actualToolCalls) {
+            lines.push(
+              `    - ${call.name} args: ${formatInlineSnippet(JSON.stringify(call.args), 500)}`
+            );
+          }
         }
       }
       lines.push('');
@@ -114,4 +125,13 @@ function shortModel(model: string): string {
   // "anthropic/claude-sonnet-4.6" -> "claude-sonnet-4.6"
   const parts = model.split('/');
   return parts.length > 1 ? parts[parts.length - 1] : model;
+}
+
+function formatInlineSnippet(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return `\`${normalized}\``;
+  }
+
+  return `\`${normalized.slice(0, maxLength)}...[truncated]\``;
 }
