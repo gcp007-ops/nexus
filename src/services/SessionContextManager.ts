@@ -107,6 +107,34 @@ export class SessionContextManager {
     this.sessionContextMap.delete(sessionId);
     this.instructedSessions.delete(sessionId);
   }
+
+  /**
+   * Resolve a friendly handle to its session entry without a known workspace.
+   * Used when a caller omits workspaceId: scans sessionHandleMap for the handle
+   * across every workspace. Returns the entry only if it resolves
+   * unambiguously (exactly one session owns the handle); if the handle is
+   * reused across workspaces, or is unknown, returns undefined so the caller
+   * falls back to default-scoped creation. See issue #214.
+   */
+  private resolveHandleAcrossWorkspaces(
+    handle: string
+  ): { id: string; displaySessionId: string; workspaceId: string } | undefined {
+    // Dedup by the handleEntry object, not by entry.id: a session's two map
+    // entries (handle key + display-name key) share one object, whereas two
+    // distinct sessions that collide on the second-granular generateSessionId()
+    // are different objects — so a genuine cross-workspace ambiguity is still
+    // detected (size 2) rather than masked as a single match.
+    const seen = new Set<{ id: string; displaySessionId: string; workspaceId: string }>();
+    for (const [key, entry] of this.sessionHandleMap.entries()) {
+      // Exact match: reconstruct the key this entry's workspace would produce
+      // for `handle` and compare in full. This avoids the `::` delimiter
+      // ambiguity that endsWith() has when a handle or workspaceId contains "::".
+      if (key === this.handleKey(entry.workspaceId, handle)) {
+        seen.add(entry);
+      }
+    }
+    return seen.size === 1 ? seen.values().next().value : undefined;
+  }
   
   /**
    * Get workspace context for a specific session
@@ -268,7 +296,7 @@ export class SessionContextManager {
   async validateSessionId(
     sessionId: string,
     sessionDescription?: string,
-    workspaceId = 'default'
+    workspaceId?: string
   ): Promise<SessionValidationResult> {
     
     // If no session ID is provided, generate a new one in our standard format
@@ -286,7 +314,19 @@ export class SessionContextManager {
     
     // If the session ID doesn't match our standard format, it's a friendly name - create session
     if (!isStandardSessionId(sessionId)) {
-      const existingHandle = this.sessionHandleMap.get(this.handleKey(workspaceId, sessionId));
+      // Normalize the workspace: an empty or whitespace-only workspaceId is
+      // treated as omitted (it is not a real workspace) — it must not become a
+      // session keyed or created under "".
+      const ws = workspaceId && workspaceId.trim() ? workspaceId.trim() : undefined;
+      // Resolve the handle. With an explicit workspaceId, look it up in that
+      // workspace (handles are workspace-scoped by design). When workspaceId
+      // is omitted, look the handle up across all workspaces — if it resolves
+      // unambiguously, reuse that session and its workspace, so a session
+      // that omits workspaceId after its first call still resolves to the
+      // same internal session instead of forking a new one (issue #214).
+      const existingHandle = ws !== undefined
+        ? this.sessionHandleMap.get(this.handleKey(ws, sessionId))
+        : this.resolveHandleAcrossWorkspaces(sessionId);
       if (existingHandle) {
         return {
           id: existingHandle.id,
@@ -296,12 +336,14 @@ export class SessionContextManager {
         };
       }
 
+      // Not found — create a new session under the effective workspace.
+      const effectiveWorkspaceId = ws ?? 'default';
       const newId = generateSessionId();
-      const displaySessionId = await this.createUniqueSessionDisplayName(sessionId, workspaceId);
-      const handleEntry = { id: newId, displaySessionId, workspaceId };
-      this.sessionHandleMap.set(this.handleKey(workspaceId, sessionId), handleEntry);
-      this.sessionHandleMap.set(this.handleKey(workspaceId, displaySessionId), handleEntry);
-      await this.createAutoSession(newId, displaySessionId, sessionDescription, workspaceId);
+      const displaySessionId = await this.createUniqueSessionDisplayName(sessionId, effectiveWorkspaceId);
+      const handleEntry = { id: newId, displaySessionId, workspaceId: effectiveWorkspaceId };
+      this.sessionHandleMap.set(this.handleKey(effectiveWorkspaceId, sessionId), handleEntry);
+      this.sessionHandleMap.set(this.handleKey(effectiveWorkspaceId, displaySessionId), handleEntry);
+      await this.createAutoSession(newId, displaySessionId, sessionDescription, effectiveWorkspaceId);
       return {
         id: newId,
         created: true,
