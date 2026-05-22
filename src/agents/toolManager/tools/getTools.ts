@@ -43,7 +43,7 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
       'Do not send a nested "context" object or legacy "request" array.',
       '',
       'Workflow: 1) Call getTools with one or more selectors → 2) Call useTools with one or more CLI-style commands',
-      'Known-good example: {"workspaceId":"default","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available storage tools.","tool":"storage move, content read"}',
+      'Known-good example: {"workspaceId":"<the workspace you are working in>","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available storage tools.","tool":"storage move, content read"}',
       'Example selectors: tool="--help", tool="storage", tool="storage move", tool="storage move, content read"',
       '',
       'Agents:'
@@ -139,7 +139,7 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
       properties: {
         workspaceId: {
           type: 'string',
-          description: 'Workspace ID. Optional. Defaults to "default".'
+          description: 'Workspace ID for this operation. Pass the workspace you are working in — it is remembered for the rest of the session, so later calls may omit it. "default" is the global/gateway workspace; use it only for cross-workspace operations. Do not invent IDs.'
         },
         sessionId: {
           type: 'string',
@@ -162,7 +162,7 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
           description: 'CLI-style selector string. Supports one or more selectors separated by commas. Examples: "--help", "storage", "storage move", "storage move, content read".'
         }
       },
-      required: ['workspaceId', 'sessionId', 'memory', 'goal', 'tool']
+      required: ['sessionId', 'memory', 'goal', 'tool']
     };
   }
 

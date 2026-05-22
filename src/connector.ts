@@ -545,6 +545,14 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
                 typedParams.context.sessionName = validationResult.displaySessionId;
             }
 
+            // Capture an explicit envelope workspaceId before session
+            // inheritance below overwrites typedParams.workspaceId. An explicit
+            // value is recorded as the session's sticky workspace further down
+            // (issue #214 — MCP envelope workspace stickiness).
+            const explicitWorkspaceId = typeof typedParams.workspaceId === 'string' && typedParams.workspaceId.trim()
+                ? typedParams.workspaceId.trim()
+                : undefined;
+
             // 3. WORKSPACE CONTEXT LOOKUP FROM SESSION
             const workspaceContext = sessionContextManager.getWorkspaceContext(validatedSessionId);
 
@@ -567,6 +575,16 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
                 if (!toolManagerMetaTool && typedParams.context && !typedParams.context.workspaceId) {
                     typedParams.context.workspaceId = typedParams.workspaceContext.workspaceId;
                 }
+            }
+
+            // Persist an explicit envelope workspaceId as the session's sticky
+            // workspace, so later calls in the same session that omit
+            // workspaceId inherit it via getWorkspaceContext() above instead of
+            // falling back to "default" (issue #214). Without this write-back
+            // sessionContextMap is never populated for MCP sessions and the
+            // inheritance read at step 3 can only ever resolve to the default.
+            if (explicitWorkspaceId) {
+                sessionContextManager.setWorkspaceContext(validatedSessionId, { workspaceId: explicitWorkspaceId });
             }
 
             // Delegate validation and execution to ToolCallRouter

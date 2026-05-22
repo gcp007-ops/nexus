@@ -15,7 +15,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
   ) {
     this.slug = 'useTools';
     this.name = 'Use Tools';
-    this.description = 'Execute one or more CLI-style tool commands from the top-level "tool" field. Known-good example: {"workspaceId":"default","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available workspaces.","tool":"memory list-workspaces"}. Use one stable human-readable session name for the conversation; reuse that same sessionId value for every useTools call so traces and saved states attach to the current session. Nexus stores the internal UUID silently. IMPORTANT: You MUST call getTools first to inspect the exact command signatures before calling this tool.';
+    this.description = 'Execute one or more CLI-style tool commands from the top-level "tool" field. Known-good example: {"workspaceId":"<the workspace you are working in>","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available workspaces.","tool":"memory list-workspaces"}. Use one stable human-readable session name for the conversation; reuse that same sessionId value for every useTools call so traces and saved states attach to the current session. Nexus stores the internal UUID silently. IMPORTANT: You MUST call getTools first to inspect the exact command signatures before calling this tool.';
     this.version = '1.0.0';
   }
 
@@ -34,7 +34,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
       properties: {
         workspaceId: {
           type: 'string',
-          description: 'Workspace ID. Optional. Defaults to "default".'
+          description: 'Workspace ID for this operation. Pass the workspace you are working in — it is remembered for the rest of the session, so later calls may omit it. "default" is the global/gateway workspace; use it only for cross-workspace operations. Do not invent IDs.'
         },
         sessionId: {
           type: 'string',
@@ -62,7 +62,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
           description: 'Execution strategy for multiple CLI commands. Defaults to serial.'
         }
       },
-      required: ['workspaceId', 'sessionId', 'memory', 'goal', 'tool']
+      required: ['sessionId', 'memory', 'goal', 'tool']
     };
   }
 
