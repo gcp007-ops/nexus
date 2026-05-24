@@ -14,6 +14,7 @@ import { BackButton } from '../components/BackButton';
 import { getPrimaryServerKey } from '../../constants/branding';
 import { ConfigStatus, getClaudeDesktopConfigPath, getConfigStatus } from '../getStartedStatus';
 import { resolveDesktopBinaryPath } from '../../utils/binaryDiscovery';
+import { CONNECTOR_JS_CONTENT } from '../../utils/connectorContent';
 
 type GetStartedView = 'paths' | 'internal-chat' | 'mcp-setup';
 type DesktopModuleMap = {
@@ -399,7 +400,7 @@ export class GetStartedTab {
             try {
                 await navigator.clipboard.writeText(configJson);
                 copyBtn.textContent = 'Copied!';
-                setTimeout(() => {
+                window.setTimeout(() => {
                     copyBtn.textContent = 'Copy configuration';
                 }, 2000);
             } catch {
@@ -409,6 +410,12 @@ export class GetStartedTab {
         const component = this.services.component;
         if (component) {
             component.registerDomEvent(copyBtn, 'click', copyHandler);
+        }
+
+        const connectorBtn = manualSection.createEl('button', { text: 'Create connector file' });
+        const connectorHandler = () => this.createConnectorFileWithNotice();
+        if (component) {
+            component.registerDomEvent(connectorBtn, 'click', connectorHandler);
         }
 
         // Config file path info
@@ -445,7 +452,7 @@ export class GetStartedTab {
             throw new Error(`${moduleName} is only available on desktop.`);
         }
 
-        const maybeRequire = (globalThis as typeof globalThis & {
+        const maybeRequire = (window.activeWindow as Window & {
             require?: (moduleId: string) => unknown;
         }).require;
 
@@ -529,7 +536,7 @@ export class GetStartedTab {
             // Add Nexus server config
             const vaultName = this.services.app.vault.getName();
             const serverKey = getPrimaryServerKey(vaultName);
-            const connectorPath = pathMod.normalize(pathMod.join(this.services.pluginPath, 'connector.js'));
+            const connectorPath = this.ensureConnectorFile(nodeFs, pathMod);
             const nodePath = this.resolveNodePath();
 
             if (!nodePath) {
@@ -551,13 +558,54 @@ export class GetStartedTab {
             // Write config
             nodeFs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
-            new Notice('✅ Nexus has been added to Claude Desktop config! Please restart Claude Desktop.');
+            new Notice('Nexus connector created and added to Claude Desktop config. Please restart Claude Desktop.');
 
             // Re-render to show updated status
             this.render();
         } catch (error) {
             console.error('[GetStartedTab] Error auto-configuring:', error);
             new Notice(`Failed to configure: ${(error as Error).message}`);
+        }
+    }
+
+    private getConnectorPath(pathMod: DesktopModuleMap['path']): string {
+        if (!this.services.pluginPath) {
+            throw new Error('Plugin path is unavailable.');
+        }
+        return pathMod.normalize(pathMod.join(this.services.pluginPath, 'connector.js'));
+    }
+
+    private ensureConnectorFile(
+        nodeFs: DesktopModuleMap['fs'],
+        pathMod: DesktopModuleMap['path']
+    ): string {
+        const connectorPath = this.getConnectorPath(pathMod);
+        const pluginDir = pathMod.dirname(connectorPath);
+
+        if (!nodeFs.existsSync(pluginDir)) {
+            nodeFs.mkdirSync(pluginDir, { recursive: true });
+        }
+
+        if (nodeFs.existsSync(connectorPath)) {
+            const existingContent = nodeFs.readFileSync(connectorPath, 'utf-8');
+            if (existingContent === CONNECTOR_JS_CONTENT) {
+                return connectorPath;
+            }
+        }
+
+        nodeFs.writeFileSync(connectorPath, CONNECTOR_JS_CONTENT, 'utf-8');
+        return connectorPath;
+    }
+
+    private createConnectorFileWithNotice(): void {
+        try {
+            const nodeFs = this.loadDesktopModule('fs');
+            const pathMod = this.loadDesktopModule('path');
+            const connectorPath = this.ensureConnectorFile(nodeFs, pathMod);
+            new Notice(`Connector file created: ${connectorPath}`);
+        } catch (error) {
+            console.error('[GetStartedTab] Error creating connector file:', error);
+            new Notice(`Failed to create connector file: ${(error as Error).message}`);
         }
     }
 

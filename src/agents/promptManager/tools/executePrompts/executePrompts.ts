@@ -81,7 +81,7 @@ export class ExecutePromptsTool extends BaseTool<BatchExecutePromptParams, Batch
     promptStorage?: CustomPromptStorageService
   ) {
     super(
-      'executePrompts',
+      'execute',
       'Execute LLM Prompts',
       'Execute one or more LLM prompts. For single: pass one item. For multiple: supports sequencing (sequence: 0,1,2), parallel groups, and result forwarding (includePreviousResults: true).',
       '1.0.0'
@@ -117,7 +117,7 @@ export class ExecutePromptsTool extends BaseTool<BatchExecutePromptParams, Batch
       }
       
       // Wait for the next check
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      await new Promise(resolve => window.setTimeout(resolve, checkInterval));
     }
   }
 
@@ -428,24 +428,13 @@ export class ExecutePromptsTool extends BaseTool<BatchExecutePromptParams, Batch
                   replaceAll: { type: 'boolean' },
                   caseSensitive: { type: 'boolean' },
                   wholeWord: { type: 'boolean' },
-                  oldContent: {
+                  start: {
                     type: 'string',
-                    description: 'Required for line-range replace actions. Must match the exact current content being replaced.'
+                    description: 'Required for replace actions. The opening line(s) of the range to replace, copied verbatim from your read. Whole-line match. If a single line is not unique in the file, extend `start` to multiple lines using \\n until it identifies one location only.'
                   },
-                  startLine: {
-                    type: 'integer',
-                    minimum: 1,
-                    description: 'Required for line-range replace actions. 1-indexed start line.'
-                  },
-                  endLine: {
-                    type: 'integer',
-                    minimum: 1,
-                    description: 'Required for line-range replace actions. 1-indexed end line.'
-                  },
-                  position: {
-                    type: 'integer',
-                    minimum: 1,
-                    description: 'Deprecated single-line replace alias. Use startLine/endLine instead.'
+                  end: {
+                    type: 'string',
+                    description: 'Required for replace actions. The closing line(s) of the range. Same rules as `start`. Must come after `start` in the file.'
                   }
                 },
                 required: ['type', 'targetPath']

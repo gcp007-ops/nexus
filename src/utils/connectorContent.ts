@@ -1,11 +1,11 @@
 /**
  * Auto-generated file containing the embedded connector.js content.
- * This is used by ConnectorEnsurer to recreate connector.js if it's missing.
+ * This is used by the explicit Claude Desktop setup flow to create connector.js.
  *
  * DO NOT EDIT MANUALLY - This file is regenerated during the build process.
  * To update, modify connector.ts and rebuild.
  *
- * Generated: 2026-04-29T18:40:40.186Z
+ * Generated: 2026-05-22T15:21:49.121Z
  */
 
 export const CONNECTOR_JS_CONTENT = `"use strict";
@@ -146,14 +146,14 @@ function connectWithRetry() {
             }
             retryCount++;
             var retryDelay = calculateBackoff(retryCount);
-            setTimeout(connectWithRetry, retryDelay);
+            global.setTimeout(connectWithRetry, retryDelay);
         });
         socket_1.on('close', function () {
             // Unpipe to prevent stdin consumption by dead socket
             process.stdin.unpipe(socket_1);
             if (hasConnected) {
                 retryCount = 0;
-                setTimeout(connectWithRetry, 1000);
+                global.setTimeout(connectWithRetry, 1000);
             }
             // If we never connected, the error handler will schedule a retry
         });
