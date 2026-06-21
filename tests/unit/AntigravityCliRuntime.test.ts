@@ -151,6 +151,8 @@ describe('antigravityCli utilities', () => {
   it.each([
     ['array mcpServers', '{"mcpServers": []}'],
     ['string mcpServers', '{"mcpServers": "oops"}'],
+    ['empty file', ''],
+    ['whitespace file', '  \n\t  '],
   ])('refuses to overwrite MCP config when %s', async (_label, rawConfig) => {
     const runtime: AntigravityCliRuntime = {
       agyPath: '/mock/bin/agy',

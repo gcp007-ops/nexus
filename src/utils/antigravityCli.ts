@@ -113,7 +113,7 @@ export async function ensureAntigravityMcpConfig(runtime: AntigravityCliRuntime)
   let config: Record<string, unknown> = {};
   try {
     const raw = await fsPromises.readFile(configPath, 'utf8');
-    config = raw.trim() ? parseMcpConfig(raw, configPath) : {};
+    config = parseMcpConfig(raw, configPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw error;
