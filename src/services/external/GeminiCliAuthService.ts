@@ -1,21 +1,24 @@
 /**
  * src/services/external/GeminiCliAuthService.ts
  *
- * Auth status checker for the Gemini CLI provider. The plugin does not
- * initiate authentication — users must install and authenticate the
- * Gemini CLI externally before using it. This service only checks
- * whether the CLI is present and authenticated.
+ * Auth/status checker for the legacy google-gemini-cli provider.
+ *
+ * The provider id is retained for settings compatibility, but the runtime is
+ * Google Antigravity CLI (`agy`). The deprecated `gemini` binary is not used.
  */
 import { App, Platform } from 'obsidian';
-import { CliProcessResult } from '../../utils/cliProcessRunner';
-import { desktopRequire } from '../../utils/desktopRequire';
-import { resolveGeminiCliRuntime } from '../../utils/geminiCli';
+import {
+    ANTIGRAVITY_CLI_LOCAL_AUTH_SENTINEL,
+    ensureAntigravityMcpConfig,
+    hasReadableAntigravityAuthToken,
+    resolveAntigravityCliRuntime
+} from '../../utils/antigravityCli';
 
 export interface GeminiCliAuthStatus {
     available: boolean;
     loggedIn: boolean;
     authMethod: string;
-    geminiPath: string | null;
+    agyPath: string | null;
     error?: string;
 }
 
@@ -31,31 +34,51 @@ export class GeminiCliAuthService {
                 available: false,
                 loggedIn: false,
                 authMethod: 'none',
-                geminiPath: null,
-                error: 'Gemini CLI is only available on desktop.'
+                agyPath: null,
+                error: 'Antigravity CLI is only available on desktop.'
             };
         }
 
-        const runtime = await Promise.resolve(resolveGeminiCliRuntime(this.app.vault));
-        if (!runtime.geminiPath) {
+        const runtime = resolveAntigravityCliRuntime(this.app.vault);
+        if (!runtime.agyPath) {
             return {
                 available: false,
                 loggedIn: false,
                 authMethod: 'none',
-                geminiPath: null,
-                error: 'Gemini CLI was not found on PATH. Install it from https://github.com/google-gemini/gemini-cli'
+                agyPath: null,
+                error: 'Antigravity CLI (`agy`) was not found on PATH. Install and sign in to AGY, then try again.'
             };
         }
 
-        const probe = await Promise.resolve(this.runAuthProbe());
+        if (!runtime.nodePath) {
+            return {
+                available: false,
+                loggedIn: false,
+                authMethod: 'none',
+                agyPath: runtime.agyPath,
+                error: 'Node.js was not found on PATH. Node is required for the Nexus MCP connector.'
+            };
+        }
+
+        if (!runtime.connectorPath) {
+            return {
+                available: false,
+                loggedIn: false,
+                authMethod: 'none',
+                agyPath: runtime.agyPath,
+                error: 'Nexus connector.js was not found for this vault. Recreate the Nexus connector before using Antigravity CLI.'
+            };
+        }
+
+        const loggedIn = hasReadableAntigravityAuthToken(runtime.authTokenPath);
         return {
             available: true,
-            loggedIn: probe.exitCode === 0,
-            authMethod: probe.exitCode === 0 ? 'google-cli-login' : 'unknown',
-            geminiPath: runtime.geminiPath,
-            error: probe.exitCode === 0
+            loggedIn,
+            authMethod: loggedIn ? 'agy-oauth' : 'unknown',
+            agyPath: runtime.agyPath,
+            error: loggedIn
                 ? undefined
-                : 'Gemini CLI is not authenticated. Run `gemini` in your terminal and choose "Login with Google" to authenticate.'
+                : 'Antigravity CLI is not authenticated. Run `agy` in your terminal and complete login first.'
         };
     }
 
@@ -76,86 +99,21 @@ export class GeminiCliAuthService {
             return { success: false, error: status.error };
         }
 
+        const runtime = resolveAntigravityCliRuntime(this.app.vault);
+        try {
+            await ensureAntigravityMcpConfig(runtime);
+        } catch (error) {
+            return { success: false, error: (error as Error).message };
+        }
+
         return {
             success: true,
-            apiKey: 'gemini-cli-local-auth',
+            apiKey: ANTIGRAVITY_CLI_LOCAL_AUTH_SENTINEL,
             metadata: {
-                authMethod: status.authMethod,
-                geminiPath: status.geminiPath || ''
+                authMethod: 'agy-oauth',
+                runtime: 'agy',
+                agyPath: status.agyPath || ''
             }
         };
     }
-
-    /**
-     * Check authentication by reading the Gemini CLI credential file at
-     * ~/.gemini/oauth_creds.json. This avoids launching an actual LLM call
-     * (which fails when the MCP server is not running) and instead verifies
-     * that valid OAuth credentials are present on disk.
-     *
-     * Returns exitCode 0 if credentials exist and contain an access token,
-     * non-zero otherwise.
-     */
-    private runAuthProbe(): CliProcessResult {
-        const fs = desktopRequire<typeof import('node:fs')>('node:fs');
-        const osMod = desktopRequire<typeof import('node:os')>('node:os');
-        const pathMod = desktopRequire<typeof import('node:path')>('node:path');
-
-        const credsPath = pathMod.join(osMod.homedir(), '.gemini', 'oauth_creds.json');
-
-        // Check file exists and is accessible
-        try {
-            fs.accessSync(credsPath, fs.constants.R_OK);
-        } catch {
-            return {
-                stdout: '',
-                stderr: `Credential file not found or not readable: ${credsPath}`,
-                exitCode: 1
-            };
-        }
-
-        // Read and validate the credential file
-        let raw: string;
-        try {
-            raw = fs.readFileSync(credsPath, 'utf8');
-        } catch (err) {
-            return {
-                stdout: '',
-                stderr: `Failed to read credential file: ${(err as Error).message}`,
-                exitCode: 1
-            };
-        }
-
-        if (!raw || raw.trim().length === 0) {
-            return {
-                stdout: '',
-                stderr: 'Credential file is empty.',
-                exitCode: 1
-            };
-        }
-
-        // Parse and confirm an access token is present
-        try {
-            const creds = JSON.parse(raw) as unknown;
-            const hasToken = isRecord(creds) && typeof creds.access_token === 'string' && creds.access_token.length > 0;
-            if (!hasToken) {
-                return {
-                    stdout: '',
-                    stderr: 'Credential file does not contain a valid access_token.',
-                    exitCode: 1
-                };
-            }
-        } catch {
-            return {
-                stdout: '',
-                stderr: 'Credential file is not valid JSON.',
-                exitCode: 1
-            };
-        }
-
-        return { stdout: 'ok', stderr: '', exitCode: 0 };
-    }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
