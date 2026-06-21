@@ -21,7 +21,7 @@ Replace `/path/to/Vault/` with the actual path to your Obsidian vault.
 | Claude Desktop | `claude_desktop_config.json` | `mcpServers` | JSON | Yes (full quit) |
 | Claude Code (CLI) | `.mcp.json` | `mcpServers` | JSON | No (auto) |
 | Codex CLI | `~/.codex/config.toml` | `[mcp_servers.name]` | **TOML** | No |
-| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` | JSON | No |
+| Antigravity CLI | `~/.gemini/config/mcp_config.json` | `mcpServers` | JSON | Yes |
 | GitHub Copilot (VS Code) | `.vscode/mcp.json` | **`servers`** | JSON | Maybe |
 | Cline | `cline_mcp_settings.json` | `mcpServers` | JSON | No (auto) |
 | Roo Code | `cline_mcp_settings.json` or `.roo/mcp.json` | `mcpServers` | JSON | No |
@@ -126,9 +126,11 @@ args = ["/path/to/Vault/.obsidian/plugins/nexus/connector.js"]
 
 ---
 
-## Gemini CLI
+## Antigravity CLI
 
-**Config file**: `~/.gemini/settings.json` (user-level) or `.gemini/settings.json` (project-level)
+**Config file**: `~/.gemini/config/mcp_config.json`
+
+Nexus manages its AGY MCP entry by merging the Nexus connector into `~/.gemini/config/mcp_config.json` during the Antigravity CLI connect check. Existing MCP servers in that file are preserved.
 
 **First MCP server**:
 ```json

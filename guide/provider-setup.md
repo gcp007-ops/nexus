@@ -12,7 +12,7 @@ Open **Settings -> Nexus -> Providers**, choose a provider, connect it, then sel
 |------|----------|----------|
 | API key | Fastest cloud setup | Anthropic, OpenAI, Google AI, Groq, Mistral, OpenRouter, Perplexity, Requesty |
 | Local desktop runtime | Local models on your machine | Ollama, LM Studio |
-| Existing subscription or local CLI | Reuse an existing login instead of managing API keys | Claude Code, Gemini CLI, GitHub Copilot, Codex via ChatGPT |
+| Existing subscription or local CLI | Reuse an existing login instead of managing API keys | Claude Code, Antigravity CLI, GitHub Copilot, Codex via ChatGPT |
 
 ---
 
@@ -76,17 +76,17 @@ Messages route through your local Claude CLI using your existing subscription. D
 
 ---
 
-## Gemini CLI
+## Antigravity CLI
 
-Use this if you already have [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and signed in.
+Use this if you already have Google Antigravity CLI (`agy`) installed and signed in.
 
-1. Install Gemini CLI: `npm install -g @google/gemini-cli`
-2. Run `gemini` in your terminal and complete the Google sign-in flow
-3. In Nexus, go to **Settings -> Providers -> Google AI**
-4. Wait for the **Gemini CLI** section to show **Connected**
-5. In chat settings, select a Gemini CLI model
+1. Install or update AGY from the official Antigravity distribution.
+2. Run `agy` in your terminal and complete Google login.
+3. Open Nexus provider settings.
+4. In the **Google AI** section, connect **Antigravity CLI**.
+5. In chat settings, select an Antigravity-backed Gemini model.
 
-Messages route through the local Gemini CLI using your existing Google account. Desktop only.
+Messages route through local AGY using your existing Google account. Desktop only.
 
 ---
 

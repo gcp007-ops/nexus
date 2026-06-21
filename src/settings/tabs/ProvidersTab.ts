@@ -109,9 +109,9 @@ export class ProvidersTab {
             category: 'cloud'
         },
         'google-gemini-cli': {
-            name: 'Gemini CLI',
-            keyFormat: 'Local Gemini CLI Google login required',
-            signupUrl: 'https://github.com/google-gemini/gemini-cli',
+            name: 'Antigravity CLI',
+            keyFormat: 'Local AGY Google login required',
+            signupUrl: 'https://antigravity.google/docs',
             category: 'cloud'
         },
         mistral: {
@@ -298,8 +298,8 @@ export class ProvidersTab {
     }
 
     /**
-     * Check Gemini CLI auth status. The plugin does not initiate auth —
-     * users must authenticate externally via `gemini` in their terminal.
+     * Check Antigravity CLI auth status. The plugin does not initiate auth —
+     * users must authenticate externally via `agy` in their terminal.
      */
     private async startGeminiCliConnectFlow(): Promise<{ success: boolean; apiKey?: string; metadata?: Record<string, string>; error?: string }> {
         const authService = new GeminiCliAuthService(this.services.app);
@@ -666,18 +666,18 @@ export class ProvidersTab {
 
             secondaryOAuthProvider = {
                 providerId: 'google-gemini-cli',
-                providerLabel: 'Gemini CLI',
-                description: 'Use Gemini models through the desktop CLI. Authenticate by running `gemini` in your terminal first.',
+                providerLabel: 'Antigravity CLI',
+                description: 'Use Gemini models through AGY. Authenticate by running `agy` in your terminal first.',
                 config: { ...geminiCliConfig },
                 oauthConfig: {
-                    providerLabel: 'Gemini CLI',
+                    providerLabel: 'Antigravity CLI',
                     startFlow: () => this.startGeminiCliConnectFlow(),
                 },
                 onConfigChange: async (updatedGeminiCliConfig: LLMProviderConfig) => {
                     await this.persistSecondaryProviderConfig(settings, 'google-gemini-cli', updatedGeminiCliConfig);
                 },
                 statusOnly: true,
-                statusHint: 'run `gemini auth` in your terminal',
+                statusHint: 'run `agy` in your terminal',
             };
         }
 

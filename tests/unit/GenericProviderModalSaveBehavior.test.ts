@@ -75,23 +75,23 @@ function createConfig(onConfigChange: ProviderModalConfig['secondaryOAuthProvide
     onConfigChange: jest.fn(),
     secondaryOAuthProvider: {
       providerId: 'google-gemini-cli',
-      providerLabel: 'Gemini CLI',
+      providerLabel: 'Antigravity CLI',
       description: 'CLI auth',
       config: {
         enabled: false,
         apiKey: '',
       },
       oauthConfig: {
-        providerLabel: 'Gemini CLI',
+        providerLabel: 'Antigravity CLI',
         startFlow: jest.fn().mockResolvedValue({
           success: true,
           apiKey: 'cli-token',
-          metadata: { account: 'test@example.com' },
+          metadata: { runtime: 'agy' },
         }),
       },
       onConfigChange,
       statusOnly,
-      statusHint: 'run `gemini auth` in your terminal',
+      statusHint: 'run `agy` in your terminal',
     },
   };
 }
@@ -129,12 +129,12 @@ describe('GenericProviderModal secondary save behavior', () => {
         }),
       }),
     );
-    expect(noticeMock).not.toHaveBeenCalledWith('Gemini CLI authenticated');
+    expect(noticeMock).not.toHaveBeenCalledWith('Antigravity CLI authenticated');
 
     deferred.resolve();
     await checkPromise;
 
-    expect(noticeMock).toHaveBeenCalledWith('Gemini CLI authenticated');
+    expect(noticeMock).toHaveBeenCalledWith('Antigravity CLI authenticated');
   });
 
   it('reverts secondary CLI state when persistence fails', async () => {
@@ -147,6 +147,6 @@ describe('GenericProviderModal secondary save behavior', () => {
       enabled: false,
       apiKey: '',
     });
-    expect(noticeMock).not.toHaveBeenCalledWith('Gemini CLI authenticated');
+    expect(noticeMock).not.toHaveBeenCalledWith('Antigravity CLI authenticated');
   });
 });
