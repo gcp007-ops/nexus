@@ -18,6 +18,7 @@ import {
   TokenUsage
 } from '../types';
 import { ModelRegistry } from '../ModelRegistry';
+import { normalizeGeminiCliModelForAgy } from './GoogleGeminiCliModels';
 import { CliProcessResult, runCliProcess } from '../../../../utils/cliProcessRunner';
 import { GOOGLE_GEMINI_CLI_DEFAULT_MODEL } from './GoogleGeminiCliModels';
 import {
@@ -87,11 +88,12 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
       );
 
       const combinedPrompt = this.buildPrompt(prompt, options?.systemPrompt);
+      const requestModel = normalizeGeminiCliModelForAgy(options?.model || this.currentModel);
       const args = [
         '--prompt',
         '',
         '--model',
-        options?.model || this.currentModel,
+        requestModel,
         '--output-format',
         'json'
       ];
@@ -130,7 +132,7 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
 
       return this.buildLLMResponse(
         text,
-        options?.model || this.currentModel,
+        requestModel,
         usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         {
           localCli: true,

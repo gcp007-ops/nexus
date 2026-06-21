@@ -108,36 +108,50 @@ describe('GoogleGeminiCliAdapter', () => {
   });
 
   it('parses CLI output with leading logs before the final JSON block', async () => {
-    runCliProcess.mockReturnValue({
-      child: { kill: jest.fn() },
-      result: Promise.resolve({
-        stdout: [
-          'Loaded cached credentials.',
-          'Attempt 2 failed with status 429. Retrying with backoff...',
-          '{',
-          '  "response": "OK",',
-          '  "stats": {',
-          '    "models": {',
-          '      "gemini-3.1-flash-lite-preview": {',
-          '        "tokens": {',
-          '          "prompt": 8045,',
-          '          "candidates": 1,',
-          '          "total": 8046',
-          '        }',
-          '      }',
-          '    }',
-          '  }',
-          '}'
-        ].join('\n'),
-        stderr: '',
-        exitCode: 0
-      })
+    let capturedArgs: string[] = [];
+
+    runCliProcess.mockImplementation((_command, args) => {
+      capturedArgs = args;
+
+      return {
+        child: { kill: jest.fn() },
+        result: Promise.resolve({
+          stdout: [
+            'Loaded cached credentials.',
+            'Attempt 2 failed with status 429. Retrying with backoff...',
+            '{',
+            '  "response": "OK",',
+            '  "stats": {',
+            '    "models": {',
+            '      "gemini-3.1-flash-lite-preview": {',
+            '        "tokens": {',
+            '          "prompt": 8045,',
+            '          "candidates": 1,',
+            '          "total": 8046',
+            '        }',
+            '      }',
+            '    }',
+            '  }',
+            '}'
+          ].join('\n'),
+          stderr: '',
+          exitCode: 0
+        })
+      };
     });
 
     const response = await adapter.generateUncached('Reply with OK only.', {
       model: 'gemini-3.1-flash-lite-preview'
     });
 
+    expect(capturedArgs).toEqual([
+      '--prompt',
+      '',
+      '--model',
+      'Gemini 3.5 Flash (Medium)',
+      '--output-format',
+      'json'
+    ]);
     expect(response.text).toBe('OK');
     expect(response.usage).toEqual({
       promptTokens: 8045,
