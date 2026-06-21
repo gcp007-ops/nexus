@@ -252,18 +252,19 @@ export class MessageStreamHandler {
           if (placeholderMessageIndex >= 0) {
             conversation.messages[placeholderMessageIndex] = {
               ...conversation.messages[placeholderMessageIndex],
-            content: streamedContent,
-            state: 'complete',
-            toolCalls: toolCalls?.map(toConversationToolCall),
-            // Persist reasoning for re-render from storage
-            reasoning: reasoningAccumulator || undefined,
-            metadata: finalMetadata,
-            provider: resolvedProvider,
-            model: resolvedModel,
-            cost: finalCost,
-            usage: finalUsage,
-          };
-        }
+              content: streamedContent,
+              state: 'complete',
+              isLoading: false,
+              toolCalls: toolCalls?.map(toConversationToolCall),
+              // Persist reasoning for re-render from storage
+              reasoning: reasoningAccumulator || undefined,
+              metadata: finalMetadata,
+              provider: resolvedProvider,
+              model: resolvedModel,
+              cost: finalCost,
+              usage: finalUsage,
+            };
+          }
 
           // Send final complete content
           this.events.onStreamingUpdate(aiMessageId, streamedContent, true, false);
@@ -286,6 +287,7 @@ export class MessageStreamHandler {
           ...finalMsg,
           content: streamedContent,
           state: 'complete',
+          isLoading: false,
           toolCalls: toolCalls?.map(toConversationToolCall),
           reasoning: reasoningAccumulator || undefined,
           metadata: finalMetadata,

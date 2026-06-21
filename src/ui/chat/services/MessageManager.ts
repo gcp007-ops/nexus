@@ -214,7 +214,9 @@ export class MessageManager {
         );
 
         if (!wasAborted) {
-          this.events.onError(this.getUserVisibleErrorMessage(error, 'Failed to send message'));
+          const visibleMessage = this.getUserVisibleErrorMessage(error, 'Failed to send message');
+          await this.finalizeFailedAssistantMessage(conversation, aiMessageId, visibleMessage, error);
+          this.events.onError(visibleMessage);
         }
       } finally {
         this.currentAbortController = null;
@@ -367,7 +369,14 @@ export class MessageManager {
       );
 
       if (!wasAborted) {
-        this.events.onError(this.getUserVisibleErrorMessage(error, 'Failed to generate AI response'));
+        const visibleMessage = this.getUserVisibleErrorMessage(error, 'Failed to generate AI response');
+        await this.finalizeFailedAssistantMessage(
+          conversation,
+          this.currentStreamingMessageId,
+          visibleMessage,
+          error
+        );
+        this.events.onError(visibleMessage);
       }
     } finally {
       this.currentAbortController = null;
@@ -468,6 +477,52 @@ export class MessageManager {
   private getUserVisibleErrorMessage(error: unknown, fallbackMessage: string): string {
     const message = getErrorMessage(error).trim();
     return message || fallbackMessage;
+  }
+
+  private async finalizeFailedAssistantMessage(
+    conversation: ConversationData,
+    aiMessageId: string | null,
+    visibleMessage: string,
+    error: unknown
+  ): Promise<void> {
+    if (!aiMessageId) {
+      return;
+    }
+
+    const messageIndex = conversation.messages.findIndex(message => message.id === aiMessageId);
+    if (messageIndex < 0) {
+      return;
+    }
+
+    const errorDetails = this.getErrorDetails(error, visibleMessage);
+    conversation.messages[messageIndex] = {
+      ...conversation.messages[messageIndex],
+      content: visibleMessage,
+      state: 'invalid',
+      isLoading: false,
+      metadata: {
+        ...conversation.messages[messageIndex].metadata,
+        error: errorDetails
+      }
+    };
+
+    await this.chatService.updateConversation(conversation);
+    this.events.onConversationUpdated(conversation);
+  }
+
+  private getErrorDetails(error: unknown, message: string): Record<string, string> {
+    const details: Record<string, string> = { message };
+    if (error && typeof error === 'object') {
+      const provider = (error as { provider?: unknown }).provider;
+      const code = (error as { code?: unknown }).code;
+      if (typeof provider === 'string') {
+        details.provider = provider;
+      }
+      if (typeof code === 'string') {
+        details.code = code;
+      }
+    }
+    return details;
   }
 
   /**

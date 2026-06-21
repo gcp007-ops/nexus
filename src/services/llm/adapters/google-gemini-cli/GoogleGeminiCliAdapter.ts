@@ -102,6 +102,14 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
     const text = parsed ? this.extractText(parsed) : result.stdout.trim();
     const usage = parsed ? this.extractUsageFromStats(parsed) : undefined;
 
+    if (!text.trim()) {
+      throw new LLMProviderError(
+        'Antigravity CLI did not return a final response. AGY print mode may have ended after planner/tool activity without a ModifiedResponse. Try a shorter prompt, reduce attached context, or retry with another model.',
+        this.name,
+        'PROVIDER_TIMEOUT'
+      );
+    }
+
     return this.buildLLMResponse(
       text,
       model,

@@ -297,6 +297,62 @@ describe('MessageManager interrupt flow', () => {
     );
   });
 
+  it('finalizes the placeholder when generation fails before any token streams', async () => {
+    const conversation = createConversation({ messages: [] });
+    const mockChatService = createMockChatService({ conversation });
+
+    mockChatService.generateResponseStreaming.mockImplementation(() => {
+      async function* stream() {
+        throw new LLMProviderError(
+          'Antigravity CLI did not return a final response.',
+          'google-gemini-cli',
+          'PROVIDER_TIMEOUT'
+        );
+        yield undefined;
+      }
+
+      return stream();
+    });
+
+    const events = {
+      onMessageAdded: jest.fn(),
+      onAIMessageStarted: jest.fn(),
+      onStreamingUpdate: jest.fn(),
+      onConversationUpdated: jest.fn(),
+      onLoadingStateChanged: jest.fn(),
+      onError: jest.fn(),
+      onToolCallsDetected: jest.fn(),
+      onToolExecutionStarted: jest.fn(),
+      onToolExecutionCompleted: jest.fn(),
+      onMessageIdUpdated: jest.fn(),
+      onGenerationAborted: jest.fn(),
+      onUsageAvailable: jest.fn()
+    };
+
+    const manager = new MessageManager(
+      mockChatService as unknown as ChatService,
+      createMockBranchManager() as unknown as BranchManager,
+      events
+    );
+
+    await manager.sendMessage(conversation, 'Explain the issue');
+
+    expect(conversation.messages[1]).toMatchObject({
+      role: 'assistant',
+      content: 'Antigravity CLI did not return a final response.',
+      state: 'invalid',
+      isLoading: false,
+      metadata: {
+        error: {
+          provider: 'google-gemini-cli',
+          code: 'PROVIDER_TIMEOUT'
+        }
+      }
+    });
+    expect(events.onConversationUpdated).toHaveBeenCalledWith(conversation);
+    expect(mockChatService.updateConversation).toHaveBeenCalledWith(conversation);
+  });
+
   it('second sendMessage waits for first to complete when interrupted', async () => {
     const conversation = createConversation({ messages: [] });
     const mockChatService = createMockChatService({ conversation });

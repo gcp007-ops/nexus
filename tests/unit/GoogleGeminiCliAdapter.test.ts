@@ -256,4 +256,22 @@ describe('GoogleGeminiCliAdapter', () => {
       message: expect.stringMatching(/Antigravity CLI timed out/i)
     });
   });
+
+  it('maps empty successful AGY output to PROVIDER_TIMEOUT', async () => {
+    runCliProcess.mockReturnValue({
+      child: { kill: jest.fn() },
+      result: Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0
+      })
+    });
+
+    await expect(adapter.generateUncached('Prompt')).rejects.toMatchObject({
+      name: 'LLMProviderError',
+      provider: 'google-gemini-cli',
+      code: 'PROVIDER_TIMEOUT',
+      message: expect.stringMatching(/did not return a final response/i)
+    });
+  });
 });
