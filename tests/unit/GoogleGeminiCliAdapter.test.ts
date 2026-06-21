@@ -1,4 +1,3 @@
-import * as fsPromises from 'fs/promises';
 import { GoogleGeminiCliAdapter } from '../../src/services/llm/adapters/google-gemini-cli/GoogleGeminiCliAdapter';
 import { normalizeGeminiCliModelForAgy } from '../../src/services/llm/adapters/google-gemini-cli/GoogleGeminiCliModels';
 
@@ -10,21 +9,21 @@ jest.mock('../../src/utils/cliProcessRunner', () => ({
   runCliProcess: jest.fn()
 }));
 
-jest.mock('../../src/utils/geminiCli', () => ({
-  resolveGeminiCliRuntime: jest.fn(() => ({
-    geminiPath: '/mock/bin/gemini',
+jest.mock('../../src/utils/antigravityCli', () => ({
+  ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT: '5m',
+  resolveAntigravityCliRuntime: jest.fn(() => ({
+    agyPath: '/mock/bin/agy',
     nodePath: '/mock/bin/node',
     connectorPath: '/mock/connector.js',
     vaultPath: '/mock/vault',
-    serverKey: 'nexus-test-vault'
+    serverKey: 'nexus-test-vault',
+    mcpConfigPath: '/mock/home/.gemini/config/mcp_config.json',
+    authTokenPath: '/mock/home/.gemini/antigravity-cli/antigravity-oauth-token'
   })),
-  buildGeminiCliEnv: jest.fn((settingsPath: string, nodePath: string) => ({
-    GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsPath,
-    PATH: nodePath
+  buildAntigravityCliEnv: jest.fn((nodePath: string) => ({
+    PATH: `/mock/bin:${nodePath}`
   })),
-  buildGeminiCliSystemSettings: jest.fn(() => ({
-    output: { format: 'json' }
-  }))
+  ensureAntigravityMcpConfig: jest.fn().mockResolvedValue(undefined)
 }));
 
 describe('GoogleGeminiCliAdapter', () => {
@@ -41,76 +40,113 @@ describe('GoogleGeminiCliAdapter', () => {
     } as VaultLike);
   });
 
-  it('moves the combined prompt to stdin while preserving temp settings and usage extraction', async () => {
+  it('runs AGY with prompt on stdin and no Gemini CLI output-format flag', async () => {
+    let capturedCommand = '';
     let capturedArgs: string[] = [];
     let capturedOptions: { cwd?: string; env?: NodeJS.ProcessEnv; stdinText?: string } | undefined;
-    let settingsPath = '';
 
-    runCliProcess.mockImplementation((_command, args, options) => {
+    runCliProcess.mockImplementation((command, args, options) => {
+      capturedCommand = command;
       capturedArgs = args;
       capturedOptions = options;
-      settingsPath = options?.env?.GEMINI_CLI_SYSTEM_SETTINGS_PATH || '';
-
-      expect(settingsPath).toBeTruthy();
 
       return {
         child: { kill: jest.fn() },
-        result: fsPromises.readFile(settingsPath, 'utf8').then((contents) => {
-          expect(JSON.parse(contents)).toEqual({
-            output: { format: 'json' }
-          });
-
-          return {
-            stdout: JSON.stringify({
-              response: 'Gemini output',
-              stats: {
-                models: {
-                  'gemini-3-flash-preview': {
-                    tokens: {
-                      prompt: 12,
-                      candidates: 7,
-                      total: 19
-                    }
-                  }
-                }
-              }
-            }),
-            stderr: '',
-            exitCode: 0
-          };
+        result: Promise.resolve({
+          stdout: 'AGY output',
+          stderr: '',
+          exitCode: 0
         })
       };
     });
 
     const response = await adapter.generateUncached('Summarize the regression', {
-      systemPrompt: 'Use the MCP tools if needed.'
+      systemPrompt: 'Use the MCP tools if needed.',
+      model: 'Gemini 3.1 Pro (High)'
     });
 
+    expect(capturedCommand).toBe('/mock/bin/agy');
     expect(capturedArgs).toEqual([
-      '--prompt',
-      '',
+      '--print',
+      '--dangerously-skip-permissions',
+      '--print-timeout',
+      '5m',
       '--model',
-      'Gemini 3.5 Flash (Medium)',
-      '--output-format',
-      'json'
+      'Gemini 3.1 Pro (High)'
     ]);
+    expect(capturedArgs).not.toContain('--output-format');
+    expect(capturedOptions?.cwd).toBe('/mock/vault');
     expect(capturedOptions?.stdinText).toBe(
       'System instructions:\nUse the MCP tools if needed.\n\nUser request:\nSummarize the regression'
     );
-    expect(response.text).toBe('Gemini output');
-    expect(response.usage).toEqual({
-      promptTokens: 12,
-      completionTokens: 7,
-      totalTokens: 19
+    expect(response.text).toBe('AGY output');
+    expect(response.metadata).toEqual(expect.objectContaining({
+      localCli: true,
+      runtime: 'agy',
+      outputFormat: 'text-or-json'
+    }));
+  });
+
+  it('normalizes stale saved Gemini CLI model ids before invoking AGY', async () => {
+    let capturedArgs: string[] = [];
+    runCliProcess.mockImplementation((_command, args) => {
+      capturedArgs = args;
+      return {
+        child: { kill: jest.fn() },
+        result: Promise.resolve({ stdout: 'ok', stderr: '', exitCode: 0 })
+      };
     });
 
-    await expect(fsPromises.access(settingsPath)).rejects.toThrow();
+    await adapter.generateUncached('Prompt', { model: 'gemini-3-flash-preview' });
+
+    expect(capturedArgs).toContain('Gemini 3.5 Flash (Medium)');
+    expect(capturedArgs).not.toContain('gemini-3-flash-preview');
+  });
+
+  it('parses JSON-shaped AGY output when the response is structured', async () => {
+    runCliProcess.mockReturnValue({
+      child: { kill: jest.fn() },
+      result: Promise.resolve({
+        stdout: JSON.stringify({ response: 'Structured AGY output' }),
+        stderr: '',
+        exitCode: 0
+      })
+    });
+
+    const response = await adapter.generateUncached('Return JSON');
+
+    expect(response.text).toBe('Structured AGY output');
+  });
+
+  it('fails clearly when AGY is missing and never attempts gemini', async () => {
+    const { resolveAntigravityCliRuntime } = jest.requireMock('../../src/utils/antigravityCli') as {
+      resolveAntigravityCliRuntime: jest.Mock;
+    };
+    resolveAntigravityCliRuntime.mockReturnValueOnce({
+      agyPath: null,
+      nodePath: '/mock/bin/node',
+      connectorPath: '/mock/connector.js',
+      vaultPath: '/mock/vault',
+      serverKey: 'nexus-test-vault',
+      mcpConfigPath: '/mock/home/.gemini/config/mcp_config.json',
+      authTokenPath: '/mock/home/.gemini/antigravity-cli/antigravity-oauth-token',
+    });
+
+    await expect(adapter.generateUncached('Prompt')).rejects.toMatchObject({
+      name: 'LLMProviderError',
+      provider: 'google-gemini-cli',
+      code: 'CONFIGURATION_ERROR',
+      message: expect.stringMatching(/Antigravity CLI.*not found/i)
+    });
+    expect(runCliProcess).not.toHaveBeenCalled();
   });
 
   it('parses CLI output with leading logs before the final JSON block', async () => {
+    let capturedCommand = '';
     let capturedArgs: string[] = [];
 
-    runCliProcess.mockImplementation((_command, args) => {
+    runCliProcess.mockImplementation((command, args) => {
+      capturedCommand = command;
       capturedArgs = args;
 
       return {
@@ -144,13 +180,14 @@ describe('GoogleGeminiCliAdapter', () => {
       model: 'gemini-3.1-flash-lite-preview'
     });
 
+    expect(capturedCommand).toBe('/mock/bin/agy');
     expect(capturedArgs).toEqual([
-      '--prompt',
-      '',
+      '--print',
+      '--dangerously-skip-permissions',
+      '--print-timeout',
+      '5m',
       '--model',
-      'Gemini 3.5 Flash (Medium)',
-      '--output-format',
-      'json'
+      'Gemini 3.5 Flash (Medium)'
     ]);
     expect(response.text).toBe('OK');
     expect(response.usage).toEqual({

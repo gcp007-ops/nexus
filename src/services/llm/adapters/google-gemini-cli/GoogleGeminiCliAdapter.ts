@@ -4,7 +4,7 @@
  * LLM adapter for Google Gemini CLI. Runs the CLI as a child process in
  * non-streaming (JSON output) mode and parses the result.
  */
-import { Platform, Vault } from 'obsidian';
+import { Vault } from 'obsidian';
 import type { DesktopChildProcess } from '../../../../utils/desktopProcess';
 import { BaseAdapter } from '../BaseAdapter';
 import {
@@ -18,20 +18,17 @@ import {
   TokenUsage
 } from '../types';
 import { ModelRegistry } from '../ModelRegistry';
-import { normalizeGeminiCliModelForAgy } from './GoogleGeminiCliModels';
-import { CliProcessResult, runCliProcess } from '../../../../utils/cliProcessRunner';
-import { GOOGLE_GEMINI_CLI_DEFAULT_MODEL } from './GoogleGeminiCliModels';
 import {
-  buildGeminiCliEnv,
-  buildGeminiCliSystemSettings,
-  resolveGeminiCliRuntime
-} from '../../../../utils/geminiCli';
-
-type GeminiCliDesktopModuleMap = {
-  'fs/promises': typeof import('fs/promises');
-  os: typeof import('os');
-  path: typeof import('path');
-};
+  GOOGLE_GEMINI_CLI_DEFAULT_MODEL,
+  normalizeGeminiCliModelForAgy
+} from './GoogleGeminiCliModels';
+import { CliProcessResult, runCliProcess } from '../../../../utils/cliProcessRunner';
+import {
+  ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT,
+  buildAntigravityCliEnv,
+  ensureAntigravityMcpConfig,
+  resolveAntigravityCliRuntime
+} from '../../../../utils/antigravityCli';
 
 interface GeminiCliJsonResponse {
   response?: string;
@@ -59,9 +56,9 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
   }
 
   async generateUncached(prompt: string, options?: GenerateOptions): Promise<LLMResponse> {
-    const runtime = resolveGeminiCliRuntime(this.vault);
-    if (!runtime.geminiPath) {
-      throw new LLMProviderError('Gemini CLI was not found on PATH.', this.name, 'CONFIGURATION_ERROR');
+    const runtime = resolveAntigravityCliRuntime(this.vault);
+    if (!runtime.agyPath) {
+      throw new LLMProviderError('Antigravity CLI (`agy`) was not found on PATH.', this.name, 'CONFIGURATION_ERROR');
     }
     if (!runtime.nodePath) {
       throw new LLMProviderError('Node.js was not found on PATH.', this.name, 'CONFIGURATION_ERROR');
@@ -73,78 +70,48 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
       throw new LLMProviderError('Vault filesystem path is unavailable.', this.name, 'CONFIGURATION_ERROR');
     }
 
-    const fsPromises = this.loadDesktopModule('fs/promises');
-    const osMod = this.loadDesktopModule('os');
-    const pathMod = this.loadDesktopModule('path');
+    await ensureAntigravityMcpConfig(runtime);
 
-    const tempDir = await fsPromises.mkdtemp(pathMod.join(osMod.tmpdir(), 'nexus-gemini-cli-'));
-    const settingsPath = pathMod.join(tempDir, 'system-settings.json');
+    const combinedPrompt = this.buildPrompt(prompt, options?.systemPrompt);
+    const model = normalizeGeminiCliModelForAgy(options?.model || this.currentModel);
+    const args = [
+      '--print',
+      '--dangerously-skip-permissions',
+      '--print-timeout',
+      ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT,
+      '--model',
+      model
+    ];
 
-    try {
-      await fsPromises.writeFile(
-        settingsPath,
-        JSON.stringify(buildGeminiCliSystemSettings(runtime), null, 2),
-        'utf8'
-      );
+    const handle = runCliProcess(runtime.agyPath, args, {
+      cwd: runtime.vaultPath,
+      env: buildAntigravityCliEnv(runtime.nodePath),
+      stdinText: combinedPrompt
+    });
+    this.activeProcess = handle.child;
+    const result = await handle.result;
+    this.activeProcess = null;
 
-      const combinedPrompt = this.buildPrompt(prompt, options?.systemPrompt);
-      const requestModel = normalizeGeminiCliModelForAgy(options?.model || this.currentModel);
-      const args = [
-        '--prompt',
-        '',
-        '--model',
-        requestModel,
-        '--output-format',
-        'json'
-      ];
-
-      const handle = runCliProcess(runtime.geminiPath, args, {
-        cwd: runtime.vaultPath,
-        env: buildGeminiCliEnv(settingsPath, runtime.nodePath),
-        stdinText: combinedPrompt
-      });
-      this.activeProcess = handle.child;
-      const result = await handle.result;
-      this.activeProcess = null;
-
-      if (result.exitCode !== 0) {
-        throw this.mapCliProcessFailure(result);
-      }
-
-      const parsed = this.parseOutput(result.stdout);
-      if (!parsed) {
-        throw new LLMProviderError(
-          'Gemini CLI returned an unreadable JSON response.',
-          this.name,
-          'PROVIDER_ERROR'
-        );
-      }
-
-      const errorMessage = typeof parsed.error === 'string'
-        ? parsed.error
-        : parsed.error?.message;
-      if (errorMessage) {
-        throw new LLMProviderError(errorMessage, this.name, 'PROVIDER_ERROR');
-      }
-
-      const text = this.extractText(parsed);
-      const usage = this.extractUsageFromStats(parsed);
-
-      return this.buildLLMResponse(
-        text,
-        requestModel,
-        usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        {
-          localCli: true,
-          outputFormat: 'json',
-          toolSummary: parsed.stats?.tools
-        },
-        'stop'
-      );
-    } finally {
-      this.activeProcess = null;
-      await fsPromises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    if (result.exitCode !== 0) {
+      throw this.mapCliProcessFailure(result);
     }
+
+    const parsed = this.parseOutput(result.stdout);
+    const text = parsed ? this.extractText(parsed) : result.stdout.trim();
+    const usage = parsed ? this.extractUsageFromStats(parsed) : undefined;
+
+    return this.buildLLMResponse(
+      text,
+      model,
+      usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      {
+        localCli: true,
+        runtime: 'agy',
+        outputFormat: parsed ? 'json' : 'text-or-json',
+        toolSummary: parsed?.stats?.tools
+      },
+      'stop'
+    );
   }
 
   async* generateStreamAsync(prompt: string, options?: GenerateOptions): AsyncGenerator<StreamChunk, void, unknown> {
@@ -168,7 +135,7 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
       supportsFunctions: true,
       supportsThinking: true,
       maxContextWindow: 1048576,
-      supportedFeatures: ['gemini-cli', 'mcp', 'google-login']
+      supportedFeatures: ['agy', 'antigravity-cli', 'mcp', 'google-login']
     };
   }
 
@@ -190,24 +157,6 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
       this.activeProcess.kill();
       this.activeProcess = null;
     }
-  }
-
-  private loadDesktopModule<TModuleName extends keyof GeminiCliDesktopModuleMap>(
-    moduleName: TModuleName
-  ): GeminiCliDesktopModuleMap[TModuleName] {
-    if (!Platform.isDesktop) {
-      throw new Error(`${moduleName} is only available on desktop.`);
-    }
-
-    const maybeRequire = (window.activeWindow as Window & {
-      require?: (moduleId: string) => unknown;
-    }).require;
-
-    if (typeof maybeRequire !== 'function') {
-      throw new Error('Desktop module loader is unavailable.');
-    }
-
-    return maybeRequire(moduleName) as GeminiCliDesktopModuleMap[TModuleName];
   }
 
   private buildPrompt(prompt: string, systemPrompt?: string): string {
@@ -339,14 +288,14 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
   private mapCliProcessFailure(result: CliProcessResult): LLMProviderError {
     if (result.errorCode === 'ENAMETOOLONG' || result.errorCode === 'E2BIG') {
       return new LLMProviderError(
-        'Gemini CLI could not start because the local CLI command was too long for this platform. Reduce attached context files or shorten the prompt and try again.',
+        'Antigravity CLI could not start because the local CLI command was too long for this platform. Reduce attached context files or shorten the prompt and try again.',
         this.name,
         'REQUEST_TOO_LARGE'
       );
     }
 
     return new LLMProviderError(
-      result.stderr.trim() || result.stdout.trim() || `Gemini CLI exited with status ${result.exitCode ?? 'unknown'}`,
+      result.stderr.trim() || result.stdout.trim() || `Antigravity CLI exited with status ${result.exitCode ?? 'unknown'}`,
       this.name,
       result.exitCode === null ? 'CONFIGURATION_ERROR' : 'PROVIDER_ERROR'
     );
