@@ -145,6 +145,11 @@ function parseMcpConfig(raw: string, configPath: string): Record<string, unknown
     if (!isRecord(parsed)) {
       throw new Error('top-level value is not an object');
     }
+
+    if (!isValidMcpConfig(parsed)) {
+      throw new Error('mcpServers must be a JSON object when present');
+    }
+
     return parsed;
   } catch (error) {
     throw new Error(`Invalid mcp_config.json at ${configPath}: ${(error as Error).message}`);
@@ -153,4 +158,12 @@ function parseMcpConfig(raw: string, configPath: string): Record<string, unknown
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isValidMcpConfig(config: Record<string, unknown>): boolean {
+  if (!('mcpServers' in config)) {
+    return true;
+  }
+
+  return isRecord(config.mcpServers);
 }

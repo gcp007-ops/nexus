@@ -12,13 +12,14 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   buildAntigravityCliEnv,
+  type AntigravityCliRuntime,
   ensureAntigravityMcpConfig,
   getAntigravityAuthTokenPath,
   getAntigravityMcpConfigPath,
   hasReadableAntigravityAuthToken,
   resolveAntigravityCliRuntime,
-  type AntigravityCliRuntime,
 } from '../../src/utils/antigravityCli';
+import { resolveDesktopBinaryPath } from '../../src/utils/binaryDiscovery';
 
 jest.mock('../../src/utils/binaryDiscovery', () => ({
   resolveDesktopBinaryPath: jest.fn((binary: string) => `/mock/bin/${binary}`)
@@ -33,11 +34,14 @@ jest.mock('../../src/constants/branding', () => ({
   getPrimaryServerKey: jest.fn(() => 'nexus-test-vault')
 }));
 
+const mockResolveDesktopBinaryPath = resolveDesktopBinaryPath as jest.MockedFunction<typeof resolveDesktopBinaryPath>;
+
 describe('antigravityCli utilities', () => {
   let tempHome: string;
 
   beforeEach(async () => {
     tempHome = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'nexus-agy-test-'));
+    mockResolveDesktopBinaryPath.mockClear();
   });
 
   afterEach(async () => {
@@ -56,6 +60,7 @@ describe('antigravityCli utilities', () => {
       mcpConfigPath: path.join(tempHome, '.gemini', 'config', 'mcp_config.json'),
       authTokenPath: path.join(tempHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     });
+    expect(mockResolveDesktopBinaryPath).not.toHaveBeenCalledWith('gemini');
   });
 
   it('builds canonical AGY config and auth token paths', () => {
@@ -141,5 +146,26 @@ describe('antigravityCli utilities', () => {
 
     await expect(ensureAntigravityMcpConfig(runtime)).rejects.toThrow(/invalid mcp_config\.json/i);
     expect(fs.readFileSync(runtime.mcpConfigPath, 'utf8')).toBe('{not-json');
+  });
+
+  it.each([
+    ['array mcpServers', '{"mcpServers": []}'],
+    ['string mcpServers', '{"mcpServers": "oops"}'],
+  ])('refuses to overwrite MCP config when %s', async (_label, rawConfig) => {
+    const runtime: AntigravityCliRuntime = {
+      agyPath: '/mock/bin/agy',
+      nodePath: '/mock/bin/node',
+      connectorPath: '/mock/connector.js',
+      vaultPath: '/mock/vault',
+      serverKey: 'nexus-test-vault',
+      mcpConfigPath: getAntigravityMcpConfigPath(tempHome),
+      authTokenPath: getAntigravityAuthTokenPath(tempHome),
+    };
+
+    await fsPromises.mkdir(path.dirname(runtime.mcpConfigPath), { recursive: true });
+    await fsPromises.writeFile(runtime.mcpConfigPath, rawConfig, 'utf8');
+
+    await expect(ensureAntigravityMcpConfig(runtime)).rejects.toThrow(/invalid mcp_config\.json/i);
+    expect(fs.readFileSync(runtime.mcpConfigPath, 'utf8')).toBe(rawConfig);
   });
 });
