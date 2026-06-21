@@ -10,7 +10,8 @@ jest.mock('../../src/utils/cliProcessRunner', () => ({
 }));
 
 jest.mock('../../src/utils/antigravityCli', () => ({
-  ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT: '5m',
+  ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT: '60s',
+  ANTIGRAVITY_CLI_PROCESS_TIMEOUT_MS: 75000,
   resolveAntigravityCliRuntime: jest.fn(() => ({
     agyPath: '/mock/bin/agy',
     nodePath: '/mock/bin/node',
@@ -43,7 +44,7 @@ describe('GoogleGeminiCliAdapter', () => {
   it('runs AGY with prompt on stdin and no Gemini CLI output-format flag', async () => {
     let capturedCommand = '';
     let capturedArgs: string[] = [];
-    let capturedOptions: { cwd?: string; env?: NodeJS.ProcessEnv; stdinText?: string } | undefined;
+    let capturedOptions: { cwd?: string; env?: NodeJS.ProcessEnv; stdinText?: string; timeoutMs?: number } | undefined;
 
     runCliProcess.mockImplementation((command, args, options) => {
       capturedCommand = command;
@@ -70,12 +71,13 @@ describe('GoogleGeminiCliAdapter', () => {
       '--print',
       '--dangerously-skip-permissions',
       '--print-timeout',
-      '5m',
+      '60s',
       '--model',
       'Gemini 3.1 Pro (High)'
     ]);
     expect(capturedArgs).not.toContain('--output-format');
     expect(capturedOptions?.cwd).toBe('/mock/vault');
+    expect(capturedOptions?.timeoutMs).toBe(75000);
     expect(capturedOptions?.stdinText).toBe(
       'System instructions:\nUse the MCP tools if needed.\n\nUser request:\nSummarize the regression'
     );
@@ -185,7 +187,7 @@ describe('GoogleGeminiCliAdapter', () => {
       '--print',
       '--dangerously-skip-permissions',
       '--print-timeout',
-      '5m',
+      '60s',
       '--model',
       'Gemini 3.5 Flash (Medium)'
     ]);
@@ -233,6 +235,25 @@ describe('GoogleGeminiCliAdapter', () => {
       name: 'LLMProviderError',
       provider: 'google-gemini-cli',
       code: 'REQUEST_TOO_LARGE'
+    });
+  });
+
+  it('maps AGY process timeouts to PROVIDER_TIMEOUT', async () => {
+    runCliProcess.mockReturnValue({
+      child: { kill: jest.fn() },
+      result: Promise.resolve({
+        stdout: '',
+        stderr: 'CLI process timed out after 75000ms.',
+        exitCode: null,
+        errorCode: 'ETIMEDOUT'
+      })
+    });
+
+    await expect(adapter.generateUncached('Prompt')).rejects.toMatchObject({
+      name: 'LLMProviderError',
+      provider: 'google-gemini-cli',
+      code: 'PROVIDER_TIMEOUT',
+      message: expect.stringMatching(/Antigravity CLI timed out/i)
     });
   });
 });

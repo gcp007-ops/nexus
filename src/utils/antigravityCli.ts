@@ -4,7 +4,8 @@ import { resolveDesktopBinaryPath } from './binaryDiscovery';
 import { getConnectorPath, getVaultBasePath } from './cliPathUtils';
 import { desktopRequire } from './desktopRequire';
 
-export const ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT = '5m';
+export const ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT = '60s';
+export const ANTIGRAVITY_CLI_PROCESS_TIMEOUT_MS = 75_000;
 export const ANTIGRAVITY_CLI_LOCAL_AUTH_SENTINEL = 'gemini-cli-local-auth';
 const ANTIGRAVITY_MCP_TIMEOUT_MS = 600000;
 

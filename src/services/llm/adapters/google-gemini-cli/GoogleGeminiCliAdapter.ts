@@ -25,6 +25,7 @@ import {
 import { CliProcessResult, runCliProcess } from '../../../../utils/cliProcessRunner';
 import {
   ANTIGRAVITY_CLI_DEFAULT_PRINT_TIMEOUT,
+  ANTIGRAVITY_CLI_PROCESS_TIMEOUT_MS,
   buildAntigravityCliEnv,
   ensureAntigravityMcpConfig,
   resolveAntigravityCliRuntime
@@ -86,7 +87,8 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
     const handle = runCliProcess(runtime.agyPath, args, {
       cwd: runtime.vaultPath,
       env: buildAntigravityCliEnv(runtime.nodePath),
-      stdinText: combinedPrompt
+      stdinText: combinedPrompt,
+      timeoutMs: ANTIGRAVITY_CLI_PROCESS_TIMEOUT_MS
     });
     this.activeProcess = handle.child;
     const result = await handle.result;
@@ -294,8 +296,17 @@ export class GoogleGeminiCliAdapter extends BaseAdapter {
       );
     }
 
+    const output = `${result.stderr}\n${result.stdout}`.trim();
+    if (result.errorCode === 'ETIMEDOUT' || /timed out waiting for response|timed out after/i.test(output)) {
+      return new LLMProviderError(
+        'Antigravity CLI timed out before producing a final response. Try a shorter prompt, reduce attached context, or retry with another model.',
+        this.name,
+        'PROVIDER_TIMEOUT'
+      );
+    }
+
     return new LLMProviderError(
-      result.stderr.trim() || result.stdout.trim() || `Antigravity CLI exited with status ${result.exitCode ?? 'unknown'}`,
+      output || `Antigravity CLI exited with status ${result.exitCode ?? 'unknown'}`,
       this.name,
       result.exitCode === null ? 'CONFIGURATION_ERROR' : 'PROVIDER_ERROR'
     );

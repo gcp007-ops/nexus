@@ -56,6 +56,7 @@ export function runCliProcess(
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     stdinText?: string;
+    timeoutMs?: number;
   }
 ): CliProcessHandle {
   const childProcess = loadDesktopModule('child_process');
@@ -69,12 +70,19 @@ export function runCliProcess(
   const child = spawnDesktopProcess(childProcess, command, args, spawnOptions);
 
   const result = new Promise<CliProcessResult>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let timeoutHandle: number | null = null;
     let settled = false;
     const resolveOnce = (value: CliProcessResult) => {
       if (settled) {
         return;
       }
       settled = true;
+      if (timeoutHandle) {
+        window.clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
       resolve(value);
     };
 
@@ -87,8 +95,21 @@ export function runCliProcess(
       return;
     }
 
-    let stdout = '';
-    let stderr = '';
+    if (options?.timeoutMs && options.timeoutMs > 0) {
+      timeoutHandle = window.setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          // Best effort: the close/error handler may already be racing us.
+        }
+        resolveOnce({
+          stdout,
+          stderr: stderr || `CLI process timed out after ${options.timeoutMs}ms.`,
+          exitCode: null,
+          errorCode: 'ETIMEDOUT'
+        });
+      }, options.timeoutMs);
+    }
 
     child.stdout.on('data', (chunk: Buffer | string) => {
       stdout += chunk.toString();

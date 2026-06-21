@@ -10,6 +10,7 @@ type MockChildProcess = EventEmitter & {
   stdin: PassThrough;
   stdout: PassThrough;
   stderr: PassThrough;
+  kill: jest.Mock;
 };
 
 function createMockChildProcess(): MockChildProcess {
@@ -17,6 +18,7 @@ function createMockChildProcess(): MockChildProcess {
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
+  child.kill = jest.fn();
   return child;
 }
 
@@ -112,5 +114,29 @@ describe('runCliProcess', () => {
       exitCode: null,
       errorCode: 'E2BIG'
     });
+  });
+
+  it('kills the CLI process when timeoutMs elapses', async () => {
+    jest.useFakeTimers();
+    const child = createMockChildProcess();
+
+    spawnDesktopProcess.mockReturnValue(child);
+
+    const handle = runCliProcess('/mock/bin/agy', ['--print'], {
+      cwd: '/mock/vault',
+      timeoutMs: 50
+    });
+
+    jest.advanceTimersByTime(50);
+
+    await expect(handle.result).resolves.toEqual({
+      stdout: '',
+      stderr: 'CLI process timed out after 50ms.',
+      exitCode: null,
+      errorCode: 'ETIMEDOUT'
+    });
+    expect(child.kill).toHaveBeenCalledTimes(1);
+
+    jest.useRealTimers();
   });
 });
