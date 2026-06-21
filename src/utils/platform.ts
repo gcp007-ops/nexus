@@ -183,7 +183,7 @@ export const MOBILE_COMPATIBLE_PROVIDERS = [
 export const DESKTOP_ONLY_PROVIDERS = [
     'openai-codex',  // OAuth callback server remains desktop only
     'anthropic-claude-code', // Local Claude Code runtime + desktop auth
-    'google-gemini-cli', // Local Gemini CLI runtime + desktop auth
+    'google-gemini-cli', // Local Antigravity CLI runtime + desktop auth
     'github-copilot', // OAuth device flow requires desktop
     'ollama',       // Local server - desktop only
     'lmstudio',     // Local server - desktop only

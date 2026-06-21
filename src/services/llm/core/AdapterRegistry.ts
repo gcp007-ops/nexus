@@ -390,7 +390,7 @@ export class AdapterRegistry implements IAdapterRegistry {
   }
 
   /**
-   * Initialize the Gemini CLI adapter from local CLI auth state.
+   * Initialize the Antigravity-backed Gemini adapter from local CLI auth state.
    */
   private async initializeGeminiCliAdapter(config: LLMProviderConfig | undefined): Promise<void> {
     if (!config?.enabled) return;
@@ -405,7 +405,7 @@ export class AdapterRegistry implements IAdapterRegistry {
       const adapter = new GoogleGeminiCliAdapter(this.vault);
       this.adapters.set('google-gemini-cli', adapter);
     } catch (error) {
-      console.error('AdapterRegistry: Failed to initialize Gemini CLI adapter:', error);
+      console.error('AdapterRegistry: Failed to initialize Antigravity-backed Gemini adapter:', error);
       this.logError('google-gemini-cli', error);
     }
   }

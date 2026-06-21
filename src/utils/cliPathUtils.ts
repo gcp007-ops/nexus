@@ -2,7 +2,7 @@
  * src/utils/cliPathUtils.ts
  *
  * Shared vault base path and connector.js resolution helpers.
- * Used by CLI adapter runtimes (Claude Code, Gemini CLI) and auth services.
+ * Used by CLI adapter runtimes (Claude Code, Antigravity CLI) and auth services.
  */
 import { FileSystemAdapter, Vault } from 'obsidian';
 import { getAllPluginIds } from '../constants/branding';

@@ -26,9 +26,9 @@ export class GeminiCliAuthService {
     constructor(private app: App) {}
 
     /**
-     * Check whether the Gemini CLI is installed and authenticated.
+     * Check whether AGY is installed and authenticated.
      */
-    async getStatus(): Promise<GeminiCliAuthStatus> {
+    getStatus(): GeminiCliAuthStatus {
         if (!Platform.isDesktop) {
             return {
                 available: false,
@@ -89,7 +89,7 @@ export class GeminiCliAuthService {
      * This is used as the "connect" flow — it's check-only, no terminal launch.
      */
     async checkAuth(): Promise<{ success: boolean; apiKey?: string; metadata?: Record<string, string>; error?: string }> {
-        const status = await this.getStatus();
+        const status = this.getStatus();
 
         if (!status.available) {
             return { success: false, error: status.error };

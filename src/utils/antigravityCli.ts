@@ -120,9 +120,7 @@ export async function ensureAntigravityMcpConfig(runtime: AntigravityCliRuntime)
     }
   }
 
-  const existingServers = isRecord(config.mcpServers)
-    ? config.mcpServers as Record<string, unknown>
-    : {};
+  const existingServers = isRecord(config.mcpServers) ? config.mcpServers : {};
 
   config.mcpServers = {
     ...existingServers,

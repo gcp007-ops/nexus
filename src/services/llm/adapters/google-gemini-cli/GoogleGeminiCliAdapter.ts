@@ -1,8 +1,8 @@
 /**
  * src/services/llm/adapters/google-gemini-cli/GoogleGeminiCliAdapter.ts
  *
- * LLM adapter for Google Gemini CLI. Runs the CLI as a child process in
- * non-streaming (JSON output) mode and parses the result.
+ * LLM adapter for the legacy google-gemini-cli provider id.
+ * Runtime execution is handled by Google Antigravity CLI (`agy`).
  */
 import { Vault } from 'obsidian';
 import type { DesktopChildProcess } from '../../../../utils/desktopProcess';

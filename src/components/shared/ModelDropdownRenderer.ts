@@ -81,7 +81,7 @@ export interface ModelDropdownConfig {
   /** Whether Claude Code local auth is connected (for merging Claude Code models into Anthropic) */
   isClaudeCodeConnected: () => boolean;
 
-  /** Whether Gemini CLI local auth is connected (for merging Gemini CLI models into Google) */
+  /** Whether Antigravity local auth is connected (for merging AGY-backed Gemini models into Google) */
   isGeminiCliConnected: () => boolean;
 
   /** Get default model for a provider (async) */
