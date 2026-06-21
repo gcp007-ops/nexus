@@ -1,5 +1,6 @@
 import * as fsPromises from 'fs/promises';
 import { GoogleGeminiCliAdapter } from '../../src/services/llm/adapters/google-gemini-cli/GoogleGeminiCliAdapter';
+import { normalizeGeminiCliModelForAgy } from '../../src/services/llm/adapters/google-gemini-cli/GoogleGeminiCliModels';
 
 type VaultLike = {
   getName: () => string;
@@ -89,7 +90,7 @@ describe('GoogleGeminiCliAdapter', () => {
       '--prompt',
       '',
       '--model',
-      'gemini-3-flash-preview',
+      'Gemini 3.5 Flash (Medium)',
       '--output-format',
       'json'
     ]);
@@ -145,18 +146,25 @@ describe('GoogleGeminiCliAdapter', () => {
     });
   });
 
-  it('lists only the validated Gemini CLI models', async () => {
+  it('lists only AGY-backed Gemini models under the legacy provider id', async () => {
     const models = await adapter.listModels();
 
     expect(models.map((model) => model.id)).toEqual([
-      'gemini-3.1-flash-lite-preview',
-      'gemini-3-flash-preview'
+      'Gemini 3.5 Flash (Medium)',
+      'Gemini 3.5 Flash (High)',
+      'Gemini 3.5 Flash (Low)',
+      'Gemini 3.1 Pro (Low)',
+      'Gemini 3.1 Pro (High)'
     ]);
-    expect(models.map((model) => model.id)).not.toContain('gemini-3.1-pro-preview');
-    expect(models.map((model) => model.id)).not.toContain('gemini-3-flash');
-    expect(models.map((model) => model.id)).not.toContain('gemini-2.5-pro');
-    expect(models.map((model) => model.id)).not.toContain('gemini-2.5-flash');
-    expect(models.map((model) => model.id)).not.toContain('gemini-2.5-flash-lite');
+    expect(models.map((model) => model.id)).not.toContain('gemini-3-flash-preview');
+    expect(models.map((model) => model.id)).not.toContain('gemini-3.1-flash-lite-preview');
+  });
+
+  it('normalizes legacy Gemini CLI model ids to the AGY default', () => {
+    expect(normalizeGeminiCliModelForAgy('gemini-3-flash-preview')).toBe('Gemini 3.5 Flash (Medium)');
+    expect(normalizeGeminiCliModelForAgy('gemini-3.1-flash-lite-preview')).toBe('Gemini 3.5 Flash (Medium)');
+    expect(normalizeGeminiCliModelForAgy('Gemini 3.1 Pro (High)')).toBe('Gemini 3.1 Pro (High)');
+    expect(normalizeGeminiCliModelForAgy(undefined)).toBe('Gemini 3.5 Flash (Medium)');
   });
 
   it('maps oversized CLI startup failures to REQUEST_TOO_LARGE', async () => {
