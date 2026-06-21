@@ -44,14 +44,25 @@ function createMockTask(overrides: Partial<TaskMetadata> = {}): TaskMetadata {
   };
 }
 
-function paginatedResult<T>(items: T[]): PaginatedResult<T> {
+function paginatedResult<T>(
+  items: T[],
+  overrides: Partial<Omit<PaginatedResult<T>, 'items'>> = {}
+): PaginatedResult<T> {
+  const page = overrides.page ?? 0;
+  const pageSize = overrides.pageSize ?? 100;
+  const totalItems = overrides.totalItems ?? items.length;
+  const totalPages = overrides.totalPages ?? Math.ceil(totalItems / pageSize);
+
   return {
     items,
-    totalItems: items.length,
-    totalPages: 1,
-    currentPage: 1,
-    pageSize: 100,
-    hasNextPage: false
+    page,
+    pageSize,
+    totalItems,
+    totalPages,
+    hasNextPage: overrides.hasNextPage ?? page < totalPages - 1,
+    hasPreviousPage: overrides.hasPreviousPage ?? page > 0,
+    nextCursor: overrides.nextCursor,
+    previousCursor: overrides.previousCursor
   };
 }
 
@@ -1238,6 +1249,61 @@ describe('TaskService', () => {
       const result = await service.getWorkspaceSummary('ws-1');
       expect(result.projects.active).toBe(1);
       expect(result.projects.items).toHaveLength(1);
+    });
+
+    it('should paginate workspace tasks before computing project counts and summaries', async () => {
+      const activeProject = createMockProject({ id: 'active-project', status: 'active' });
+      const archivedProject = createMockProject({ id: 'archived-project', status: 'archived' });
+      const archivedTask = createMockTask({
+        id: 'archived-task',
+        projectId: 'archived-project',
+        status: 'done',
+        completedAt: 1000
+      });
+      const activeTask = createMockTask({
+        id: 'active-task',
+        projectId: 'active-project',
+        status: 'todo',
+        priority: 'high',
+        created: 1
+      });
+
+      projectRepo.getByWorkspace.mockResolvedValue(paginatedResult([activeProject, archivedProject]));
+      taskRepo.getByWorkspace
+        .mockResolvedValueOnce(paginatedResult([archivedTask], {
+          page: 0,
+          pageSize: 200,
+          totalItems: 2,
+          totalPages: 2,
+          hasNextPage: true
+        }))
+        .mockResolvedValueOnce(paginatedResult([activeTask], {
+          page: 1,
+          pageSize: 200,
+          totalItems: 2,
+          totalPages: 2,
+          hasNextPage: false,
+          hasPreviousPage: true
+        }));
+      taskRepo.getAllDependencyEdges.mockResolvedValue([]);
+
+      const result = await service.getWorkspaceSummary('ws-1');
+
+      expect(taskRepo.getByWorkspace).toHaveBeenCalledTimes(2);
+      expect(taskRepo.getByWorkspace).toHaveBeenNthCalledWith(1, 'ws-1', { page: 0, pageSize: 200 });
+      expect(taskRepo.getByWorkspace).toHaveBeenNthCalledWith(2, 'ws-1', { page: 1, pageSize: 200 });
+      expect(result.projects.items).toEqual([
+        expect.objectContaining({
+          id: 'active-project',
+          taskCount: 1,
+          status: 'active'
+        })
+      ]);
+      expect(result.tasks.total).toBe(1);
+      expect(result.tasks.byStatus.todo).toBe(1);
+      expect(result.tasks.byStatus.done).toBe(0);
+      expect(result.tasks.nextActions.map(task => task.id)).toEqual(['active-task']);
+      expect(result.tasks.recentlyCompleted).toEqual([]);
     });
 
     it('should not count completed projects as active', async () => {

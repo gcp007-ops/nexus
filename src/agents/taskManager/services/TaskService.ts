@@ -33,6 +33,8 @@ import { PaginatedResult } from '../../../types/pagination/PaginationTypes';
 import { logger } from '../../../utils/logger';
 import { formatTaskRef, taskRefToIdPrefix } from '../utils/taskRefs';
 
+const SNAPSHOT_PAGE_SIZE = 200;
+
 export interface TaskBoardEventPayload {
   workspaceId: string;
   entity: 'task' | 'project';
@@ -754,6 +756,26 @@ export class TaskService {
     return this.taskRepo.getByLinkedNote(notePath);
   }
 
+  private async collectAllPages<T>(
+    loadPage: (page: number) => Promise<PaginatedResult<T>>
+  ): Promise<{ items: T[]; totalItems: number }> {
+    const items: T[] = [];
+    let page = 0;
+    let totalItems = 0;
+
+    while (true) {
+      const result = await loadPage(page);
+      if (page === 0) {
+        totalItems = result.totalItems;
+      }
+      items.push(...result.items);
+      if (!result.hasNextPage) {
+        return { items, totalItems };
+      }
+      page += 1;
+    }
+  }
+
   // ────────────────────────────────────────────────────────────────
   // Workspace Summary (for loadWorkspace integration)
   // ────────────────────────────────────────────────────────────────
@@ -762,31 +784,43 @@ export class TaskService {
     await this.ensureQueryReady();
 
     workspaceId = await this.resolveWorkspaceId(workspaceId);
-    const projects = await this.projectRepo.getByWorkspace(workspaceId, { pageSize: 1000 });
-    const allTasks = await this.taskRepo.getByWorkspace(workspaceId, { pageSize: 10000 });
+    const [projectSnapshot, taskSnapshot] = await Promise.all([
+      this.collectAllPages(page =>
+        this.projectRepo.getByWorkspace(workspaceId, { page, pageSize: SNAPSHOT_PAGE_SIZE })
+      ),
+      this.collectAllPages(page =>
+        this.taskRepo.getByWorkspace(workspaceId, { page, pageSize: SNAPSHOT_PAGE_SIZE })
+      )
+    ]);
+
+    const projects = projectSnapshot.items;
+    const allTasks = taskSnapshot.items;
+    const visibleProjects = projects.filter(project => project.status !== 'archived');
+    const visibleProjectIds = new Set(visibleProjects.map(project => project.id));
+    const visibleTasks = projects.length > 0
+      ? allTasks.filter(task => visibleProjectIds.has(task.projectId))
+      : allTasks;
 
     // Build project summaries
     const projectItems: ProjectSummary[] = [];
     const taskCountByProject = new Map<string, number>();
-    for (const task of allTasks.items) {
+    for (const task of visibleTasks) {
       taskCountByProject.set(task.projectId, (taskCountByProject.get(task.projectId) ?? 0) + 1);
     }
-    for (const project of projects.items) {
-      if (project.status !== 'archived') {
-        projectItems.push({
-          id: project.id,
-          name: project.name,
-          taskCount: taskCountByProject.get(project.id) ?? 0,
-          status: project.status
-        });
-      }
+    for (const project of visibleProjects) {
+      projectItems.push({
+        id: project.id,
+        name: project.name,
+        taskCount: taskCountByProject.get(project.id) ?? 0,
+        status: project.status
+      });
     }
 
     // Count by status
     const byStatus: Record<TaskStatus, number> = { todo: 0, in_progress: 0, done: 0, cancelled: 0 };
     let overdue = 0;
     const now = Date.now();
-    for (const task of allTasks.items) {
+    for (const task of visibleTasks) {
       byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
       if (task.dueDate && task.dueDate < now && task.status !== 'done' && task.status !== 'cancelled') {
         overdue++;
@@ -796,14 +830,14 @@ export class TaskService {
     // Compute next actions in-memory from already-fetched workspace tasks.
     // Fetch edges per active project in parallel (avoids N+1 sequential getNextActions calls
     // that each re-fetched all tasks + edges independently).
-    const activeProjects = projects.items.filter(p => p.status === 'active');
+    const activeProjects = projects.filter(p => p.status === 'active');
     const edgeArrays = await Promise.all(
       activeProjects.map(p => this.taskRepo.getAllDependencyEdges(p.id))
     );
     const allEdges: Edge[] = edgeArrays.flat();
 
     const activeProjectIds = new Set(activeProjects.map(p => p.id));
-    const activeTasks = allTasks.items.filter(t => activeProjectIds.has(t.projectId));
+    const activeTasks = visibleTasks.filter(t => activeProjectIds.has(t.projectId));
     const nodes: TaskNode[] = activeTasks.map(t => ({ id: t.id, status: t.status }));
     const readyNodes = this.dagService.getNextActions(nodes, allEdges);
     const readyIds = new Set(readyNodes.map(n => n.id));
@@ -818,7 +852,7 @@ export class TaskService {
       .slice(0, 5);
 
     // Recently completed (last 5)
-    const completed = allTasks.items
+    const completed = visibleTasks
       .filter(t => t.status === 'done' && t.completedAt)
       .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
       .slice(0, 5);
@@ -833,12 +867,12 @@ export class TaskService {
 
     return {
       projects: {
-        total: projects.totalItems,
+        total: projectSnapshot.totalItems,
         active: projectItems.filter(p => p.status === 'active').length,
         items: projectItems
       },
       tasks: {
-        total: allTasks.totalItems,
+        total: visibleTasks.length,
         byStatus,
         overdue,
         nextActions: nextActionsWithLinks,

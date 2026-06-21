@@ -11,6 +11,8 @@ import type { TaskBoardViewState } from '../taskBoardNavigation';
 import type { TaskBoardTask } from '../taskBoardTypes';
 import { TaskBoardFilterController } from './TaskBoardFilterController';
 
+const BOARD_PAGE_SIZE = 200;
+
 interface TaskManagerAgentLike {
   getTaskService?: () => TaskService;
 }
@@ -84,6 +86,22 @@ export class TaskBoardDataController {
     }
   }
 
+  private async loadAllPages<T>(
+    loadPage: (page: number) => Promise<{ items: T[]; hasNextPage: boolean }>
+  ): Promise<T[]> {
+    const items: T[] = [];
+    let page = 0;
+
+    while (true) {
+      const result = await loadPage(page);
+      items.push(...result.items);
+      if (!result.hasNextPage) {
+        return items;
+      }
+      page += 1;
+    }
+  }
+
   async loadBoardData(filterState: TaskBoardViewState): Promise<TaskBoardDataSnapshot> {
     const workspaceService = this.workspaceService;
     const taskService = this.taskService;
@@ -106,15 +124,26 @@ export class TaskBoardDataController {
 
     const workspaceData = await Promise.all(
       workspaces.map(async workspace => {
-        const [projectsResult, tasksResult] = await Promise.all([
-          taskService.listProjects(workspace.id, { pageSize: 1000 }),
-          taskService.listWorkspaceTasks(workspace.id, { pageSize: 10000 })
-        ]);
+        const projects = (await this.loadAllPages(page =>
+          taskService.listProjects(workspace.id, { page, pageSize: BOARD_PAGE_SIZE })
+        )).filter(project => project.status !== 'archived');
+
+        const tasksByProject = await Promise.all(
+          projects.map(project =>
+            this.loadAllPages(page =>
+              taskService.listTasks(project.id, {
+                page,
+                pageSize: BOARD_PAGE_SIZE,
+                includeSubtasks: true
+              })
+            )
+          )
+        );
 
         return {
           workspace,
-          projects: projectsResult.items.filter(project => project.status !== 'archived'),
-          tasks: tasksResult.items
+          projects,
+          tasks: tasksByProject.flat()
         };
       })
     );

@@ -75,15 +75,15 @@ describe('TaskBoardDataController', () => {
           createProject({ id: 'proj-archived', workspaceId: 'ws-1', status: 'archived' })
         ]
       }),
-      listWorkspaceTasks: jest.fn().mockResolvedValue({
+      listTasks: jest.fn().mockResolvedValue({
         items: [
-          createTask({ id: 'task-1', projectId: 'proj-1', workspaceId: 'ws-1', title: 'Task One' }),
-          createTask({ id: 'task-2', projectId: 'proj-archived', workspaceId: 'ws-1', title: 'Archived project task' })
-        ]
+          createTask({ id: 'task-1', projectId: 'proj-1', workspaceId: 'ws-1', title: 'Task One' })
+        ],
+        hasNextPage: false
       }),
+      listWorkspaceTasks: jest.fn(),
       getNoteLinks: jest.fn()
         .mockResolvedValueOnce([createLink({ taskId: 'task-1' })])
-        .mockRejectedValueOnce(new Error('note link lookup failed'))
     } as unknown as TaskService;
 
     const agentManager = {
@@ -130,6 +130,74 @@ describe('TaskBoardDataController', () => {
       })
     );
     expect(snapshot.filterState.workspaceId).toBe('ws-1');
+    expect(taskService.listTasks).toHaveBeenCalledWith('proj-1', {
+      page: 0,
+      pageSize: 200,
+      includeSubtasks: true
+    });
+    expect(taskService.listTasks).not.toHaveBeenCalledWith('proj-archived', expect.anything());
+    expect(taskService.listWorkspaceTasks).not.toHaveBeenCalled();
+  });
+
+  it('loads all task pages for visible projects instead of treating the first page as a snapshot', async () => {
+    const workspaceService = {
+      getWorkspaces: jest.fn().mockResolvedValue([createWorkspace({ id: 'ws-1' })]),
+      getActiveWorkspace: jest.fn().mockResolvedValue(createWorkspace({ id: 'ws-1' }))
+    } as unknown as WorkspaceService;
+
+    const taskService = {
+      listProjects: jest.fn().mockResolvedValue({
+        items: [createProject({ id: 'proj-1', workspaceId: 'ws-1' })]
+      }),
+      listTasks: jest.fn()
+        .mockResolvedValueOnce({
+          items: [createTask({ id: 'task-page-1', projectId: 'proj-1', workspaceId: 'ws-1' })],
+          hasNextPage: true
+        })
+        .mockResolvedValueOnce({
+          items: [createTask({ id: 'task-page-2', projectId: 'proj-1', workspaceId: 'ws-1' })],
+          hasNextPage: false
+        }),
+      listWorkspaceTasks: jest.fn(),
+      getNoteLinks: jest.fn().mockResolvedValue([])
+    } as unknown as TaskService;
+
+    const plugin = {
+      getService: jest.fn(async (name: string) => {
+        switch (name) {
+          case 'workspaceService':
+            return workspaceService;
+          case 'agentRegistrationService':
+            return { initializeAllAgents: jest.fn().mockResolvedValue(undefined) };
+          case 'agentManager':
+            return {
+              getAgent: jest.fn().mockReturnValue({
+                getTaskService: () => taskService
+              })
+            };
+          default:
+            return null;
+        }
+      })
+    } as unknown as NexusPlugin;
+
+    const controller = new TaskBoardDataController(plugin);
+
+    await controller.ensureServices();
+    const snapshot = await controller.loadBoardData({});
+
+    expect(taskService.listTasks).toHaveBeenCalledTimes(2);
+    expect(taskService.listTasks).toHaveBeenNthCalledWith(1, 'proj-1', {
+      page: 0,
+      pageSize: 200,
+      includeSubtasks: true
+    });
+    expect(taskService.listTasks).toHaveBeenNthCalledWith(2, 'proj-1', {
+      page: 1,
+      pageSize: 200,
+      includeSubtasks: true
+    });
+    expect(snapshot.tasks.map(task => task.id)).toEqual(['task-page-1', 'task-page-2']);
   });
 
   it('throws when the task manager agent is unavailable', async () => {
