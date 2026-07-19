@@ -4,6 +4,7 @@
  */
 
 import type { OAuthState } from '../../services/oauth/IOAuthProvider';
+import type { VideoAspectRatio, VideoResolution } from '../../services/llm/types/VideoTypes';
 
 /**
  * Thinking effort levels - unified across all providers
@@ -40,6 +41,16 @@ export interface LLMProviderConfig {
   enabled: boolean;
   models?: { [modelId: string]: ModelConfig }; // Model-specific configurations
   ollamaModel?: string; // For Ollama: user-configured model name
+  ollamaContextLength?: number; // For Ollama: num_ctx sent per request (overrides server default); undefined = use server default
+  // Ollama speculative decoding: per-request draft_num_predict. Ollama has no arbitrary draft-model
+  // picker — drafting only speeds up models with built-in MTP tensors; this toggle no-ops otherwise.
+  ollamaSpeculativeDecoding?: boolean; // when true, send draft_num_predict; when false, send 0 (disable)
+  ollamaDraftNumPredict?: number; // draft tokens per step when speculative decoding on; undefined = 4
+  // LM Studio: load-time + per-request tuning applied automatically when chatting
+  lmstudioContextLength?: number; // context_length to load the model with; undefined = LM Studio default
+  lmstudioFlashAttention?: boolean; // flash_attention at load time; undefined = LM Studio default
+  lmstudioSpeculativeDecoding?: boolean; // UI toggle state for speculative decoding (independent of draft selection)
+  lmstudioDraftModel?: string; // draft model key for speculative decoding (per-request); empty/undefined = no draft chosen yet
   lastValidated?: number; // Unix timestamp (ms) of last successful validation
   validationHash?: string; // First 16 chars of SHA256 hash of validated API key
   // OpenRouter-specific headers (optional, but recommended for production)
@@ -68,6 +79,33 @@ export interface DefaultImageModelSettings {
   model: string;
 }
 
+export interface DefaultVideoModelSettings {
+  provider: 'google' | 'openrouter';
+  model: string;
+  aspectRatio?: VideoAspectRatio;
+  resolution?: VideoResolution;
+}
+
+export type VoiceDefaultSelectionSource = 'auto' | 'user';
+
+export interface DefaultSpeechModelSettings {
+  provider?: string;
+  model?: string;
+  voice?: string;
+  source?: VoiceDefaultSelectionSource;
+  lastAutoProvider?: string;
+  lastAutoModel?: string;
+}
+
+export interface DefaultRealtimeVoiceModelSettings {
+  provider?: string;
+  model?: string;
+  voice?: string;
+  source?: VoiceDefaultSelectionSource;
+  lastAutoProvider?: string;
+  lastAutoModel?: string;
+}
+
 /**
  * LLM provider settings
  */
@@ -79,6 +117,7 @@ export interface LLMProviderSettings {
   agentModel?: DefaultModelSettings; // Model for executePrompt (API-only, used when chat model is local)
   agentThinking?: DefaultThinkingSettings; // Thinking settings for agent model (separate from chat model)
   defaultImageModel?: DefaultImageModelSettings; // Default image generation model
+  defaultVideoModel?: DefaultVideoModelSettings; // Default video generation model
   defaultThinking?: DefaultThinkingSettings; // Default thinking settings for chat model
   defaultTemperature?: number; // Default temperature (0.0-1.0, default 0.5)
   monthlyBudget?: number; // Monthly budget in USD for LLM usage
@@ -86,6 +125,8 @@ export interface LLMProviderSettings {
   defaultPdfMode?: 'text' | 'vision'; // Default PDF processing mode
   defaultOcrModel?: DefaultModelSettings; // Default provider+model for vision OCR
   defaultTranscriptionModel?: DefaultModelSettings; // Default provider+model for audio transcription
+  defaultSpeechModel?: DefaultSpeechModelSettings; // Default provider+model/voice for read aloud
+  defaultRealtimeVoiceModel?: DefaultRealtimeVoiceModelSettings; // Default provider+model/voice for live voice
 }
 
 /**
@@ -118,6 +159,10 @@ export const DEFAULT_LLM_PROVIDER_SETTINGS: LLMProviderSettings = {
       enabled: false
     },
     groq: {
+      apiKey: '',
+      enabled: false
+    },
+    deepseek: {
       apiKey: '',
       enabled: false
     },
@@ -174,6 +219,12 @@ export const DEFAULT_LLM_PROVIDER_SETTINGS: LLMProviderSettings = {
   defaultImageModel: {
     provider: 'google',
     model: 'gemini-2.5-flash-image'
+  },
+  defaultVideoModel: {
+    provider: 'google',
+    model: 'veo-3.1-generate-preview',
+    aspectRatio: '16:9',
+    resolution: '720p'
   },
   defaultThinking: {
     enabled: false,

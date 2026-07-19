@@ -1,18 +1,39 @@
 import { App, TFile } from 'obsidian';
 import { diff_match_patch } from 'diff-match-patch';
+import { tryResolveVaultPath } from '../../../core/vaultPath';
 
 /**
  * Utility class for content operations
  */
 export class ContentOperations {
   /**
-   * Normalize file path by removing any leading slash
+   * Normalize file path by removing any leading slash.
+   *
+   * Read-only helper: reads are confined by accident (a `..` path misses the
+   * in-memory index and returns "not found" without touching disk), so reads
+   * keep the lenient leading-slash strip. Write methods use
+   * {@link resolveWritePath}, which rejects traversal/absolute/home paths.
    * @param filePath Path to normalize
    * @returns Normalized path
    */
   private static normalizePath(filePath: string): string {
     // Remove leading slash if present
     return filePath.startsWith('/') ? filePath.slice(1) : filePath;
+  }
+
+  /**
+   * Resolve a caller-supplied path for a WRITE operation, confining it to the
+   * vault. Throws on traversal/absolute/home-expansion paths so a `..` can never
+   * reach `vault.create`/`vault.modify` and escape the vault base directory.
+   * @param filePath Caller-supplied path
+   * @returns Vault-relative normalized path
+   */
+  private static resolveWritePath(filePath: string): string {
+    const result = tryResolveVaultPath(filePath);
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
+    return result.path;
   }
 
   /**
@@ -28,7 +49,7 @@ export class ContentOperations {
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {
@@ -112,8 +133,8 @@ export class ContentOperations {
    */
   static async createContent(app: App, filePath: string, content: string): Promise<TFile> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (file) {
@@ -148,12 +169,12 @@ export class ContentOperations {
     totalLength: number;
   }> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {
@@ -187,12 +208,12 @@ export class ContentOperations {
     totalLength: number;
   }> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {
@@ -231,12 +252,12 @@ export class ContentOperations {
     similarityThreshold = 0.95
   ): Promise<number> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {
@@ -305,12 +326,12 @@ export class ContentOperations {
     newContent: string
   ): Promise<number> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {
@@ -366,12 +387,12 @@ export class ContentOperations {
     similarityThreshold = 0.95
   ): Promise<number> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {
@@ -444,12 +465,12 @@ export class ContentOperations {
     wholeWord = false
   ): Promise<number> {
     try {
-      // Normalize path to remove any leading slash
-      const normalizedPath = this.normalizePath(filePath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const normalizedPath = this.resolveWritePath(filePath);
       const file = app.vault.getAbstractFileByPath(normalizedPath);
       
       if (!file) {
-        throw new Error(`File not found: "${filePath}". Use searchContent to find files by name, or storageManager.list to explore folders.`);
+        throw new Error(`File not found: "${filePath}". Use search content to find files by name, or storageManager.list to explore folders.`);
       }
       
       if (!(file instanceof TFile)) {

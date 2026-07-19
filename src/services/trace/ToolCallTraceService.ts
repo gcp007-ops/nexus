@@ -8,9 +8,30 @@ import { MemoryService } from '../../agents/memoryManager/services/MemoryService
 import { SessionContextManager } from '../SessionContextManager';
 import { WorkspaceService } from '../WorkspaceService';
 import { TraceMetadataBuilder } from '../memory/TraceMetadataBuilder';
-import { TraceContextMetadata, TraceOutcomeMetadata } from '../../database/workspace-types';
+import { TraceContextMetadata, TraceOutcomeMetadata, RetrievalCandidate, RetrievalOutcomeMetadata } from '../../database/workspace-types';
 import { formatTraceContent } from './TraceContentFormatter';
 import { splitTopLevelSegments, tokenizeWithMeta } from '../../agents/toolManager/services/ToolCliNormalizer';
+import { generateUUID } from '../../utils/uuid';
+
+/** Max candidates persisted per retrieval, to bound trace size. */
+const RETRIEVAL_CANDIDATE_CAP = 25;
+
+/** Agent names (normalized) that own retrieval (search) tools. */
+const RETRIEVAL_AGENTS = new Set(['searchmanager', 'search', 'vaultlibrarian']);
+/** Tool/mode names (normalized) that perform relevance retrieval we learn from. */
+const RETRIEVAL_MODES = new Set(['content', 'searchcontent', 'memory', 'searchmemory']);
+
+function normalizeToolToken(value: string): string {
+  return value.replace(/[-_\s]/g, '').toLowerCase();
+}
+
+/**
+ * True when (agent, mode) is a relevance-retrieval tool whose returned
+ * candidates are worth capturing for the retrieval-adapter feedback log.
+ */
+function isRetrievalTool(agent: string, mode: string): boolean {
+  return RETRIEVAL_AGENTS.has(normalizeToolToken(agent)) && RETRIEVAL_MODES.has(normalizeToolToken(mode));
+}
 
 type ToolCallParams = unknown;
 type ToolCallResponse = unknown;
@@ -103,6 +124,19 @@ export class ToolCallTraceService {
         workspaceId,
         relatedFiles
       });
+
+      // 5b. Stamp active skill(s) for cross-workspace usage attribution (§9).
+      // Best-effort; flows into metadataJson via the TraceMetadata index
+      // signature, so it's zero-migration. Wrapped so a missing/failing lookup
+      // never aborts the trace.
+      try {
+        const activeSkills = this.sessionContextManager.getActiveSkills?.(sessionId) ?? [];
+        if (activeSkills.length > 0) {
+          (traceMetadata as Record<string, unknown>).activeSkills = activeSkills;
+        }
+      } catch {
+        /* skill attribution is best-effort — never block the trace */
+      }
 
       // 6. Record the trace via MemoryService
       await this.memoryService.recordActivityTrace({
@@ -232,7 +266,17 @@ export class ToolCallTraceService {
 
     const outcome = this.buildOutcomeMetadata(options.success, options.response);
 
-    return TraceMetadataBuilder.create({
+    // Phase 0 retrieval-feedback substrate: when a direct retrieval (search)
+    // call succeeds, persist the candidate set it returned. (Batched searches
+    // are handled per-sub-result in buildUseToolsBatchMetadata.)
+    if (options.success && isRetrievalTool(options.agent, options.mode)) {
+      const retrieval = this.buildRetrievalOutcome(asRecord(options.response));
+      if (retrieval) {
+        outcome.retrieval = retrieval;
+      }
+    }
+
+    const metadata = TraceMetadataBuilder.create({
       tool: {
         id: `${options.agent}_${options.mode}`,
         agent: options.agent,
@@ -240,13 +284,10 @@ export class ToolCallTraceService {
       },
       context,
       input,
-      outcome,
-      legacy: {
-        params: options.params,
-        result: options.response,
-        relatedFiles: options.relatedFiles
-      }
+      outcome
     });
+    const batch = this.buildUseToolsBatchMetadata(options.agent, options.mode, options.params, options.response);
+    return batch ? { ...metadata, batch } : metadata;
   }
 
   private buildContextMetadata(
@@ -305,6 +346,169 @@ export class ToolCallTraceService {
             : undefined
       }
     };
+  }
+
+  private buildUseToolsBatchMetadata(
+    agent: string,
+    mode: string,
+    params: ToolCallParams,
+    response: ToolCallResponse
+  ): { results: Array<Record<string, unknown>> } | undefined {
+    if (agent !== 'toolManager' || (mode !== 'useTools' && mode !== 'useTool')) {
+      return undefined;
+    }
+
+    const paramsRecord = asRecord(params);
+    const responseRecord = asRecord(response);
+    const responseResults = this.extractUseToolsResponseResults(responseRecord);
+    const toolString = getString(paramsRecord.tool);
+    const segments = toolString ? splitTopLevelSegments(toolString) : [];
+    const resultCount = Math.max(responseResults.length, segments.length);
+
+    if (resultCount === 0) {
+      return undefined;
+    }
+
+    const results: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < resultCount; index += 1) {
+      const responseResult = responseResults[index];
+      const segmentTool = segments[index] ? this.extractSegmentTool(segments[index]) : undefined;
+      const resultAgent = getString(responseResult?.agent) || segmentTool?.agent;
+      const resultTool = getString(responseResult?.tool) || segmentTool?.tool;
+
+      if (!resultAgent || !resultTool) {
+        continue;
+      }
+
+      const compactResult: Record<string, unknown> = {
+        agent: resultAgent,
+        tool: resultTool
+      };
+
+      const success = typeof responseResult?.success === 'boolean'
+        ? responseResult.success
+        : typeof responseRecord.success === 'boolean'
+          ? responseRecord.success
+          : undefined;
+      if (success !== undefined) {
+        compactResult.success = success;
+      }
+
+      const compactParams = this.extractCompactResultParams(responseResult);
+      if (compactParams) {
+        compactResult.params = compactParams;
+      }
+
+      // Phase 0: capture the candidate set returned by a batched search tool.
+      if (success !== false && isRetrievalTool(resultAgent, resultTool)) {
+        const retrieval = this.buildRetrievalOutcome(responseResult);
+        if (retrieval) {
+          compactResult.groupId = retrieval.groupId;
+          compactResult.candidates = retrieval.candidates;
+        }
+      }
+
+      results.push(compactResult);
+    }
+
+    return results.length > 0 ? { results } : undefined;
+  }
+
+  private extractUseToolsResponseResults(response: Record<string, unknown>): Array<Record<string, unknown>> {
+    const data = asRecord(response.data);
+    if (Array.isArray(data.results)) {
+      return data.results.filter(isRecord);
+    }
+
+    if (getString(response.agent) && getString(response.tool)) {
+      return [response];
+    }
+
+    return [];
+  }
+
+  private extractSegmentTool(segment: string): { agent: string; tool: string } | undefined {
+    const tokens = tokenizeWithMeta(segment);
+    if (tokens.length < 2) {
+      return undefined;
+    }
+
+    return {
+      agent: tokens[0].value,
+      tool: tokens[1].value
+    };
+  }
+
+  private extractCompactResultParams(result: Record<string, unknown> | undefined): Record<string, string> | undefined {
+    const params = asRecord(result?.params);
+    const compact: Record<string, string> = {};
+    for (const key of ['path', 'filePath', 'query', 'name']) {
+      if (typeof params[key] === 'string') {
+        compact[key] = params[key];
+      }
+    }
+
+    return Object.keys(compact).length > 0 ? compact : undefined;
+  }
+
+  /**
+   * Build the retrieval-feedback substrate for a successful search response.
+   * Returns undefined when no candidates can be extracted (nothing to learn from).
+   */
+  private buildRetrievalOutcome(source: Record<string, unknown> | undefined): RetrievalOutcomeMetadata | undefined {
+    const candidates = this.extractRetrievalCandidates(source);
+    if (candidates.length === 0) {
+      return undefined;
+    }
+    return { groupId: generateUUID(), candidates };
+  }
+
+  /**
+   * Extract the candidate list a retrieval tool returned. Works across surfaces:
+   * note search (`filePath`), memory/state/trace search (`id`), conversation
+   * search (`pairId`). Scores are captured only when the tool exposes one.
+   */
+  private extractRetrievalCandidates(source: Record<string, unknown> | undefined): RetrievalCandidate[] {
+    if (!isRecord(source)) {
+      return [];
+    }
+
+    const items: unknown[] = [];
+    for (const key of ['results', 'matches']) {
+      if (Array.isArray(source[key])) {
+        items.push(...(source[key] as unknown[]));
+      }
+    }
+
+    const candidates: RetrievalCandidate[] = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+      if (!isRecord(item)) {
+        continue;
+      }
+      const path =
+        getString(item.filePath) ||
+        getString(item.path) ||
+        getString(item.notePath) ||
+        getString(item.pairId) ||
+        getString(item.id);
+      if (!path || seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+
+      const candidate: RetrievalCandidate = { path };
+      const score = item.score ?? item.similarity ?? item.distance;
+      if (typeof score === 'number' && Number.isFinite(score)) {
+        candidate.score = score;
+      }
+      candidates.push(candidate);
+
+      if (candidates.length >= RETRIEVAL_CANDIDATE_CAP) {
+        break;
+      }
+    }
+    return candidates;
   }
 
   /**

@@ -101,6 +101,7 @@ export class TaskBoardView extends ItemView {
       groupTasksByParent: (columnTasks) => this.groupTasksByParent(columnTasks),
       onTaskStatusDrop: (taskId, newStatus) => this.handleTaskStatusDrop(taskId, newStatus),
       onEditTask: (task) => this.openEditModal(task),
+      onDeleteTask: (task) => void this.editCoordinator.deleteTask(task),
       onFlushPendingEvent: () => this.syncCoordinator.flushPendingEvent()
     });
   }
@@ -189,7 +190,7 @@ export class TaskBoardView extends ItemView {
 
         if (attempt < maxAttempts) {
           this.renderLoading('Waiting for services to start...');
-          await new Promise(resolve => setTimeout(resolve, delayMs));
+          await new Promise(resolve => window.setTimeout(resolve, delayMs));
         } else {
           this.renderError('Task board services did not become available. Please try again later.');
         }

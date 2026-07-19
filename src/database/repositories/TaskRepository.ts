@@ -42,6 +42,7 @@ import {
   TaskNoteUnlinkedEvent
 } from '../interfaces/StorageEvents';
 import { PaginatedResult, PaginationParams } from '../../types/pagination/PaginationTypes';
+import { parseJsonColumn } from '../utils/jsonColumn';
 
 interface TaskRow extends DatabaseRow {
   id: string;
@@ -207,7 +208,7 @@ export class TaskRepository
           {
             type: 'task_updated',
             taskId: id,
-            data: eventData as TaskUpdatedEvent['data']
+            data: eventData
           }
         );
 
@@ -368,6 +369,22 @@ export class TaskRepository
     const rows = await this.sqliteCache.query<TaskRow>(
       'SELECT * FROM tasks WHERE projectId = ? AND status = ? ORDER BY updated DESC LIMIT 500',
       [projectId, status]
+    );
+    return rows.map(row => this.rowToEntity(row));
+  }
+
+  async getByIdPrefix(prefix: string): Promise<TaskMetadata[]> {
+    const compactPrefix = prefix.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (compactPrefix.length === 0) {
+      return [];
+    }
+
+    const rows = await this.sqliteCache.query<TaskRow>(
+      `SELECT * FROM tasks
+       WHERE LOWER(REPLACE(id, '-', '')) LIKE ?
+       ORDER BY created ASC
+       LIMIT 2`,
+      [`${compactPrefix}%`]
     );
     return rows.map(row => this.rowToEntity(row));
   }
@@ -599,23 +616,8 @@ export class TaskRepository
 
   protected rowToEntity(row: DatabaseRow): TaskMetadata {
     const taskRow = row as TaskRow;
-    let tags: string[] | undefined;
-    if (taskRow.tagsJson) {
-      try {
-        tags = this.parseJsonValue<string[]>(taskRow.tagsJson);
-      } catch {
-        // Skip unparseable tags
-      }
-    }
-
-    let metadata: Record<string, unknown> | undefined;
-    if (taskRow.metadataJson) {
-      try {
-        metadata = this.parseJsonValue<Record<string, unknown>>(taskRow.metadataJson);
-      } catch {
-        // Skip unparseable metadata
-      }
-    }
+    const tags = parseJsonColumn<string[]>(taskRow.tagsJson, `TaskRepository.tags#${taskRow.id}`);
+    const metadata = parseJsonColumn<Record<string, unknown>>(taskRow.metadataJson, `TaskRepository.metadata#${taskRow.id}`);
 
     return {
       id: taskRow.id,
@@ -636,11 +638,4 @@ export class TaskRepository
     };
   }
 
-  private parseJsonValue<T>(json: string): T | undefined {
-    try {
-      return JSON.parse(json) as T;
-    } catch {
-      return undefined;
-    }
-  }
 }

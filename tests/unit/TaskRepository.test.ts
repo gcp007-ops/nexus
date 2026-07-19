@@ -167,6 +167,27 @@ describe('TaskRepository', () => {
     });
   });
 
+  describe('getByIdPrefix', () => {
+    it('queries normalized ID prefixes and maps matching rows', async () => {
+      (deps.sqliteCache.query as jest.Mock).mockResolvedValue([{ ...sampleRow }]);
+
+      const result = await repo.getByIdPrefix('task-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('task-1');
+      const queryCall = (deps.sqliteCache.query as jest.Mock).mock.calls[0];
+      expect(queryCall[0]).toContain("LOWER(REPLACE(id, '-', '')) LIKE ?");
+      expect(queryCall[1]).toEqual(['task1%']);
+    });
+
+    it('returns empty results for an empty prefix', async () => {
+      const result = await repo.getByIdPrefix('---');
+
+      expect(result).toEqual([]);
+      expect(deps.sqliteCache.query).not.toHaveBeenCalled();
+    });
+  });
+
   // ============================================================================
   // create
   // ============================================================================
@@ -289,6 +310,32 @@ describe('TaskRepository', () => {
       const sqlCall = (deps.sqliteCache.run as jest.Mock).mock.calls[0];
       expect(sqlCall[0]).toContain('completedAt = ?');
       expect(sqlCall[1]).toContain(5000);
+    });
+
+    it('should persist a null completedAt to clear a stale timestamp', async () => {
+      // null is the explicit-clear sentinel and MUST flow through to both the
+      // JSONL event and SQLite (NULL). undefined, by contrast, means "no change"
+      // and is intentionally dropped — see the guards in TaskRepository.update.
+      await repo.update('task-1', { completedAt: null });
+
+      expect(deps.jsonlWriter.appendEvent).toHaveBeenCalledWith(
+        'tasks/tasks_ws-1.jsonl',
+        expect.objectContaining({
+          type: 'task_updated',
+          data: expect.objectContaining({ completedAt: null })
+        })
+      );
+
+      const sqlCall = (deps.sqliteCache.run as jest.Mock).mock.calls[0];
+      expect(sqlCall[0]).toContain('completedAt = ?');
+      expect(sqlCall[1]).toContain(null);
+    });
+
+    it('should NOT touch completedAt when it is undefined (no change)', async () => {
+      await repo.update('task-1', { title: 'Renamed' });
+
+      const sqlCall = (deps.sqliteCache.run as jest.Mock).mock.calls[0];
+      expect(sqlCall[0]).not.toContain('completedAt = ?');
     });
 
     it('should handle projectId update (for moves)', async () => {

@@ -173,6 +173,16 @@ export class MessageDisplay {
   }
 
   /**
+   * Live-update a message's reasoning ("Thinking") block during streaming.
+   */
+  updateMessageReasoning(messageId: string, reasoningText: string, isComplete: boolean): void {
+    const messageBubble = this.messageBubbles.get(messageId);
+    if (messageBubble) {
+      messageBubble.updateReasoning(reasoningText, isComplete);
+    }
+  }
+
+  /**
    * Update a specific message with new data (including tool calls) without full re-render
    */
   updateMessage(messageId: string, updatedMessage: ConversationMessage): void {
@@ -287,6 +297,26 @@ export class MessageDisplay {
   }
 
   /**
+   * Show the "still working" ticker inside the given message's bubble. Rendered
+   * in-bubble (not a detached row) so it stays visually attached to the message
+   * — after the streamed text during a tool gap, or filling an otherwise-empty
+   * bubble on a tool-first turn. The bubble re-applies it across reconciliation.
+   */
+  showWorkingIndicator(messageId: string): void {
+    const bubble = this.messageBubbles.get(messageId);
+    if (!bubble) {
+      return;
+    }
+    bubble.ensureWorkingTicker();
+    this.scrollToBottom();
+  }
+
+  /** Remove the in-bubble working ticker for the given message. */
+  hideWorkingIndicator(messageId: string): void {
+    this.messageBubbles.get(messageId)?.removeWorkingTicker();
+  }
+
+  /**
    * Insert a visual compaction divider into the message list.
    * The divider is a non-message DOM element that survives incremental
    * reconciliation (reconcile only touches messageBubbles) but is
@@ -315,21 +345,21 @@ export class MessageDisplay {
    * Reused by showCompactionDivider (live) and render (persisted from metadata).
    */
   private createCompactionDividerElement(messagesRemoved: number): HTMLElement {
-    const divider = document.createElement('div');
+    const divider = createDiv();
     divider.className = 'compaction-divider';
     divider.setAttribute('role', 'separator');
     divider.setAttribute('aria-label', `${messagesRemoved} messages compacted`);
 
-    const rule1 = document.createElement('span');
+    const rule1 = createSpan();
     rule1.className = 'compaction-divider-rule';
     divider.appendChild(rule1);
 
-    const label = document.createElement('span');
+    const label = createSpan();
     label.className = 'compaction-divider-label';
     label.textContent = 'Compacted';
     divider.appendChild(label);
 
-    const rule2 = document.createElement('span');
+    const rule2 = createSpan();
     rule2.className = 'compaction-divider-rule';
     divider.appendChild(rule2);
 

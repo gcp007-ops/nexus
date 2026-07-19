@@ -12,7 +12,18 @@ Open **Settings -> Nexus -> Providers**, choose a provider, connect it, then sel
 |------|----------|----------|
 | API key | Fastest cloud setup | Anthropic, OpenAI, Google AI, Groq, Mistral, OpenRouter, Perplexity, Requesty |
 | Local desktop runtime | Local models on your machine | Ollama, LM Studio |
-| Existing subscription or local CLI | Reuse an existing login instead of managing API keys | Claude Code, Gemini CLI, GitHub Copilot, Codex via ChatGPT |
+| Existing subscription or local CLI | Reuse an existing login instead of managing API keys | Claude Code, Antigravity CLI, GitHub Copilot, Codex via ChatGPT |
+
+---
+
+## What Provider Setup Unlocks
+
+- **Standard text chat**: any configured chat provider works in the chat model picker
+- **Live voice**: configure OpenAI, then choose the live voice provider/model in **Settings &rarr; Nexus &rarr; Defaults &rarr; Voice**. Only OpenAI realtime/WebRTC is wired in the current build
+- **Read aloud and `generateAudio`**: configure a speech-capable backend such as OpenAI, ElevenLabs, Google AI, Mistral, or OpenRouter, then choose defaults in **Settings &rarr; Nexus &rarr; Defaults &rarr; Voice**. This is a different surface from live voice and is not OpenAI-only
+- **`generateVideo`**: configure Google AI or OpenRouter, then choose defaults in **Settings &rarr; Nexus &rarr; Defaults &rarr; Video**
+
+If you want ElevenLabs voices, sound effects, or music generation, enable the ElevenLabs app in **Settings &rarr; Nexus &rarr; Apps** and see [Apps](apps.md).
 
 ---
 
@@ -27,6 +38,10 @@ For Anthropic, OpenAI, Google AI, Groq, Mistral, OpenRouter, Perplexity, and Req
 5. Open Nexus chat and select one of that provider's models
 
 If you want the simplest setup, an API key provider is usually the fastest path.
+
+### Secure key storage (optional)
+
+By default, API keys live in the plugin's settings file (`data.json`), which syncs with your vault. To keep keys out of synced files, enable **Store API keys in secure storage** in the Providers tab (requires Obsidian 1.11.4+). Keys (including OAuth tokens and app credentials) move into Obsidian's device-local secure storage and are stripped from `data.json` — you will need to re-enter them once on each device. Turning the toggle off writes keys back into `data.json`.
 
 ---
 
@@ -46,6 +61,8 @@ If you want the simplest setup, an API key provider is usually the fastest path.
 3. In Nexus, open **Settings -> Providers -> LM Studio**
 4. Confirm the local endpoint and choose a model in chat
 
+Both local runtimes support **tool calling**, so a capable local model can drive agentic chats (Ollama also auto-discovers every model you have installed). For reasoning models, the model's thinking streams live into a collapsible **Thinking** block in chat and is available in the tool-inspection view.
+
 ---
 
 ## Claude Code
@@ -61,17 +78,17 @@ Messages route through your local Claude CLI using your existing subscription. D
 
 ---
 
-## Gemini CLI
+## Antigravity CLI (Google)
 
-Use this if you already have [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and signed in.
+Run Google's Gemini models locally through the **Antigravity CLI** (`agy`) using your existing Google account — no API key needed. (This replaces the older Gemini CLI runtime; your existing settings carry over.)
 
-1. Install Gemini CLI: `npm install -g @google/gemini-cli`
-2. Run `gemini` in your terminal and complete the Google sign-in flow
+1. Install the Antigravity CLI (`agy`)
+2. Run `agy` once in your terminal and complete the Google browser sign-in (there is no `agy auth` command)
 3. In Nexus, go to **Settings -> Providers -> Google AI**
-4. Wait for the **Gemini CLI** section to show **Connected**
-5. In chat settings, select a Gemini CLI model
+4. Wait for the **Antigravity CLI** section to show **Connected**
+5. In chat settings, select an Antigravity (Gemini) model and set the thinking level with the effort slider
 
-Messages route through the local Gemini CLI using your existing Google account. Desktop only.
+Messages route through the local Antigravity CLI using your existing Google account. This runtime is **text-completion only — it does not support tool/function calling**, so choose a tool-capable provider for agentic chats. Desktop only.
 
 ---
 

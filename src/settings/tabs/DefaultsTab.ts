@@ -6,8 +6,13 @@
  */
 
 import { App, Notice, Platform, Setting } from 'obsidian';
-import { LLMProviderSettings } from '../../types/llm/ProviderTypes';
+import {
+  DefaultRealtimeVoiceModelSettings,
+  DefaultSpeechModelSettings,
+  LLMProviderSettings
+} from '../../types/llm/ProviderTypes';
 import { Settings } from '../../settings';
+import { DEFAULT_STORAGE_SETTINGS } from '../../types/plugin/PluginTypes';
 import { WorkspaceService } from '../../services/WorkspaceService';
 import { CustomPromptStorageService } from '../../agents/promptManager/services/CustomPromptStorageService';
 import { ChatSettingsRenderer, ChatSettings } from '../../components/shared/ChatSettingsRenderer';
@@ -17,6 +22,34 @@ import {
   normalizeIngestSelection,
 } from '../../agents/ingestManager/tools/services/IngestCapabilityService';
 import { renderIngestModelDropdowns } from '../../components/shared/IngestModelDropdownRenderer';
+import { AppManager } from '../../services/apps/AppManager';
+import { ProviderUtils } from '../../ui/chat/utils/ProviderUtils';
+import {
+  buildSpeechProviderAvailability,
+  getSpeechModel,
+  resolveDefaultSpeechSelection,
+  type SpeechProvider,
+  SpeechAppCapabilityStates,
+  SpeechModelDeclaration,
+  SpeechProviderAvailability,
+} from '../../services/llm/types/SpeechTypes';
+import {
+  buildRealtimeVoiceProviderAvailability,
+  getRealtimeVoiceModel,
+  RealtimeAppCapabilityStates,
+  RealtimeVoiceModelDeclaration,
+  RealtimeVoiceProviderAvailability,
+  resolveDefaultRealtimeVoiceSelection,
+} from '../../services/llm/types/RealtimeVoiceTypes';
+import { VoiceCatalogService } from '../../services/readAloud/VoiceCatalogService';
+import {
+  buildVideoProviderAvailability,
+  getVideoModel,
+  type VideoAspectRatio,
+  type VideoModelDeclaration,
+  type VideoResolution,
+} from '../../services/llm/types/VideoTypes';
+import { SpeechModelCatalogService } from '../../services/readAloud/SpeechModelCatalogService';
 
 export interface DefaultsTabServices {
   app: App;
@@ -24,6 +57,7 @@ export interface DefaultsTabServices {
   llmProviderSettings?: LLMProviderSettings;
   workspaceService?: WorkspaceService;
   customPromptStorage?: CustomPromptStorageService;
+  appManager?: AppManager;
 }
 
 export class DefaultsTab {
@@ -189,6 +223,12 @@ export class DefaultsTab {
       llmProviderSettings: this.services.llmProviderSettings,
       initialSettings: this.getCurrentSettings(),
       options: { workspaces, prompts },
+      showVoiceSection: false,
+      showTranscriptionSection: false,
+      renderAfterImageSection: (parent) => {
+        this.renderVideoSection(parent);
+        void this.renderVoiceSection(parent);
+      },
       callbacks: {
         onSettingsChange: (settings) => {
           void this.saveSettings(settings);
@@ -225,6 +265,765 @@ export class DefaultsTab {
   }
 
   /**
+   * Render text-to-video defaults.
+   */
+  private renderVideoSection(parentEl: HTMLElement): void {
+    const llmSettings = this.services.llmProviderSettings;
+    if (!llmSettings) return;
+
+    const section = createDiv({ cls: 'csr-section nexus-video-section' });
+    section.createDiv({ cls: 'csr-section-header', text: 'Video generation' });
+    const content = section.createDiv({ cls: 'csr-section-content' });
+    content.createDiv({
+      cls: 'csr-section-desc',
+      text: 'Defaults for generated MP4 files created by PromptManager video tools.'
+    });
+    parentEl.appendChild(section);
+
+    let modelDropdown: HTMLSelectElement | null = null;
+    let aspectRatioDropdown: HTMLSelectElement | null = null;
+    let resolutionDropdown: HTMLSelectElement | null = null;
+
+    const getAvailability = () => buildVideoProviderAvailability(llmSettings);
+    const getSelection = () => {
+      const configured = llmSettings.defaultVideoModel;
+      const availability = getAvailability();
+      const provider = configured?.provider || availability.find(item => item.enabled && item.configured && item.models.length > 0)?.provider;
+      const providerAvailability = availability.find(item => item.provider === provider);
+      const model = configured?.model && providerAvailability?.models.some(candidate => candidate.id === configured.model)
+        ? configured.model
+        : providerAvailability?.models[0]?.id;
+      const modelDeclaration = getVideoModel(provider, model) || providerAvailability?.models.find(candidate => candidate.id === model);
+      return {
+        provider,
+        model,
+        modelDeclaration,
+        aspectRatio: configured?.aspectRatio || modelDeclaration?.defaultAspectRatio,
+        resolution: configured?.resolution || modelDeclaration?.defaultResolution,
+      };
+    };
+
+    const saveVideoDefault = async (
+      model: VideoModelDeclaration,
+      aspectRatio?: VideoAspectRatio,
+      resolution?: VideoResolution
+    ): Promise<void> => {
+      llmSettings.defaultVideoModel = {
+        provider: model.provider,
+        model: model.id,
+        aspectRatio: aspectRatio || model.defaultAspectRatio,
+        resolution: resolution || model.defaultResolution,
+      };
+      await this.services.settings.saveSettings();
+    };
+
+    const updateOptionDropdowns = (): void => {
+      const selection = getSelection();
+      const model = selection.modelDeclaration;
+
+      if (aspectRatioDropdown) {
+        aspectRatioDropdown.empty();
+        if (!model) {
+          aspectRatioDropdown.createEl('option', { value: '', text: 'Select a video model first' });
+          aspectRatioDropdown.disabled = true;
+        } else {
+          model.aspectRatios.forEach(value => {
+            aspectRatioDropdown?.createEl('option', { value, text: value });
+          });
+          aspectRatioDropdown.disabled = false;
+          aspectRatioDropdown.value = selection.aspectRatio || model.defaultAspectRatio;
+        }
+      }
+
+      if (resolutionDropdown) {
+        resolutionDropdown.empty();
+        if (!model) {
+          resolutionDropdown.createEl('option', { value: '', text: 'Select a video model first' });
+          resolutionDropdown.disabled = true;
+        } else {
+          model.resolutions.forEach(value => {
+            resolutionDropdown?.createEl('option', { value, text: value });
+          });
+          resolutionDropdown.disabled = false;
+          resolutionDropdown.value = selection.resolution || model.defaultResolution;
+        }
+      }
+    };
+
+    const updateModelOptions = (): void => {
+      if (!modelDropdown) return;
+      const selection = getSelection();
+      const providerAvailability = getAvailability().find(item => item.provider === selection.provider);
+      const models = providerAvailability?.models ?? [];
+
+      modelDropdown.empty();
+      if (!selection.provider || models.length === 0) {
+        modelDropdown.createEl('option', {
+          value: '',
+          text: 'Select a video provider first'
+        });
+        modelDropdown.disabled = true;
+        updateOptionDropdowns();
+        return;
+      }
+
+      models.forEach(model => {
+        modelDropdown?.createEl('option', { value: model.id, text: model.name });
+      });
+
+      modelDropdown.disabled = providerAvailability?.enabled !== true || providerAvailability.configured !== true;
+      modelDropdown.value = selection.model || models[0]?.id || '';
+      updateOptionDropdowns();
+    };
+
+    new Setting(content)
+      .setName('Video provider')
+      .setDesc('Used by the generateVideo tool.')
+      .addDropdown(dropdown => {
+        const availability = getAvailability();
+        const selection = getSelection();
+        const usableProviders = availability.filter(item => item.enabled && item.configured && item.models.length > 0);
+
+        if (usableProviders.length === 0 && !selection.provider) {
+          dropdown.addOption('', 'No video providers available');
+          dropdown.setDisabled(true);
+          return;
+        }
+
+        usableProviders.forEach(provider => {
+          dropdown.addOption(provider.provider, this.getProviderDisplayName(provider.provider));
+        });
+
+        if (selection.provider && !usableProviders.some(provider => provider.provider === selection.provider)) {
+          dropdown.addOption(selection.provider, `${this.getProviderDisplayName(selection.provider)} (unavailable)`);
+        }
+
+        dropdown.setValue(selection.provider || usableProviders[0]?.provider || '');
+        dropdown.onChange((provider) => {
+          const providerAvailability = getAvailability().find(item => item.provider === provider);
+          const model = providerAvailability?.models[0];
+          if (model) {
+            void saveVideoDefault(model).then(updateModelOptions);
+          }
+        });
+      });
+
+    new Setting(content)
+      .setName('Video model')
+      .addDropdown(dropdown => {
+        modelDropdown = dropdown.selectEl;
+        updateModelOptions();
+        dropdown.onChange((modelId) => {
+          const selection = getSelection();
+          const model = getVideoModel(selection.provider, modelId);
+          if (model) {
+            void saveVideoDefault(model, selection.aspectRatio, selection.resolution).then(updateOptionDropdowns);
+          }
+        });
+      });
+
+    new Setting(content)
+      .setName('Aspect ratio')
+      .addDropdown(dropdown => {
+        aspectRatioDropdown = dropdown.selectEl;
+        updateOptionDropdowns();
+        dropdown.onChange((aspectRatio) => {
+          const selection = getSelection();
+          if (selection.modelDeclaration) {
+            void saveVideoDefault(selection.modelDeclaration, aspectRatio as VideoAspectRatio, selection.resolution);
+          }
+        });
+      });
+
+    new Setting(content)
+      .setName('Resolution')
+      .addDropdown(dropdown => {
+        resolutionDropdown = dropdown.selectEl;
+        updateOptionDropdowns();
+        dropdown.onChange((resolution) => {
+          const selection = getSelection();
+          if (selection.modelDeclaration) {
+            void saveVideoDefault(selection.modelDeclaration, selection.aspectRatio, resolution as VideoResolution);
+          }
+        });
+      });
+  }
+
+  /**
+   * Render voice defaults: transcription, read-aloud speech, and realtime live voice.
+   */
+  private async renderVoiceSection(parentEl: HTMLElement): Promise<void> {
+    const llmSettings = this.services.llmProviderSettings;
+    if (!llmSettings) return;
+
+    const section = createDiv({ cls: 'csr-section nexus-voice-section' });
+    const header = section.createDiv({ cls: 'csr-section-header' });
+    header.setText('Voice');
+    const content = section.createDiv({ cls: 'csr-section-content' });
+    content.createDiv({
+      cls: 'setting-item-description',
+      text: 'Loading voice models...'
+    });
+    parentEl.appendChild(section);
+
+    const providerManager = new LLMProviderManager(llmSettings, this.services.app.vault);
+    const capabilities = await getIngestCapabilityOptions(providerManager).catch(() => undefined);
+
+    if (capabilities) {
+      const normalizedTranscriptionSelection = normalizeIngestSelection(
+        capabilities.transcriptionProviders,
+        llmSettings.defaultTranscriptionModel?.provider,
+        llmSettings.defaultTranscriptionModel?.model
+      );
+
+      if (normalizedTranscriptionSelection.provider && normalizedTranscriptionSelection.model) {
+        llmSettings.defaultTranscriptionModel = {
+          provider: normalizedTranscriptionSelection.provider,
+          model: normalizedTranscriptionSelection.model
+        };
+      }
+    }
+
+    content.empty();
+    content.createDiv({
+      cls: 'csr-section-desc nexus-voice-section-desc',
+      text: 'Defaults for microphone input, note read-aloud, and future live voice chat.'
+    });
+
+    let updateVoiceWarning = (): void => undefined;
+
+    this.renderVoiceGroupLabel(content, 'Voice input');
+    if (capabilities) {
+      renderIngestModelDropdowns(content, {
+        labelPrefix: 'Transcription',
+        description: 'Used for chat microphone input and audio-file transcription.',
+        providers: capabilities.transcriptionProviders,
+        getSelection: () => llmSettings.defaultTranscriptionModel,
+        onChange: async (provider, model) => {
+          llmSettings.defaultTranscriptionModel = provider && model
+            ? { provider, model }
+            : undefined;
+          await this.services.settings.saveSettings();
+        },
+        providerSettingName: 'Transcription provider',
+        modelSettingName: 'Transcription model'
+      });
+    } else {
+      content.createDiv({
+        cls: 'setting-item-description',
+        text: 'Transcription models are not available.'
+      });
+    }
+
+    this.renderVoiceGroupLabel(content, 'Read aloud');
+    this.renderSpeechSettings(content, llmSettings, () => updateVoiceWarning());
+    this.renderAudioSaveSettings(content);
+
+    this.renderVoiceGroupLabel(content, 'Live voice');
+    this.renderRealtimeVoiceSettings(content, llmSettings, () => updateVoiceWarning());
+
+    const warningEl = content.createDiv({ cls: 'nexus-voice-warning is-hidden' });
+    updateVoiceWarning = (): void => {
+      const messages = this.getVoiceWarningMessages(llmSettings);
+      warningEl.empty();
+      warningEl.toggleClass('is-hidden', messages.length === 0);
+      messages.forEach(message => {
+        warningEl.createDiv({ text: message });
+      });
+    };
+    updateVoiceWarning();
+  }
+
+  private renderVoiceGroupLabel(parentEl: HTMLElement, label: string): void {
+    parentEl.createDiv({ cls: 'nexus-voice-group-label', text: label });
+  }
+
+  /**
+   * Render the "Save as audio" subfolder field. Controls the subfolder under
+   * the storage root where saved read-aloud audio is written. The value is a
+   * plain folder NAME (not a path) joined under the configured storage root by
+   * the backend, so changing the storage root relocates saved audio. Never a
+   * hardcoded root.
+   */
+  private renderAudioSaveSettings(parentEl: HTMLElement): void {
+    const pluginSettings = this.services.settings.settings;
+    const defaultSubfolder = DEFAULT_STORAGE_SETTINGS.audioSubfolder ?? 'audio';
+
+    new Setting(parentEl)
+      .setName('Saved audio subfolder')
+      .setDesc('Folder name, under your storage root, where saved read-aloud audio (mp3/wav) is written.')
+      .addText(text => {
+        const current = pluginSettings.storage?.audioSubfolder ?? defaultSubfolder;
+        text
+          .setPlaceholder(defaultSubfolder)
+          .setValue(current)
+          .onChange(async (value) => {
+            const sanitized = this.sanitizeSubfolderName(value);
+            const storage = pluginSettings.storage ?? { ...DEFAULT_STORAGE_SETTINGS };
+            storage.audioSubfolder = sanitized || defaultSubfolder;
+            pluginSettings.storage = storage;
+            await this.services.settings.saveSettings();
+          });
+      });
+  }
+
+  /**
+   * Reduce free-text input to a safe single folder NAME: trim, collapse path
+   * separators and leading dots so the value can never escape the storage root
+   * or become a nested path. Returns '' for empty/invalid input so the caller
+   * can fall back to the default.
+   */
+  private sanitizeSubfolderName(value: string): string {
+    return value
+      .trim()
+      .replace(/[\\/]+/g, '')
+      .replace(/^\.+/, '')
+      .trim();
+  }
+
+  private renderSpeechSettings(
+    parentEl: HTMLElement,
+    llmSettings: LLMProviderSettings,
+    onSelectionChange: () => void
+  ): void {
+    let modelDropdown: HTMLSelectElement | null = null;
+    let voiceDropdown: HTMLSelectElement | null = null;
+    let modelRequestId = 0;
+    let voiceRequestId = 0;
+    const voiceCatalogService = new VoiceCatalogService();
+    const speechModelCatalogService = new SpeechModelCatalogService();
+
+    const getAvailability = (): SpeechProviderAvailability[] =>
+      buildSpeechProviderAvailability(llmSettings, this.getSpeechAppStates());
+
+    const getSelection = (): DefaultSpeechModelSettings => {
+      const configured = llmSettings.defaultSpeechModel;
+      if (configured?.source === 'user' || configured?.provider || configured?.model) {
+        return configured;
+      }
+
+      const resolved = resolveDefaultSpeechSelection(llmSettings, getAvailability());
+      return {
+        provider: resolved.provider,
+        model: resolved.model,
+        voice: resolved.voice,
+        source: 'auto'
+      };
+    };
+
+    const updateVoiceOptions = async (): Promise<void> => {
+      if (!voiceDropdown) return;
+      const requestId = ++voiceRequestId;
+      const selection = getSelection();
+
+      voiceDropdown.empty();
+      if (selection.provider === 'elevenlabs') {
+        voiceDropdown.createEl('option', { value: '', text: 'Loading voices...' });
+        voiceDropdown.disabled = true;
+      }
+
+      const voices = await voiceCatalogService.getVoices(selection.provider, selection.model, {
+        llmSettings,
+        appsSettings: this.services.appManager?.getAppsSettings() ?? this.services.settings.settings.apps
+      }).catch(() => []);
+
+      if (requestId !== voiceRequestId || !voiceDropdown) {
+        return;
+      }
+
+      voiceDropdown.empty();
+      voiceDropdown.createEl('option', { value: '', text: 'Provider default' });
+      voices.forEach(voice => {
+        voiceDropdown?.createEl('option', { value: voice.id, text: voice.name });
+      });
+
+      if (selection.voice && !voices.some(voice => voice.id === selection.voice)) {
+        voiceDropdown.createEl('option', {
+          value: selection.voice,
+          text: `${selection.voice} (unavailable)`
+        });
+      }
+
+      voiceDropdown.disabled = !selection.provider || !selection.model;
+      voiceDropdown.value = selection.voice || '';
+    };
+
+    const updateModelOptions = async (): Promise<void> => {
+      if (!modelDropdown) return;
+      const requestId = ++modelRequestId;
+      const selection = getSelection();
+      const availability = getAvailability();
+      const providerAvailability = availability.find(item => item.provider === selection.provider);
+      const providerUsable = providerAvailability?.enabled === true && providerAvailability.configured === true;
+
+      modelDropdown.empty();
+      if (!selection.provider) {
+        modelDropdown.createEl('option', {
+          value: '',
+          text: 'Select a speech provider first'
+        });
+        modelDropdown.disabled = true;
+        void updateVoiceOptions();
+        return;
+      }
+
+      if (selection.provider === 'openrouter') {
+        modelDropdown.createEl('option', { value: '', text: 'Loading OpenRouter speech models...' });
+        modelDropdown.disabled = true;
+      }
+
+      const models = await speechModelCatalogService.getModels(
+        selection.provider as SpeechProvider,
+        llmSettings
+      ).catch(() => providerAvailability?.models ?? []);
+
+      if (requestId !== modelRequestId || !modelDropdown) {
+        return;
+      }
+
+      modelDropdown.empty();
+      if (models.length === 0) {
+        modelDropdown.createEl('option', {
+          value: '',
+          text: 'No speech models available'
+        });
+        modelDropdown.disabled = true;
+        void updateVoiceOptions();
+        return;
+      }
+
+      models.forEach(model => {
+        modelDropdown?.createEl('option', { value: model.id, text: model.name });
+      });
+
+      if (selection.model && !models.some(model => model.id === selection.model)) {
+        modelDropdown.createEl('option', {
+          value: selection.model,
+          text: `${selection.model} (unavailable)`
+        });
+      }
+
+      const selectedModelExists = models.some(model => model.id === selection.model);
+      modelDropdown.disabled = !providerUsable;
+      modelDropdown.value = selection.model && selectedModelExists
+        ? selection.model
+        : models[0]?.id || '';
+      void updateVoiceOptions();
+    };
+
+    new Setting(parentEl)
+      .setName('Speech provider')
+      .setDesc('Normal text-to-speech models for reading notes and selected text.')
+      .addDropdown(dropdown => {
+        const availability = getAvailability();
+        const selection = getSelection();
+        const usableProviders = availability.filter(item => item.enabled && item.configured && (item.models?.length ?? 0) > 0);
+
+        if (usableProviders.length === 0 && !selection.provider) {
+          dropdown.addOption('', 'No speech providers available');
+          dropdown.setDisabled(true);
+          return;
+        }
+
+        usableProviders.forEach(provider => {
+          dropdown.addOption(provider.provider, this.getProviderDisplayName(provider.provider));
+        });
+
+        if (selection.provider && !usableProviders.some(provider => provider.provider === selection.provider)) {
+          dropdown.addOption(
+            selection.provider,
+            `${this.getProviderDisplayName(selection.provider)} (unavailable)`
+          );
+        }
+
+        dropdown.setValue(selection.provider || usableProviders[0]?.provider || '');
+        dropdown.onChange((provider) => {
+          const providerAvailability = getAvailability().find(item => item.provider === provider);
+          const model = providerAvailability?.models?.[0];
+          llmSettings.defaultSpeechModel = provider && model
+            ? this.buildSpeechDefault(model, undefined)
+            : undefined;
+          void this.services.settings.saveSettings().then(() => {
+            void updateModelOptions();
+            onSelectionChange();
+          });
+        });
+      });
+
+    new Setting(parentEl)
+      .setName('Speech model')
+      .addDropdown(dropdown => {
+        modelDropdown = dropdown.selectEl;
+        void updateModelOptions();
+        dropdown.onChange((modelId) => {
+          const selection = getSelection();
+          const model = getSpeechModel(selection.provider, modelId);
+          if (model || (selection.provider === 'openrouter' && modelId)) {
+            llmSettings.defaultSpeechModel = model
+              ? this.buildSpeechDefault(model, selection.voice)
+              : {
+                provider: selection.provider,
+                model: modelId,
+                voice: selection.voice,
+                source: 'user'
+              };
+          }
+          void this.services.settings.saveSettings().then(() => {
+            void updateVoiceOptions();
+            onSelectionChange();
+          });
+        });
+      });
+
+    new Setting(parentEl)
+      .setName('Speech voice')
+      .addDropdown(dropdown => {
+        voiceDropdown = dropdown.selectEl;
+        void updateVoiceOptions();
+        dropdown.onChange((voice) => {
+          const selection = getSelection();
+          if (selection.provider && selection.model) {
+            llmSettings.defaultSpeechModel = {
+              provider: selection.provider,
+              model: selection.model,
+              voice: voice || undefined,
+              source: 'user'
+            };
+          }
+          void this.services.settings.saveSettings().then(onSelectionChange);
+        });
+      });
+  }
+
+  private renderRealtimeVoiceSettings(
+    parentEl: HTMLElement,
+    llmSettings: LLMProviderSettings,
+    onSelectionChange: () => void
+  ): void {
+    let modelDropdown: HTMLSelectElement | null = null;
+    let voiceDropdown: HTMLSelectElement | null = null;
+
+    const getAvailability = (): RealtimeVoiceProviderAvailability[] =>
+      buildRealtimeVoiceProviderAvailability(llmSettings, this.getRealtimeAppStates());
+
+    const getSelection = (): DefaultRealtimeVoiceModelSettings => {
+      const configured = llmSettings.defaultRealtimeVoiceModel;
+      if (configured?.source === 'user' || configured?.provider || configured?.model) {
+        return configured;
+      }
+
+      const resolved = resolveDefaultRealtimeVoiceSelection(llmSettings, getAvailability());
+      return {
+        provider: resolved.provider,
+        model: resolved.model,
+        voice: resolved.voice,
+        source: 'auto'
+      };
+    };
+
+    const updateVoiceOptions = (): void => {
+      if (!voiceDropdown) return;
+      const selection = getSelection();
+      const model = getRealtimeVoiceModel(selection.provider, selection.model);
+      const voices = model?.voices ?? [];
+
+      voiceDropdown.empty();
+      voiceDropdown.createEl('option', { value: '', text: 'Provider default' });
+      voices.forEach(voice => {
+        voiceDropdown?.createEl('option', { value: voice.id, text: voice.name });
+      });
+
+      if (selection.voice && !voices.some(voice => voice.id === selection.voice)) {
+        voiceDropdown.createEl('option', {
+          value: selection.voice,
+          text: `${selection.voice} (unavailable)`
+        });
+      }
+
+      voiceDropdown.disabled = !selection.provider || !selection.model;
+      voiceDropdown.value = selection.voice || '';
+    };
+
+    const updateModelOptions = (): void => {
+      if (!modelDropdown) return;
+      const selection = getSelection();
+      const availability = getAvailability();
+      const providerAvailability = availability.find(item => item.provider === selection.provider);
+      const providerUsable = providerAvailability?.enabled === true && providerAvailability.configured === true;
+      const models = providerAvailability?.models ?? [];
+
+      modelDropdown.empty();
+      if (!selection.provider || models.length === 0) {
+        modelDropdown.createEl('option', {
+          value: '',
+          text: 'Select a live voice provider first'
+        });
+        modelDropdown.disabled = true;
+        updateVoiceOptions();
+        return;
+      }
+
+      models.forEach(model => {
+        modelDropdown?.createEl('option', { value: model.id, text: model.name });
+      });
+
+      if (selection.model && !models.some(model => model.id === selection.model)) {
+        modelDropdown.createEl('option', {
+          value: selection.model,
+          text: `${selection.model} (unavailable)`
+        });
+      }
+
+      const selectedModelExists = models.some(model => model.id === selection.model);
+      modelDropdown.disabled = !providerUsable;
+      modelDropdown.value = selection.model && selectedModelExists
+        ? selection.model
+        : models[0]?.id || '';
+      updateVoiceOptions();
+    };
+
+    new Setting(parentEl)
+      .setName('Live voice provider')
+      .setDesc('Only true realtime voice providers appear here.')
+      .addDropdown(dropdown => {
+        const availability = getAvailability();
+        const selection = getSelection();
+        const usableProviders = availability.filter(item => item.enabled && item.configured && (item.models?.length ?? 0) > 0);
+
+        if (usableProviders.length === 0 && !selection.provider) {
+          dropdown.addOption('', 'No live voice providers available');
+          dropdown.setDisabled(true);
+          return;
+        }
+
+        usableProviders.forEach(provider => {
+          dropdown.addOption(provider.provider, this.getProviderDisplayName(provider.provider));
+        });
+
+        if (selection.provider && !usableProviders.some(provider => provider.provider === selection.provider)) {
+          dropdown.addOption(
+            selection.provider,
+            `${this.getProviderDisplayName(selection.provider)} (unavailable)`
+          );
+        }
+
+        dropdown.setValue(selection.provider || usableProviders[0]?.provider || '');
+        dropdown.onChange((provider) => {
+          const providerAvailability = getAvailability().find(item => item.provider === provider);
+          const model = providerAvailability?.models?.[0];
+          llmSettings.defaultRealtimeVoiceModel = provider && model
+            ? this.buildRealtimeDefault(model, undefined)
+            : undefined;
+          void this.services.settings.saveSettings().then(() => {
+            updateModelOptions();
+            onSelectionChange();
+          });
+        });
+      });
+
+    new Setting(parentEl)
+      .setName('Live voice model')
+      .addDropdown(dropdown => {
+        modelDropdown = dropdown.selectEl;
+        updateModelOptions();
+        dropdown.onChange((modelId) => {
+          const selection = getSelection();
+          const model = getRealtimeVoiceModel(selection.provider, modelId);
+          if (model) {
+            llmSettings.defaultRealtimeVoiceModel = this.buildRealtimeDefault(model, selection.voice);
+          }
+          void this.services.settings.saveSettings().then(() => {
+            updateVoiceOptions();
+            onSelectionChange();
+          });
+        });
+      });
+
+    new Setting(parentEl)
+      .setName('Live voice')
+      .addDropdown(dropdown => {
+        voiceDropdown = dropdown.selectEl;
+        updateVoiceOptions();
+        dropdown.onChange((voice) => {
+          const selection = getSelection();
+          if (selection.provider && selection.model) {
+            llmSettings.defaultRealtimeVoiceModel = {
+              provider: selection.provider,
+              model: selection.model,
+              voice: voice || undefined,
+              source: 'user'
+            };
+          }
+          void this.services.settings.saveSettings().then(onSelectionChange);
+        });
+      });
+  }
+
+  private buildSpeechDefault(
+    model: SpeechModelDeclaration,
+    voice: string | undefined
+  ): DefaultSpeechModelSettings {
+    return {
+      provider: model.provider,
+      model: model.id,
+      voice: voice || model.defaultVoice,
+      source: 'user'
+    };
+  }
+
+  private buildRealtimeDefault(
+    model: RealtimeVoiceModelDeclaration,
+    voice: string | undefined
+  ): DefaultRealtimeVoiceModelSettings {
+    return {
+      provider: model.provider,
+      model: model.id,
+      voice: voice || model.defaultVoice,
+      source: 'user'
+    };
+  }
+
+  private getSpeechAppStates(): SpeechAppCapabilityStates {
+    const elevenLabs = this.services.appManager?.getAvailableApps().find(app => app.id === 'elevenlabs');
+    return elevenLabs
+      ? { elevenlabs: { enabled: elevenLabs.enabled, configured: elevenLabs.configured } }
+      : {};
+  }
+
+  private getRealtimeAppStates(): RealtimeAppCapabilityStates {
+    const elevenLabs = this.services.appManager?.getAvailableApps().find(app => app.id === 'elevenlabs');
+    return elevenLabs
+      ? { elevenlabs: { enabled: elevenLabs.enabled, configured: elevenLabs.configured } }
+      : {};
+  }
+
+  private getVoiceWarningMessages(llmSettings: LLMProviderSettings): string[] {
+    const messages: string[] = [];
+    const speechSelection = resolveDefaultSpeechSelection(
+      llmSettings,
+      buildSpeechProviderAvailability(llmSettings, this.getSpeechAppStates())
+    );
+    const realtimeSelection = resolveDefaultRealtimeVoiceSelection(
+      llmSettings,
+      buildRealtimeVoiceProviderAvailability(llmSettings, this.getRealtimeAppStates())
+    );
+
+    if (speechSelection.status === 'invalid' && speechSelection.reason) {
+      messages.push(speechSelection.reason);
+    }
+
+    if (realtimeSelection.status === 'invalid' && realtimeSelection.reason) {
+      messages.push(realtimeSelection.reason);
+    }
+
+    return messages;
+  }
+
+  private getProviderDisplayName(providerId: string): string {
+    return ProviderUtils.getProviderDisplayName(providerId);
+  }
+
+  /**
    * Render the ingestion defaults section
    */
   private async renderIngestionSection(parentEl: HTMLElement): Promise<void> {
@@ -256,7 +1055,7 @@ export class DefaultsTab {
 
     new Setting(content)
       .setName('Enable ingestion')
-      .setDesc('Show PDF/audio ingestion settings and enable drag-and-drop ingestion in chat.')
+      .setDesc('Show PDF ingestion settings and enable drag-and-drop ingestion in chat.')
       .addToggle(toggle => {
         toggle
           .setValue(isEnabled)
@@ -273,7 +1072,7 @@ export class DefaultsTab {
 
     new Setting(content)
       .setName('Auto-convert new files')
-      .setDesc('When supported PDF or audio files are added to the vault, automatically convert them to sibling Markdown files using the defaults below.')
+      .setDesc('When supported PDF files are added to the vault, automatically convert them to sibling Markdown files using the defaults below.')
       .addToggle(toggle => {
         toggle
           .setValue(pluginSettings.autoIngestion === true)

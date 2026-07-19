@@ -21,7 +21,7 @@ import { dirname, basename } from 'path';
  * @param vaultName - The original vault name to sanitize
  * @returns A sanitized version of the vault name suitable for use in identifiers
  */
-const sanitizeVaultName = (vaultName) => {
+const sanitizeVaultName = (vaultName: string) => {
     if (!vaultName) return '';
     
     return vaultName
@@ -150,7 +150,7 @@ function connectWithRetry() {
 
             retryCount++;
             const retryDelay = calculateBackoff(retryCount);
-            setTimeout(connectWithRetry, retryDelay);
+            global.setTimeout(connectWithRetry, retryDelay);
         });
 
         socket.on('close', () => {
@@ -158,7 +158,7 @@ function connectWithRetry() {
             process.stdin.unpipe(socket);
             if (hasConnected) {
                 retryCount = 0;
-                setTimeout(connectWithRetry, 1000);
+                global.setTimeout(connectWithRetry, 1000);
             }
             // If we never connected, the error handler will schedule a retry
         });

@@ -45,11 +45,6 @@
         linear-gradient(160deg, var(--background-primary) 0%, var(--background-primary-alt) 100%);
 }
 
-body.theme-light .chat-textarea {
-    background: var(--background-primary);
-    border-color: rgba(0, 0, 0, 0.08);
-}
-
 /* ======================================== */
 /* LIGHT THEME OVERRIDES — Glass Material   */
 /* ======================================== */
@@ -68,7 +63,7 @@ body.theme-light .chat-layout {
         radial-gradient(ellipse at 80% 10%, color-mix(in srgb, var(--interactive-accent) 20%, var(--background-primary)) 0%, transparent 55%),
         radial-gradient(ellipse at 15% 90%, color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary)) 0%, transparent 55%),
         radial-gradient(ellipse at 50% 50%, color-mix(in srgb, var(--interactive-accent) 6%, var(--background-primary)) 0%, transparent 70%),
-        var(--background-primary) !important;
+        var(--background-primary);
 }
 
 /* User bubble: light accent tint */
@@ -172,7 +167,7 @@ body.theme-light .message-content {
         radial-gradient(ellipse at 15% 10%, color-mix(in srgb, var(--interactive-accent) 24%, var(--background-primary)) 0%, transparent 55%),
         radial-gradient(ellipse at 85% 50%, color-mix(in srgb, var(--interactive-accent) 15%, var(--background-primary)) 0%, transparent 55%),
         radial-gradient(ellipse at 20% 90%, color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary)) 0%, transparent 70%),
-        var(--background-primary) !important;
+        var(--background-primary);
 }
 
 /* Chat Sidebar */
@@ -339,6 +334,7 @@ body.theme-light .message-content {
 
 /* Individual action button styling */
 .conversation-action-btn {
+    --icon-size: 14px;
     width: 1.75rem;
     height: 1.75rem;
     display: flex;
@@ -356,10 +352,6 @@ body.theme-light .message-content {
 .conversation-action-btn:hover {
     background: var(--background-modifier-active-hover);
     color: var(--text-normal);
-}
-
-.conversation-action-btn {
-    --icon-size: 14px;
 }
 
 /* Edit button specific styling */
@@ -527,6 +519,7 @@ body.theme-light .message-content {
 }
 
 .chat-header .chat-hamburger-button,
+.chat-header .chat-live-voice-button,
 .chat-header .chat-settings-button {
     padding: 4px;
 }
@@ -534,10 +527,11 @@ body.theme-light .message-content {
 /* Header buttons — flat icons matching the status bar icon style.
    No raised appearance, just the icon as the tap target. */
 .chat-hamburger-button,
+.chat-live-voice-button,
 .chat-settings-button {
-    background: none !important;
-    border: none !important;
-    box-shadow: none !important;
+    background: none;
+    border: none;
+    box-shadow: none;
     color: var(--text-muted);
     cursor: pointer;
     padding: 4px;
@@ -549,18 +543,18 @@ body.theme-light .message-content {
 }
 
 .chat-hamburger-button:hover,
+.chat-live-voice-button:hover,
 .chat-settings-button:hover {
-    background: none !important;
+    background: none;
     color: var(--text-normal);
 }
 
-.chat-hamburger-button:hover,
-.chat-settings-button:hover {
-    background: var(--background-modifier-hover);
-    color: var(--text-normal);
+.chat-live-voice-button-active {
+    color: var(--interactive-accent);
 }
 
 .chat-hamburger-button:focus-visible,
+.chat-live-voice-button:focus-visible,
 .chat-settings-button:focus-visible {
     outline: 2px solid var(--interactive-accent);
     outline-offset: 2px;
@@ -595,6 +589,7 @@ body.theme-light .message-content {
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    background: transparent;
 }
 
 /* Chat Input Container — transparent on the glass pane. */
@@ -747,6 +742,7 @@ body.theme-light .message-content {
     display: flex;
     flex-direction: column;
     gap: 0.16rem;
+    background: transparent;
 }
 
 .message-display-event-row {
@@ -814,21 +810,13 @@ body.theme-light .message-content {
     animation: messageSlideIn 0.3s ease-out;
     display: flex;
     flex-direction: column;
-    background: transparent !important;
+    background: transparent;
 }
 
 /* Ensure the assistant message group wrapper and all message parents
    are transparent so the gradient shows through. */
 .message-group {
-    background: transparent !important;
-}
-
-.messages-container {
-    background: transparent !important;
-}
-
-.message-display-container {
-    background: transparent !important;
+    background: transparent;
 }
 
 /* Wider screens - reduce bubble width for better readability */
@@ -866,6 +854,7 @@ body.theme-light .message-content {
     align-self: stretch;
     width: 100%;
     max-width: none;
+    margin-top: 1.4rem;
 }
 
 .message-container.message-image {
@@ -964,22 +953,6 @@ body.theme-light .message-content {
     box-sizing: border-box;
 }
 
-.message-container.message-assistant {
-    margin-top: 1.4rem;
-}
-
-.message-header {
-    display: flex;
-    align-items: center;
-    margin-bottom: 0.5rem;
-    justify-content: space-between;
-}
-
-/* User messages: icon on the right, actions on the left */
-.message-container.message-user .message-header {
-    flex-direction: row-reverse;
-}
-
 /* Role icons + message-header removed in the glass redesign. The header
    used to host the role icon and action buttons; both are now gone, so
    we collapse the header. */
@@ -1072,7 +1045,7 @@ body.theme-light .message-content {
    is ever painted on hover/active/focus — only the icon color changes. */
 .message-action-btn.message-action-btn:hover,
 .message-action-btn.clickable-icon:hover {
-    background: transparent !important;
+    background: transparent;
     color: var(--text-normal);
 }
 
@@ -1080,7 +1053,7 @@ body.theme-light .message-content {
 .message-action-btn.message-action-btn:focus-visible,
 .message-action-btn.clickable-icon:active,
 .message-action-btn.clickable-icon:focus-visible {
-    background: transparent !important;
+    background: transparent;
 }
 
 .message-action-btn.message-action-btn:active,
@@ -1127,6 +1100,33 @@ body.theme-light .message-content {
 /* Message content typography — ported from .mock-device--glass
    .minimal-message-content (mockup line 2242) and .minimal-message-content
    p (line 2249). 18px base, 1.52 line-height, 0.38rem paragraph gap. */
+.message-reasoning {
+    margin: 0 0 0.5rem 0;
+    border-left: 2px solid var(--background-modifier-border);
+    padding-left: 0.5rem;
+}
+
+.message-reasoning-summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    font-style: italic;
+    list-style: none;
+    user-select: none;
+}
+
+.message-reasoning-summary::-webkit-details-marker {
+    display: none;
+}
+
+.message-reasoning-content {
+    margin-top: 0.25rem;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    white-space: pre-wrap;
+    opacity: 0.85;
+}
+
 .message-content {
     color: var(--text-normal);
     font-size: 18px;
@@ -1343,6 +1343,7 @@ body.theme-light .message-content {
 /* Send button - circular, embedded and vertically centered in input */
 /* Send button — faux-glass circle: opaque accent-tinted fill matching the message bubble treatment */
 .chat-send-button {
+    --icon-size: 16px;
     position: absolute;
     top: 50%;
     right: 8px;
@@ -1396,13 +1397,9 @@ body.theme-light .message-content {
     50% { box-shadow: 0 0 0 4px rgba(var(--interactive-accent-rgb), 0); }
 }
 
-/* Icon sizing via Obsidian's --icon-size variable (used by clickable-icon class) */
-.chat-send-button {
-    --icon-size: 16px;
-}
-
 /* Stop button mode - red circular button */
 .chat-send-button.stop-mode {
+    --icon-size: 12px;
     background: var(--text-error);
     color: white;
     animation: pulse-stop 1.5s ease-in-out infinite;
@@ -1413,8 +1410,233 @@ body.theme-light .message-content {
     opacity: 0.9;
 }
 
-.chat-send-button.stop-mode {
+/* Live voice composer takeover. Text status lives in ToolStatusBar; the
+   composer stays visual: session dot, waveform/indicator, and stop button. */
+.chat-live-composer {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 60px;
+    padding: 11px 55px 11px 13px;
+    border: 1px solid color-mix(in srgb, var(--background-modifier-border) 78%, transparent);
+    border-radius: 11px;
+    background: var(--background-primary);
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.chat-input-live-mode .chat-textarea,
+.chat-input-live-mode .chat-send-button {
+    display: none;
+}
+
+.chat-input-live-mode .chat-live-composer {
+    display: flex;
+}
+
+.chat-live-dot {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--text-error);
+    animation: chat-live-dot-pulse 1.8s ease-in-out infinite;
+}
+
+.chat-live-waveform {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: stretch;
+    gap: 3px;
+    padding-inline: 2px;
+}
+
+.chat-live-wave-bar {
+    flex: 1 1 0;
+    min-width: 2px;
+    max-width: 8px;
+    height: 30px;
+    border-radius: 999px;
+    background: var(--interactive-accent);
+    opacity: 0.54;
+    transform-origin: center;
+    animation: chat-live-wave-listening 1.55s ease-in-out infinite;
+}
+
+.chat-live-wave-phase-0 { animation-delay: -0ms; }
+.chat-live-wave-phase-1 { animation-delay: -80ms; }
+.chat-live-wave-phase-2 { animation-delay: -160ms; }
+.chat-live-wave-phase-3 { animation-delay: -240ms; }
+.chat-live-wave-phase-4 { animation-delay: -320ms; }
+.chat-live-wave-phase-5 { animation-delay: -400ms; }
+.chat-live-wave-phase-6 { animation-delay: -480ms; }
+.chat-live-wave-phase-7 { animation-delay: -560ms; }
+.chat-live-wave-phase-8 { animation-delay: -640ms; }
+.chat-live-wave-phase-9 { animation-delay: -720ms; }
+.chat-live-wave-phase-10 { animation-delay: -800ms; }
+.chat-live-wave-phase-11 { animation-delay: -880ms; }
+
+.chat-input-live-connecting .chat-live-wave-bar,
+.chat-input-live-error .chat-live-wave-bar {
+    display: none;
+}
+
+.chat-input-live-connecting .chat-live-dot {
+    background: var(--color-yellow);
+}
+
+.chat-input-live-listening .chat-live-dot {
+    background: var(--text-error);
+}
+
+.chat-input-live-user-speaking .chat-live-dot {
+    background: var(--color-cyan);
+}
+
+.chat-input-live-assistant-speaking .chat-live-dot {
+    background: var(--color-green);
+}
+
+.chat-input-live-error .chat-live-dot {
+    background: var(--text-error);
+    animation-duration: 760ms;
+}
+
+.chat-input-live-user-speaking .chat-live-wave-bar {
+    background: var(--color-cyan);
+    opacity: 0.86;
+    animation-name: chat-live-wave-user;
+    animation-duration: 560ms;
+}
+
+.chat-input-live-assistant-speaking .chat-live-wave-bar {
+    background: var(--color-green);
+    opacity: 0.9;
+    animation-name: chat-live-wave-assistant;
+    animation-duration: 1040ms;
+}
+
+.chat-input-live-connecting .chat-live-waveform,
+.chat-input-live-error .chat-live-waveform {
+    justify-content: center;
+}
+
+.chat-input-live-connecting .chat-live-waveform::before {
+    content: "";
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--color-yellow) 32%, transparent);
+    border-top-color: var(--color-yellow);
+    animation: chat-live-connecting-spin 860ms linear infinite;
+}
+
+.chat-input-live-connecting .chat-live-waveform::after {
+    content: "";
+    position: absolute;
+    width: min(180px, 58%);
+    height: 1px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-yellow) 52%, transparent), transparent);
+    transform: translateY(18px);
+    opacity: 0.68;
+}
+
+.chat-input-live-error .chat-live-composer {
+    border-color: color-mix(in srgb, var(--text-error) 58%, var(--background-modifier-border));
+}
+
+.chat-input-live-error .chat-live-waveform::before,
+.chat-input-live-error .chat-live-waveform::after {
+    content: "";
+    position: absolute;
+    width: 34px;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--text-error);
+}
+
+.chat-input-live-error .chat-live-waveform::before {
+    transform: rotate(45deg);
+}
+
+.chat-input-live-error .chat-live-waveform::after {
+    transform: rotate(-45deg);
+}
+
+.chat-live-stop-button {
     --icon-size: 12px;
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--text-error) 56%, var(--background-modifier-border));
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--text-error) 24%, var(--background-primary));
+    color: var(--text-normal);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s, opacity 0.2s, transform 0.15s;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--background-primary) 72%, var(--text-normal));
+}
+
+.chat-live-stop-button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text-error) 34%, var(--background-primary));
+    transform: translateY(-50%) scale(1.05);
+}
+
+.chat-live-voice-output {
+    display: none;
+}
+
+@keyframes chat-live-dot-pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--text-error) 32%, transparent);
+        opacity: 0.82;
+    }
+    50% {
+        box-shadow: 0 0 0 5px transparent;
+        opacity: 1;
+    }
+}
+
+@keyframes chat-live-wave-listening {
+    0%, 100% {
+        transform: scaleY(0.24);
+        opacity: 0.32;
+    }
+    50% {
+        transform: scaleY(0.54);
+        opacity: 0.62;
+    }
+}
+
+@keyframes chat-live-wave-user {
+    0%, 100% { transform: scaleY(0.28); }
+    38% { transform: scaleY(1.22); }
+    72% { transform: scaleY(0.56); }
+}
+
+@keyframes chat-live-wave-assistant {
+    0%, 100% { transform: scaleY(0.42); }
+    25% { transform: scaleY(1.22); }
+    65% { transform: scaleY(0.82); }
+}
+
+@keyframes chat-live-connecting-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 @keyframes pulse-stop {
@@ -1501,11 +1723,11 @@ body.theme-light .message-content {
 /* Extra small screens and narrow sidebars */
 @media (max-width: 480px), (max-width: 320px) {
     .message-container {
-        width: 95% !important;
+        width: 95%;
     }
 
     .chat-textarea {
-        font-size: 14px !important;
+        font-size: 14px;
     }
 }
 
@@ -1515,7 +1737,7 @@ body.theme-light .message-content {
 }
 
 .theme-dark .message-assistant {
-    background: var(--background-primary-alt);
+    background: transparent;
 }
 
 /* =========================== */
@@ -1842,6 +2064,7 @@ body.theme-light .message-content {
 /* Settings Styles */
 .nexus-settings {
     padding: 12px;
+    max-width: 100%;
 }
 
 .nexus-settings textarea {
@@ -1960,17 +2183,17 @@ body.theme-light .message-content {
 }
 
 .memory-tab.active {
-    border-bottom: 2px solid var(--text-accent);
     color: var(--text-accent);
     background-color: var(--background-secondary);
-    border: 1px solid var(--background-modifier-border);
+    border-top: 1px solid var(--background-modifier-border);
+    border-right: 1px solid var(--background-modifier-border);
+    border-left: 1px solid var(--background-modifier-border);
     border-bottom: none;
 }
 
 .nexus-settings-tab.active {
     border: 1px solid var(--interactive-accent);
     background: var(--background-secondary);
-    border-bottom: 1px solid var(--interactive-accent);
 }
 
 .nexus-settings-accordion {
@@ -2551,14 +2774,6 @@ a:hover {
     font-style: italic;
 }
 
-/* Agent Management Modal Styles */
-.modal-button-container {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 20px;
-}
-
 /* Modal content styling */
 .modal-content h1 {
     margin-bottom: 20px;
@@ -2952,7 +3167,7 @@ a:hover {
     width: 100%;
 }
 
-.model-select {
+.model-selector .model-select {
     width: 100%;
     padding: 6px 8px;
     border: 1px solid var(--background-modifier-border);
@@ -3345,13 +3560,13 @@ a:hover {
   width: 16px;
   height: 16px;
 }
-/* !important + extra class repeat to outweigh Obsidian's .clickable-icon
-   justify-content: center default (which otherwise re-centers the chevron). */
+/* Extra class repeat outweighs Obsidian's .clickable-icon justify-content
+   default, which otherwise re-centers the chevron. */
 .message-action-btn.message-action-btn.message-branch-prev {
-  justify-content: flex-end !important;
+  justify-content: flex-end;
 }
 .message-action-btn.message-action-btn.message-branch-next {
-  justify-content: flex-start !important;
+  justify-content: flex-start;
 }
 /* Mobile touch-target override — restore comfortable tap size but keep the
    edge-align so the chevrons still cluster tightly to the indicator. */
@@ -3395,6 +3610,7 @@ body.is-mobile .message-action-btn.message-branch-next {
 
 .branch-navigator-visible {
   display: flex;
+  animation: branch-appear 0.3s ease;
 }
 
 /* Branch Navigation Buttons */
@@ -3456,8 +3672,8 @@ body.is-mobile .message-action-btn.message-branch-next {
 
 .chat-header:hover .branch-navigator-container,
 .chat-header .branch-navigator-container.branch-navigator-visible {
-  opacity: 1 !important;
-  transform: translateX(0) !important;
+  opacity: 1;
+  transform: translateX(0);
 }
 
 /* Branch Navigator Animations */
@@ -3470,10 +3686,6 @@ body.is-mobile .message-action-btn.message-branch-next {
     opacity: 1;
     transform: scale(1) translateX(0);
   }
-}
-
-.branch-navigator-visible {
-  animation: branch-appear 0.3s ease;
 }
 
 /* Dark Mode Adjustments */
@@ -3981,8 +4193,8 @@ body.is-mobile .message-action-btn.message-branch-next {
    =========================================== */
 
 /* Hidden utility - used for conditional visibility */
-.is-hidden {
-    display: none !important;
+.is-hidden.is-hidden {
+    display: none;
 }
 
 /* ===========================================
@@ -4046,6 +4258,37 @@ body.is-mobile .message-action-btn.message-branch-next {
 
 .csr-section-content .setting-item:last-child {
     padding-bottom: 0;
+}
+
+.nexus-voice-section-desc {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.nexus-voice-group-label {
+    margin-top: var(--space-m);
+    padding-top: var(--space-s);
+    border-top: 1px solid var(--background-modifier-border);
+    color: var(--text-faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.nexus-voice-section-desc + .nexus-voice-group-label {
+    margin-top: var(--space-s);
+    border-top: none;
+}
+
+.nexus-voice-warning {
+    margin-top: var(--space-s);
+    padding: var(--space-s);
+    border: 1px solid var(--background-modifier-error);
+    border-radius: var(--radius-s);
+    background: var(--background-modifier-error);
+    color: var(--text-error);
+    font-size: 12px;
 }
 
 /* Effort slider row */
@@ -4171,11 +4414,6 @@ body.is-mobile .message-action-btn.message-branch-next {
 /* ===========================================
    Nexus Settings UI - Tab-Based Navigation
    =========================================== */
-
-/* Settings container */
-.nexus-settings {
-    max-width: 100%;
-}
 
 /* Header section */
 .nexus-settings-header {
@@ -4604,6 +4842,218 @@ body.is-mobile .message-action-btn.message-branch-next {
     text-decoration: underline;
 }
 
+/* MCP setup — connector.js explainer */
+.nexus-connector-explainer {
+    display: flex;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    margin: 12px 0 20px;
+}
+
+.nexus-connector-explainer .nx-icon {
+    font-size: 1.3em;
+    line-height: 1.2;
+    flex-shrink: 0;
+}
+
+.nexus-connector-explainer p {
+    margin: 0;
+    font-size: 0.88em;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+.nexus-connector-explainer code {
+    font-family: var(--font-monospace);
+    background: var(--background-primary-alt);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.9em;
+    color: var(--text-normal);
+}
+
+/* MCP setup — per-agent block */
+.nexus-agent-block {
+    margin-bottom: 20px;
+}
+
+.nexus-agent-block > h4 {
+    display: flex;
+    align-items: center;
+    margin: 0 0 4px;
+}
+
+.nx-agent-logo {
+    font-size: 1.1em;
+}
+
+/* MCP setup — "just connected" confirmation card */
+.nexus-connect-result {
+    border: 1px solid var(--background-modifier-border);
+    border-left: 3px solid var(--text-success);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-top: 8px;
+    background: var(--background-secondary);
+}
+
+.nexus-connect-result .nx-result-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.nexus-connect-result .nx-result-title {
+    font-weight: 600;
+    color: var(--text-success);
+}
+
+.nx-result-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.nx-checklist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.nx-checklist li {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 0;
+    font-size: 0.88em;
+    line-height: 1.45;
+}
+
+.nx-checklist .nx-check {
+    color: var(--text-success);
+    flex-shrink: 0;
+}
+
+.nx-checklist .nx-next {
+    color: var(--text-accent);
+    flex-shrink: 0;
+}
+
+.nx-checklist .nx-label {
+    color: var(--text-muted);
+}
+
+.nx-checklist code {
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
+    background: var(--background-primary-alt);
+    padding: 1px 5px;
+    border-radius: 3px;
+    word-break: break-all;
+    color: var(--text-normal);
+}
+
+/* MCP setup — manual disclosure with numbered steps */
+.nexus-manual-details {
+    margin-top: 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.nexus-manual-details > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 10px 14px;
+    font-size: 0.9em;
+    color: var(--text-muted);
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.nexus-manual-details > summary::-webkit-details-marker {
+    display: none;
+}
+
+.nexus-manual-details > summary::before {
+    content: "\25B8";
+    transition: transform 0.15s ease;
+}
+
+.nexus-manual-details[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.nexus-manual-details > summary:hover {
+    color: var(--text-normal);
+}
+
+.nexus-manual-body {
+    padding: 4px 16px 16px;
+}
+
+.nx-step {
+    display: flex;
+    gap: 12px;
+    padding: 12px 0;
+}
+
+.nx-step + .nx-step {
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.nx-step-num {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.78em;
+    font-weight: 600;
+    margin-top: 1px;
+}
+
+.nx-step-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.nx-step-body h5 {
+    margin: 0 0 4px;
+    font-size: 0.92em;
+}
+
+.nx-step-body p {
+    margin: 0 0 8px;
+    font-size: 0.85em;
+}
+
+.nx-pathrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.nx-inline-path {
+    font-family: var(--font-monospace);
+    font-size: 0.82em;
+    color: var(--text-accent);
+    word-break: break-all;
+}
+
 /* Reasoning - Compact Inline */
 .nexus-thinking-section {
     margin-top: 12px;
@@ -4694,6 +5144,13 @@ body.is-mobile .message-action-btn.message-branch-next {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
+}
+
+/* Breathing room between consecutive form-field groups (e.g., Context section
+   Purpose / Preferences / Dedicated agent / Key files). Targets only stacked
+   siblings, leaving .ws-section-body scroll/clip behavior untouched. */
+.nexus-form-field + .nexus-form-field {
+    margin-top: var(--space-m);
 }
 
 .nexus-form-field-inline {
@@ -5045,53 +5502,127 @@ body.is-mobile .message-action-btn.message-branch-next {
     margin-bottom: 12px;
 }
 
-.nexus-task-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--font-ui-small);
-}
-
-.nexus-task-table th,
-.nexus-task-table td {
-    padding: 10px 8px;
-    border-bottom: 1px solid var(--background-modifier-border);
-    text-align: left;
-    vertical-align: middle;
-}
-
-.nexus-task-table th {
-    color: var(--text-muted);
-    font-weight: var(--font-semibold);
-}
-
-.nexus-task-title-cell {
-    min-width: 220px;
-}
-
-.nexus-task-title {
-    color: var(--text-normal);
-}
-
-.nexus-task-actions {
-    display: flex;
-    gap: 8px;
-    white-space: nowrap;
-}
-
-.nexus-task-checkbox-cell {
-    width: 48px;
-}
-
-.nexus-task-checkbox {
-    width: 16px;
-    height: 16px;
-}
-
 .nexus-task-form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 12px;
 }
+
+/* Row primitives — task + project rows in BoxedSection bodies */
+.ws-group-label {
+    font-size: 12px;
+    font-weight: var(--font-medium);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding: 12px 0 4px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-bottom: 4px;
+}
+
+.ws-group-label:first-child {
+    padding-top: 0;
+}
+
+.setting-item.is-task,
+.setting-item.is-project {
+    padding: 8px 0;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.setting-item.is-task:first-child,
+.setting-item.is-project:first-child {
+    border-top: none;
+}
+
+.setting-item.is-task.is-done .setting-item-name {
+    text-decoration: line-through;
+    color: var(--text-muted);
+}
+
+.setting-item.is-project.is-archived .setting-item-name {
+    color: var(--text-muted);
+}
+
+/* Dependency + note-link rows (task detail) reuse the .setting-item shell. */
+.setting-item.is-dep,
+.setting-item.is-note-link {
+    padding: var(--space-s) 0;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.setting-item.is-dep:first-child,
+.setting-item.is-note-link:first-child {
+    border-top: none;
+}
+
+/* Status pill on dependency rows (no pill for 'done' — rendered conditionally). */
+.ws-status-pill {
+    display: inline-block;
+    padding: var(--space-xxs) var(--space-s);
+    border-radius: 4px;
+    font-size: 11px;
+    margin-left: var(--space-s);
+    color: var(--text-muted);
+    background: var(--background-modifier-border);
+}
+
+.ws-status-pill.is-in_progress {
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+}
+
+.ws-status-pill.is-cancelled {
+    opacity: 0.6;
+    text-decoration: line-through;
+}
+
+/* Inline add-control row primitive (deps / notes "Add" rows). */
+.ws-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin-top: var(--space-m);
+}
+
+.ws-field-inline {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-s);
+}
+
+.task-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.task-meta-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.task-meta-item.is-overdue {
+    color: var(--text-error);
+}
+
+.task-meta-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.task-meta-dot.is-critical { background: var(--text-error); }
+.task-meta-dot.is-high { background: var(--text-warning); }
+.task-meta-dot.is-medium { background: var(--text-accent); }
+.task-meta-dot.is-low { background: var(--text-faint); }
 
 .nexus-breadcrumb {
     display: flex;
@@ -5099,7 +5630,7 @@ body.is-mobile .message-action-btn.message-branch-next {
     flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 12px;
-    font-size: var(--font-ui-small);
+    font-size: 13px;
 }
 
 .nexus-breadcrumb .nexus-breadcrumb-link {
@@ -5235,119 +5766,6 @@ body.is-mobile .message-action-btn.message-branch-next {
     border-top: 1px solid var(--background-modifier-border);
 }
 
-/* Folder Tree */
-.nexus-folder-tree {
-    max-height: 400px;
-    overflow-y: auto;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--radius-s);
-    margin-top: var(--space-m);
-    padding: var(--space-s) 0;
-}
-
-.nexus-tree-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-s);
-    padding: var(--space-xs) var(--space-l);
-    cursor: pointer;
-    transition: background 0.1s ease;
-}
-
-.nexus-tree-row:hover {
-    background: var(--background-modifier-hover);
-}
-
-.nexus-tree-folder {
-    font-weight: var(--font-medium);
-}
-
-.nexus-tree-file {
-    color: var(--text-normal);
-}
-
-.nexus-tree-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    color: var(--text-muted);
-    flex-shrink: 0;
-}
-
-.nexus-tree-icon svg {
-    width: 16px;
-    height: 16px;
-}
-
-.nexus-tree-folder .nexus-tree-icon {
-    color: var(--text-accent);
-}
-
-.nexus-tree-checkbox {
-    width: 16px;
-    height: 16px;
-    margin: 0;
-    cursor: pointer;
-    flex-shrink: 0;
-}
-
-.nexus-tree-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.nexus-tree-children {
-    /* Children container - no special styling needed */
-}
-
-/* Depth-based indentation using data attributes */
-.nexus-tree-row[data-depth="0"],
-.nexus-tree-empty[data-depth="1"] { padding-left: 16px; }
-
-.nexus-tree-row[data-depth="1"],
-.nexus-tree-empty[data-depth="2"] { padding-left: 36px; }
-
-.nexus-tree-row[data-depth="2"],
-.nexus-tree-empty[data-depth="3"] { padding-left: 56px; }
-
-.nexus-tree-row[data-depth="3"],
-.nexus-tree-empty[data-depth="4"] { padding-left: 76px; }
-
-.nexus-tree-row[data-depth="4"],
-.nexus-tree-empty[data-depth="5"] { padding-left: 96px; }
-
-.nexus-tree-row[data-depth="5"],
-.nexus-tree-empty[data-depth="6"] { padding-left: 116px; }
-
-.nexus-tree-row[data-depth="6"],
-.nexus-tree-empty[data-depth="7"] { padding-left: 136px; }
-
-.nexus-tree-row[data-depth="7"],
-.nexus-tree-empty[data-depth="8"] { padding-left: 156px; }
-
-.nexus-tree-row[data-depth="8"],
-.nexus-tree-empty[data-depth="9"] { padding-left: 176px; }
-
-.nexus-tree-row[data-depth="9"],
-.nexus-tree-empty[data-depth="10"] { padding-left: 196px; }
-
-.nexus-tree-row[data-depth="10"],
-.nexus-tree-empty[data-depth="11"] { padding-left: 216px; }
-
-.nexus-tree-empty {
-    padding-top: var(--space-s);
-    padding-bottom: var(--space-s);
-    padding-right: var(--space-m);
-    color: var(--text-faint);
-    font-size: var(--font-ui-smaller);
-    font-style: italic;
-}
-
 .nexus-file-picker-info {
     margin-bottom: var(--space-s);
 }
@@ -5450,7 +5868,7 @@ body.is-mobile .message-action-btn.message-branch-next {
 }
 
 /* Hide the "Ready/Saved" status for Nexus - not applicable */
-.llm-provider-modal:has(.nexus-modal) .save-status {
+.llm-provider-modal.llm-provider-modal-nexus .save-status {
     display: none;
 }
 
@@ -5777,7 +6195,7 @@ body.is-mobile .chat-main {
 
 /* Hamburger always visible on mobile */
 body.is-mobile .chat-hamburger-button {
-    display: flex !important;
+    display: flex;
 }
 
 /* ------------------------------ */
@@ -5965,8 +6383,8 @@ body.is-mobile .modal-content {
     .loading-spinner,
     .chat-sidebar,
     .chat-backdrop {
-        animation: none !important;
-        transition: none !important;
+        animation: none;
+        transition: none;
     }
 
     .chat-input-compacting .chat-send-button.disabled-mode {
@@ -6370,6 +6788,8 @@ body.is-mobile .nexus-branch-task {
     max-height: 200px;
     overflow-y: auto;
     padding: 8px 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .nexus-agent-section-header {
@@ -6664,14 +7084,6 @@ body.is-mobile .nexus-branch-task {
     max-width: 500px;
 }
 
-.nexus-agent-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    max-height: 400px;
-    overflow-y: auto;
-}
-
 .nexus-agent-item {
     padding: 12px;
     background: var(--background-secondary);
@@ -6684,26 +7096,6 @@ body.is-mobile .nexus-branch-task {
     align-items: center;
     justify-content: space-between;
     margin-bottom: 8px;
-}
-
-.nexus-agent-task {
-    font-weight: 500;
-    color: var(--text-normal);
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.nexus-agent-meta {
-    font-size: var(--font-ui-smaller);
-    color: var(--text-muted);
-}
-
-.nexus-agent-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 8px;
 }
 
 .nexus-no-agents {
@@ -6999,11 +7391,11 @@ body.is-mobile .nexus-branch-task {
 
 /* Loading Overlay Styles */
 .chat-loading-overlay-visible {
-    display: flex !important;
+    display: flex;
 }
 
 .chat-loading-overlay-hidden {
-    display: none !important;
+    display: none;
 }
 
 /* Chat Service Loading State */
@@ -7469,6 +7861,12 @@ body.is-mobile .nexus-branch-task {
     color: var(--text-normal);
     font-weight: 600;
     line-height: 1.35;
+}
+
+.nexus-task-board-card-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: var(--space-xs);
 }
 
 .nexus-task-board-card-meta {
@@ -8097,6 +8495,17 @@ body.is-mobile .nexus-task-board-shell {
   .context-badge-danger {
     animation: none;
   }
+
+  /* Live voice composer: disable the continuous dot pulse, waveform bars,
+     and connecting spinner for motion-sensitive users. The session dot
+     keeps its color and the ToolStatusBar text + button aria-label carry
+     the state meaning, so motion is a reinforcement, not the sole indicator
+     (WCAG 1.4.1). */
+  .chat-live-dot,
+  .chat-live-wave-bar,
+  .chat-input-live-connecting .chat-live-waveform::before {
+    animation: none;
+  }
 }
 
 .tool-status-text-failed {
@@ -8129,9 +8538,9 @@ body.is-mobile .nexus-task-board-shell {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: none !important;
-  border: none !important;
-  box-shadow: none !important;
+  background: none;
+  border: none;
+  box-shadow: none;
   border-radius: 0;
   color: var(--text-muted);
   cursor: pointer;
@@ -8145,7 +8554,7 @@ body.is-mobile .nexus-task-board-shell {
 
 .tool-status-row--meta button:hover {
   color: var(--text-normal);
-  background: none !important;
+  background: none;
 }
 
 .tool-status-row--meta button:focus-visible {
@@ -8410,4 +8819,654 @@ body.is-mobile .nexus-task-board-shell {
     .tool-inspection-card-header {
         flex-direction: column;
     }
+}
+
+/* ============================================================
+   States section (workspace detail → States)
+   ============================================================ */
+
+.nexus-states-section {
+    /* inherits .nexus-form-section spacing/borders */
+}
+
+.nexus-states-toolbar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-m);
+    flex-wrap: wrap;
+}
+
+.nexus-states-archived-toggle {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-s);
+}
+
+.nexus-states-toolbar-label {
+    font-size: var(--font-ui-small);
+    color: var(--text-muted);
+}
+
+.nexus-states-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-s);
+}
+
+.nexus-states-row {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-m);
+    padding: var(--space-m);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+}
+
+.nexus-states-row--archived {
+    opacity: 0.65;
+}
+
+.nexus-states-row-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xxs);
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.nexus-states-row-title {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-s);
+    font-size: var(--font-ui-medium);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+    overflow-wrap: anywhere;
+}
+
+.nexus-states-archived-badge {
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-normal);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px var(--space-xs);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-primary);
+}
+
+.nexus-states-row-meta {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+}
+
+.nexus-states-row-description {
+    font-size: var(--font-ui-small);
+    color: var(--text-normal);
+    overflow-wrap: anywhere;
+}
+
+.nexus-states-row-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-xs);
+    flex: 0 0 auto;
+}
+
+.nexus-states-action-btn {
+    /* clickable-icon supplies most styling; only tweak hit target */
+    padding: var(--space-xs);
+}
+
+.nexus-states-delete-btn:hover {
+    color: var(--text-error);
+}
+
+.nexus-states-error {
+    color: var(--text-error);
+}
+
+/* Danger icon button (workspace rows): transparent clickable-icon that turns
+   red on hover — mirrors the StatesSectionRenderer delete idiom. Avoids
+   Obsidian's `mod-warning` filled-red-square background that swamps the glyph. */
+.clickable-icon.nexus-icon-danger:hover {
+    color: var(--text-error);
+}
+
+/* State edit modal */
+
+.nexus-state-edit-modal h2 {
+    margin-top: 0;
+}
+
+.nexus-state-edit-label {
+    display: block;
+    margin-top: var(--space-m);
+    margin-bottom: var(--space-xs);
+    font-size: var(--font-ui-small);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+}
+
+.nexus-state-edit-input {
+    width: 100%;
+}
+
+.nexus-state-edit-textarea {
+    width: 100%;
+    min-height: 96px;
+    resize: vertical;
+}
+
+/* ============================================================
+   Skills management section (Settings → Apps → Skills → edit)
+   Mirrors the states-management visual language.
+   ============================================================ */
+
+.skills-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-m);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-s);
+}
+
+.skills-header-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-s);
+    flex-wrap: wrap;
+}
+
+.skills-archived-toggle {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-s);
+}
+
+.skills-toolbar-label {
+    font-size: var(--font-ui-small);
+    color: var(--text-muted);
+}
+
+.skills-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-s);
+}
+
+.skills-row {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-m);
+    padding: var(--space-m);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+}
+
+.skills-row--archived {
+    opacity: 0.65;
+}
+
+.skills-row-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xxs);
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.skills-row-title {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-s);
+    font-size: var(--font-ui-medium);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+    overflow-wrap: anywhere;
+}
+
+.skills-row-name {
+    font-family: var(--font-monospace);
+}
+
+.skills-archived-badge {
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-normal);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px var(--space-xs);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-primary);
+}
+
+.skills-row-meta {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+}
+
+.skills-row-description {
+    font-size: var(--font-ui-small);
+    color: var(--text-normal);
+    overflow-wrap: anywhere;
+}
+
+.skills-row-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-xs);
+    flex: 0 0 auto;
+}
+
+.skills-action-btn {
+    padding: var(--space-xs);
+}
+
+.skills-action-btn.is-busy {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.skills-delete-btn:hover {
+    color: var(--text-error);
+}
+
+.skills-error {
+    color: var(--text-error);
+}
+
+/* Skill edit modal */
+
+.skills-edit-modal h2 {
+    margin-top: 0;
+}
+
+.skills-edit-label {
+    display: block;
+    margin-top: var(--space-m);
+    margin-bottom: var(--space-xs);
+    font-size: var(--font-ui-small);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+}
+
+.skills-edit-input {
+    width: 100%;
+}
+
+.skills-edit-input--readonly {
+    opacity: 0.7;
+}
+
+.skills-edit-textarea {
+    width: 100%;
+    min-height: 160px;
+    resize: vertical;
+    font-family: var(--font-monospace);
+}
+
+.skills-edit-errors {
+    margin-top: var(--space-s);
+}
+
+.skills-edit-error {
+    margin: var(--space-xxs) 0;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-error);
+}
+
+/* Custom app-config section container */
+
+.app-config-custom-section {
+    margin-bottom: var(--space-m);
+}
+
+/* =====================================================================
+ * Workspace settings — boxed section primitive (.ws-section family)
+ *
+ * Mockup: docs/mockups/workspace-tab-redesign-v3-subpages.html
+ * Used by: src/settings/components/BoxedSection.ts
+ * Sticky header + scrollable body (default max-height: 320px;
+ * pass `unbounded: true` to BoxedSection to remove the cap).
+ * ===================================================================== */
+
+.ws-section {
+    margin-top: var(--space-l);
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.ws-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-m);
+    padding: var(--space-m) var(--space-l);
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.ws-section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin: 0;
+}
+
+.ws-section-action {
+    appearance: none;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: 1px solid var(--interactive-accent);
+    /* Tap-target floor: 6px 12px → ~30px tall for mobile parity (WCAG 2.5.5). */
+    padding: 6px var(--space-m);
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: 4px;
+    line-height: 1.3;
+}
+
+.ws-section-action:hover {
+    background: var(--interactive-accent-hover);
+    border-color: var(--interactive-accent-hover);
+}
+
+.ws-section-body {
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 0 var(--space-l) var(--space-m);
+}
+
+.ws-section-body.is-unbounded {
+    max-height: none;
+}
+
+.ws-section-body::-webkit-scrollbar {
+    width: 10px;
+}
+
+.ws-section-body::-webkit-scrollbar-thumb {
+    background: var(--background-modifier-border);
+    border-radius: 5px;
+    border: 2px solid var(--background-secondary);
+}
+
+.ws-section-body::-webkit-scrollbar-thumb:hover {
+    background: var(--background-modifier-border-hover);
+}
+
+/* Toolbar cluster — filter / sort / toggle / inline +action slot */
+.ws-section-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-s);
+}
+
+.ws-section-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.ws-section-toggle input[type="checkbox"] {
+    accent-color: var(--interactive-accent);
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    cursor: pointer;
+}
+
+.ws-section-toggle:hover {
+    color: var(--text-normal);
+}
+
+.ws-section-select {
+    appearance: none;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.ws-section-select:hover {
+    color: var(--text-normal);
+    border-color: var(--background-modifier-border-hover);
+}
+
+/* =====================================================================
+ * Workspace settings — file-picker tree (.ws-tree family)
+ *
+ * Mockup: docs/mockups/workspace-tab-redesign-v3-subpages.html
+ * Used by: src/components/workspace/FilePickerRenderer.ts
+ * Multi-select tree with lazy-expanded folders + checkbox selection.
+ * Depth indentation via [data-depth] caps with clamp() on mobile.
+ * ===================================================================== */
+
+.ws-tree {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    margin-top: var(--space-m);
+    padding: var(--space-s) 0;
+}
+
+.ws-tree::-webkit-scrollbar {
+    width: 10px;
+}
+
+.ws-tree::-webkit-scrollbar-thumb {
+    background: var(--background-modifier-border);
+    border-radius: 5px;
+    border: 2px solid var(--background-secondary);
+}
+
+.ws-tree-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-s);
+    padding: var(--space-xs) var(--space-l);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-normal);
+    transition: background 0.1s ease;
+}
+
+.ws-tree-row:hover {
+    background: var(--background-modifier-hover);
+}
+
+.ws-tree-row.is-folder .ws-tree-name {
+    font-weight: var(--font-medium);
+}
+
+.ws-tree-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.ws-tree-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.ws-tree-row.is-folder .ws-tree-icon {
+    color: var(--text-accent);
+}
+
+.ws-tree-checkbox {
+    accent-color: var(--interactive-accent);
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.ws-tree-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Depth-based indentation via [data-depth]. The base indent (--space-l) plus a
+ * clamp()-bounded per-level step keeps deep trees from overflowing on narrow
+ * (mobile) viewports while preserving hierarchy on desktop. */
+.ws-tree-row[data-depth="0"],
+.ws-tree-empty[data-depth="1"] { padding-left: var(--space-l); }
+.ws-tree-row[data-depth="1"],
+.ws-tree-empty[data-depth="2"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px)); }
+.ws-tree-row[data-depth="2"],
+.ws-tree-empty[data-depth="3"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 2); }
+.ws-tree-row[data-depth="3"],
+.ws-tree-empty[data-depth="4"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 3); }
+.ws-tree-row[data-depth="4"],
+.ws-tree-empty[data-depth="5"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 4); }
+.ws-tree-row[data-depth="5"],
+.ws-tree-empty[data-depth="6"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 5); }
+.ws-tree-row[data-depth="6"],
+.ws-tree-empty[data-depth="7"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 6); }
+.ws-tree-row[data-depth="7"],
+.ws-tree-empty[data-depth="8"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 7); }
+.ws-tree-row[data-depth="8"],
+.ws-tree-empty[data-depth="9"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 8); }
+.ws-tree-row[data-depth="9"],
+.ws-tree-empty[data-depth="10"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 9); }
+.ws-tree-row[data-depth="10"],
+.ws-tree-empty[data-depth="11"] { padding-left: calc(var(--space-l) + clamp(10px, 5vw, 20px) * 10); }
+
+.ws-tree-empty {
+    padding-top: var(--space-s);
+    padding-bottom: var(--space-s);
+    padding-right: var(--space-m);
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+    font-style: italic;
+}
+
+/* Paired short form fields (e.g., Hour + Minute in the workflow schedule).
+ * Collapses to a single column under the mobile breakpoint below. */
+.ws-field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-m);
+}
+
+.ws-field-grid .ws-field {
+    margin-top: 0;
+}
+
+/* Graceful degradation: only pin the sticky section header on browsers that
+ * support position: sticky (older iOS WebView lacks reliable support). */
+@supports not (position: sticky) {
+    .ws-section-header {
+        position: static;
+    }
+}
+
+/* =====================================================================
+ * Mobile breakpoint (~480px) — workspace settings primitives
+ *
+ * isDesktopOnly: false — production runs on Obsidian mobile. Let the tab
+ * scroll naturally instead of nesting an internal scroll context, collapse
+ * paired fields to a single column, and tighten meta clusters.
+ * ===================================================================== */
+@media (max-width: 480px) {
+    .ws-field-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .ws-section-body {
+        max-height: none;
+        overflow: visible;
+    }
+
+    .task-meta {
+        gap: var(--space-s);
+    }
+
+    .ws-tree {
+        max-height: none;
+        overflow: visible;
+    }
+}
+
+/* Read-aloud progress modal. Reuses the live-voice .chat-live-dot +
+   .chat-live-waveform / .chat-live-wave-bar visuals (animations + their
+   prefers-reduced-motion handling are defined with those classes). All width
+   overrides are SCOPED to the read-aloud context so the shared live-voice
+   rules used elsewhere are untouched. */
+
+/* Constrain the modal FRAME (not just contentEl) so it renders at a sensible
+   centered width instead of full-screen-wide. min() caps it to the viewport on
+   narrow/mobile screens so it never overflows. */
+.read-aloud-progress-modal {
+    width: min(520px, 100%);
+    max-width: 100%;
+}
+
+.read-aloud-progress-visual {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    margin: var(--space-m) 0;
+}
+
+/* Make the 24 bars span the waveform edge-to-edge. The shared
+   .chat-live-wave-bar caps growth at max-width:8px (fine for the narrow chat
+   input), so in this wider modal we spread the bars (space-between) AND raise
+   the per-bar cap so they thicken into a proper full-width waveform. */
+.read-aloud-progress .chat-live-waveform {
+    justify-content: space-between;
+}
+
+.read-aloud-progress .chat-live-wave-bar {
+    max-width: 12px;
+}
+
+.read-aloud-progress-status {
+    color: var(--text-muted);
+    font-size: 13px;
 }

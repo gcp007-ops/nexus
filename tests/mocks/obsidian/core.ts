@@ -1,6 +1,7 @@
 /**
  * Core Obsidian API mocks: Editor, files, App, Vault, Workspace, Platform.
  */
+import { parse, stringify } from 'yaml';
 
 // EditorPosition type
 export interface EditorPosition {
@@ -189,6 +190,14 @@ export function normalizePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/\/+/g, '/');
 }
 
+export function parseYaml(yaml: string): unknown {
+  return parse(yaml);
+}
+
+export function stringifyYaml(obj: unknown): string {
+  return stringify(obj);
+}
+
 // Events / EventRef mocks
 export interface EventRef {
   name?: string;
@@ -226,7 +235,7 @@ export interface MarkdownFileInfo {
 
 // Helper to create mock DOM elements (used internally by components)
 export function createMockElement(tagName: string): HTMLElement {
-  return {
+  const el = {
     tagName: tagName.toUpperCase(),
     classList: {
       add: jest.fn(),
@@ -239,9 +248,12 @@ export function createMockElement(tagName: string): HTMLElement {
     hasClass: jest.fn(() => false),
     toggleClass: jest.fn(),
     setText: jest.fn(),
-    createEl: jest.fn((_tag: string, _opts?: { cls?: string; text?: string; attr?: Record<string, string> }) => createMockElement('div')),
-    createDiv: jest.fn((_cls?: string | Record<string, unknown>) => createMockElement('div')),
-    createSpan: jest.fn((_opts?: Record<string, unknown>) => createMockElement('span')),
+    createEl: jest.fn((tag: string, _opts?: { cls?: string; text?: string; attr?: Record<string, string> }) => createMockElement(typeof tag === 'string' ? tag : 'div')),
+    // Obsidian's createDiv/createSpan are createEl('div'/'span', opts). Delegate to
+    // createEl so tests asserting createEl(...) transparently capture these calls
+    // (the prefer-create-el lint rewrites createEl('div', o) → createDiv(o)).
+    createDiv: jest.fn(),
+    createSpan: jest.fn(),
     empty: jest.fn(),
     remove: jest.fn(),
     appendChild: jest.fn(),
@@ -263,4 +275,13 @@ export function createMockElement(tagName: string): HTMLElement {
     scrollHeight: 0,
     focus: jest.fn()
   } as unknown as HTMLElement;
+
+  const normalizeOpts = (o?: string | Record<string, unknown>) =>
+    typeof o === 'string' ? { cls: o } : o;
+  (el.createDiv as jest.Mock).mockImplementation((o?: string | Record<string, unknown>) =>
+    (el.createEl as jest.Mock)('div', normalizeOpts(o)));
+  (el.createSpan as jest.Mock).mockImplementation((o?: string | Record<string, unknown>) =>
+    (el.createEl as jest.Mock)('span', normalizeOpts(o)));
+
+  return el;
 }

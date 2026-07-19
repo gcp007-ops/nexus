@@ -193,30 +193,26 @@ export class MCPConnector {
      */
     public async initializeAgents(): Promise<void> {
         try {
-            // Ensure customPromptStorage is available if settings are now loaded
-            if (!this.customPromptStorage) {
-                const pluginSettings = this.plugin && isNexusPlugin(this.plugin) ? this.plugin.settings : null;
-                if (pluginSettings) {
-                    try {
-                        // Pass null for db - connector doesn't have access to database
-                        this.customPromptStorage = new CustomPromptStorageService(null, pluginSettings);
-
-                        // Update the agent registry with the new storage service
-                        this.agentRegistry = new AgentRegistrationService(
-                            this.app,
-                            this.plugin,
-                            this.events,
-                            this.serviceManager,
-                            this.customPromptStorage
-                        );
-
-                        logger.systemLog('CustomPromptStorageService initialized during agent initialization');
-                    } catch (error) {
-                        logger.systemError(error as Error, 'Late CustomPromptStorageService Initialization');
+            // Share ONE agent stack with the native chat UI instead of building a
+            // second one here. The DI container already exposes a canonical
+            // `agentRegistrationService` (backed by a shared AgentManager), and
+            // AgentInitializationService self-provisions CustomPromptStorageService
+            // when it's absent — so the shared registry serves the MCP tools too.
+            // initializeAllAgents() is cached, so whoever initializes first wins and
+            // the other call is a no-op: one AppManager, one set of vault watchers,
+            // no duplicate spreadsheet auto-mirror/write-back. Falls back to the
+            // locally-constructed registry if the container isn't available yet.
+            if (this.serviceManager) {
+                try {
+                    const shared = await this.serviceManager.getService<AgentRegistrationService>('agentRegistrationService');
+                    if (shared) {
+                        this.agentRegistry = shared;
                     }
+                } catch (error) {
+                    logger.systemError(error as Error, 'Reuse shared AgentRegistrationService (falling back to local)');
                 }
             }
-            
+
             // Initialize connection manager first
             await this.connectionManager.initialize();
             
@@ -344,7 +340,7 @@ export class MCPConnector {
      * Get schemas for specific tool names (called via get_tools meta-tool)
      * Returns clean schemas WITHOUT common parameters to reduce context bloat
      *
-     * @param toolNames Array of specific tool names like ["contentManager_createNote", "searchManager_searchDirectory"]
+     * @param toolNames Array of specific tool names like ["contentManager_createNote", "searchManager_directory"]
      */
     private getToolsForSpecificNames(toolNames: string[]): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
         const toolSchemas: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [];
@@ -396,7 +392,7 @@ export class MCPConnector {
                     toolSchemas.push({
                         name: toolName,
                         description: toolInstance.description || `Execute ${toolSlug} on ${agentName}`,
-                        inputSchema: cleanSchema as Record<string, unknown>
+                        inputSchema: cleanSchema
                     });
                 } catch {
                     // Skip tools with invalid schemas
@@ -463,7 +459,7 @@ export class MCPConnector {
                         overview: overview,
                         sessionId: sessionId,
                         workspaceId: workspaceId,
-                        instruction: 'Above is the overview of all available agents and their tools. To use specific tools, call get_tools again with the exact tool names (e.g., get_tools({ tools: ["contentManager_createNote", "searchManager_searchDirectory"] }))'
+                        instruction: 'Above is the overview of all available agents and their tools. To use specific tools, call get_tools again with the exact tool names (e.g., get_tools({ tools: ["contentManager_createNote", "searchManager_directory"] }))'
                     };
                 }
 
@@ -551,7 +547,7 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
             if (workspaceContext) {
                 // Inject workspace context from session
                 typedParams.workspaceContext = workspaceContext;
-                typedParams.workspaceId = (typedParams.workspaceId as string | undefined) || workspaceContext.workspaceId;
+                typedParams.workspaceId = (typedParams.workspaceId) || workspaceContext.workspaceId;
                 if (!toolManagerMetaTool && typedParams.context) {
                     typedParams.context.workspaceId = workspaceContext.workspaceId;
                 }
@@ -563,7 +559,7 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
                     typedParams.workspaceContext.workspaceId = 'default';
                 }
 
-                typedParams.workspaceId = (typedParams.workspaceId as string | undefined) || typedParams.workspaceContext.workspaceId;
+                typedParams.workspaceId = (typedParams.workspaceId) || typedParams.workspaceContext.workspaceId;
                 if (!toolManagerMetaTool && typedParams.context && !typedParams.context.workspaceId) {
                     typedParams.context.workspaceId = typedParams.workspaceContext.workspaceId;
                 }

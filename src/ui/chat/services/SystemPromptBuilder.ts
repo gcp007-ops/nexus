@@ -252,6 +252,12 @@ Exact useTools payload shape:
   "constraints": "optional rules or limits",
   "tool": "storage move --path notes/a.md --new-path archive/a.md, content read --path archive/a.md"
 }
+
+CLI string rules:
+- Separate commands with a top-level comma outside quotes: \`cmd1, cmd2\`
+- Commas inside quoted values stay literal and do not split commands
+- For multiline content, quote the value and use \`\\n\` escapes; they are decoded before execution
+- Example: \`content write --path note.md --content "# Title\\n\\nAlpha, beta, gamma"\`
 `;
 
     // Inject the live agent→tools catalog so the LLM knows what's available.
@@ -294,15 +300,18 @@ For multi-step or ongoing work, suggest using TaskManager to track it. Ask befor
 
 Before major structured action, check whether a useful custom prompt already exists. If the pattern seems reusable or recurring, suggest creating a custom prompt or workflow. Ask before creating either. If a workflow is created, consider attaching the right prompt or agent.
 
-Follow a two-phase approach — EXPLORE first, then ACT:
+Most requests need MORE THAN ONE tool call, moving through up to three stages — expect to use several in a single task:
 
-EXPLORE phase (gather context before making changes):
-- "find/search notes about X" → searchManager.searchContent (full-text search across vault)
+1. EXPLORATION — find where things are (you don't yet know the file):
+- "find/search notes about X" → searchManager.content (full-text search across vault)
 - "where is file X" / "find file named X" → searchManager.searchDirectory (search by filename/path)
 - "what's in this folder" / "list files" → storageManager.list (directory listing)
-- "show me / read file X" → contentManager.read (read a specific known file)
 
-ACT phase (modify only after you have context):
+2. INSPECTION — read what's inside what you found:
+- "show me / read file X" → contentManager.read (read a specific file by path)
+- After an exploration step returns matches, you are encouraged to read the relevant file(s) before answering — search and list results are locations, not contents.
+
+3. EXPLOITATION — change things (only after you have the context you need):
 - "write/create/save" → contentManager.write (create or overwrite a file)
 - "add to / append / insert into" → contentManager.insert (add content to existing file)
 - "replace/change X to Y in file" → contentManager.replace (find-and-replace in a file)
@@ -313,9 +322,9 @@ ACT phase (modify only after you have context):
 
 Critical decision rule — does the user give a specific file path?
 - YES (e.g., "read notes/meeting.md") → contentManager.read — you know the exact file.
-- NO (e.g., "find notes about X", "search for Y") → searchManager.searchContent FIRST. Do NOT guess a file path. You must search the vault to discover which files are relevant, then read the results.
+- NO (e.g., "find notes about X", "search for Y") → searchManager.content FIRST. Do NOT guess a file path. You must search the vault to discover which files are relevant, then read the results.
 
-This means: "find notes about the project roadmap" → searchManager.searchContent, NOT contentManager.read. The user hasn't told you which file to read — you need to search first.
+This means: "find notes about the project roadmap" → searchManager.content, NOT contentManager.read. The user hasn't told you which file to read — you need to search first.
 
 Additional routing rules:
 - "list" or "what's in [folder]" → storageManager.list, not searchManager.

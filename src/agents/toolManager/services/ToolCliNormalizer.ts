@@ -56,6 +56,7 @@ export function toKebabCase(value: string): string {
   return value
     .replace(/Manager$/i, '')
     .replace(/Agent$/i, '')
+    .replace(/Tools$/i, '')
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
     .replace(/[_\s]+/g, '-')
     .replace(/--+/g, '-')
@@ -311,7 +312,7 @@ function coerceValue(raw: string, type: string): unknown {
     if (jsonItems !== null) {
       return jsonItems.map((item: unknown) => coerceArrayItem(item, itemType));
     }
-    return splitCsvRespectingQuotes(raw).map(item => coerceValue(item, itemType));
+    return splitArrayInput(raw).map(item => coerceValue(item, itemType));
   }
 
   if (type === 'object') {
@@ -339,13 +340,60 @@ function coerceValue(raw: string, type: string): unknown {
         // Malformed JSON → fall through to CSV split.
       }
     }
-    const items = splitCsvRespectingQuotes(raw);
+    const items = splitArrayInput(raw);
     if (items.length >= 2) return items;
     if (items.length === 1) return items[0];
     return raw;
   }
 
   return raw;
+}
+
+/**
+ * If `raw` is wrapped by a single outer `[...]` pair (depth returns to zero
+ * exactly at the final char), return the unwrapped inner content. Otherwise
+ * return `raw` unchanged. Quote-aware: brackets inside `"..."` or `'...'`
+ * don't affect depth.
+ *
+ * Bug this guards: `set-property --value "[[[A]],[[B]],[[C]]]"` where the
+ * caller intends an array of three Obsidian wikilinks. JSON.parse fails
+ * (wikilinks aren't valid JSON), and the previous CSV fallback split the
+ * raw string verbatim — the outer `[` stayed glued to the first item and
+ * the outer `]` stayed glued to the last, writing `[[[A]]` and `[[C]]]` to
+ * the frontmatter. Stripping the outer pair first leaves `[[A]],[[B]],[[C]]`,
+ * which CSV-splits cleanly into `["[[A]]", "[[B]]", "[[C]]"]`.
+ *
+ * Bare CSV like `[[A]],[[B]]` (no outer wrapper) is preserved: depth zeroes
+ * out mid-string at the close of the first wikilink, so the function bails
+ * and returns `raw` unchanged.
+ */
+export function stripOuterArrayBrackets(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return raw;
+
+  let depth = 0;
+  let quote: '"' | '\'' | null = null;
+  let escaped = false;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === '\'') { quote = ch; continue; }
+    if (ch === '[') depth += 1;
+    else if (ch === ']') {
+      depth -= 1;
+      // Outer pair only matches if depth zeroes out exactly at the final char.
+      // An earlier zero-depth (e.g. `[[A]],[[B]]`) means there's no single
+      // outer pair — leave `raw` alone so the CSV splitter sees it as-is.
+      if (depth === 0 && i < trimmed.length - 1) return raw;
+    }
+  }
+  if (depth !== 0) return raw; // unbalanced — don't touch
+  return trimmed.slice(1, -1);
 }
 
 function coerceArrayItem(item: unknown, itemType: string): unknown {
@@ -409,6 +457,32 @@ export function splitCsvRespectingQuotes(input: string): string[] {
   const trimmed = current.trim();
   if (trimmed.length > 0) items.push(trimmed);
   return items;
+}
+
+/**
+ * Split a raw CLI value into array items for an `array<...>` / `oneOfArray`
+ * slot. Bracket-unwrapping (`stripOuterArrayBrackets`) is only meaningful for a
+ * MULTI-item array, and a multi-item array always carries a top-level comma.
+ * So if the raw value has no top-level comma it is a single scalar and is
+ * returned verbatim — never unwrapped.
+ *
+ * Bug this guards: a lone Obsidian wikilink `[[Note]]` is structurally
+ * indistinguishable from a one-element array literal `[ ... ]` — both open `[`,
+ * close `]`, and balance. `stripOuterArrayBrackets` would eat the outer pair and
+ * write the corrupted `[Note]` to frontmatter. Gating on comma presence keeps
+ * `[[Note]]` intact (no comma → scalar) while still unwrapping a real wrapped
+ * array like `[[[A]],[[B]],[[C]]]` (has commas → unwrap → 3 items).
+ */
+export function splitArrayInput(raw: string): string[] {
+  const direct = splitCsvRespectingQuotes(raw);
+  // Fewer than 2 top-level items ⇒ not a multi-item array, so the outer-bracket
+  // wrapper semantics don't apply. Return the UN-stripped split: a single
+  // `[[Note]]` stays intact (brackets kept), and a zero-item empty/whitespace
+  // value yields `[]` so callers fall through to their raw-scalar handling.
+  if (direct.length < 2) return direct;
+  // 2+ items ⇒ a real array; unwrap a single outer `[...]` pair (if any) and
+  // re-split so `[[[A]],[[B]],[[C]]]` recovers its three wikilinks.
+  return splitCsvRespectingQuotes(stripOuterArrayBrackets(raw));
 }
 
 /**
@@ -494,8 +568,139 @@ export function parseCliForDisplay(toolString: string): CliDisplaySegment[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Context-contract steering
+//
+// The two-tool surface declares memory + goal as required (see UseToolTool's
+// schema), but schema `required` is documentation only — nothing enforces it at
+// runtime. These pure helpers turn a poorly-filled context block into
+// predictable, model-facing steering so a model can self-correct. Shared by
+// production (UseToolTool execution) and the eval harness (recovery grading) so
+// both agree on what "filled correctly" means.
+// ---------------------------------------------------------------------------
+
+export type ContextContractField = 'memory' | 'goal' | 'workspaceId' | 'sessionId';
+
+export interface ContextContractViolation {
+  field: ContextContractField;
+  message: string;
+}
+
+// Placeholder detection. Models don't only send the empty string — they send
+// dismissive fillers ("N/A", "N/A (First turn)", "None yet", "TBD"). We
+// normalize (drop parentheticals + punctuation) then match against compact
+// tokens, known phrases, and a short leading-dismissive heuristic. Real
+// summaries (sentences) pass; one-word/dismissive fillers are caught.
+const COMPACT_PLACEHOLDERS = new Set([
+  'string', 'todo', 'tbd', 'tba', 'na', 'none', 'nil', 'null', 'undefined',
+  'xxx', 'idk', 'placeholder', 'example', 'memory', 'goal', 'empty', 'nothing',
+  'noidea', 'unknown',
+]);
+const PHRASE_PLACEHOLDERS = new Set([
+  'your memory here', 'your goal here', 'no memory', 'no memory yet', 'none yet',
+  'nothing yet', 'not applicable', 'no context', 'no prior context', 'first turn',
+  'no summary', 'to be determined', 'to be added', 'no goal', 'no goal yet',
+]);
+const LEADING_DISMISSIVE = new Set(['na', 'none', 'tbd', 'todo', 'nil', 'nothing', 'empty']);
+
+function normalizeForPlaceholder(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')   // drop parentheticals, e.g. "(first turn)"
+    .replace(/[^a-z0-9]+/g, ' ')   // punctuation/symbols -> space
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function isPlaceholderText(value: string): boolean {
+  const n = normalizeForPlaceholder(value);
+  if (n.length === 0) return true;
+  if (PHRASE_PLACEHOLDERS.has(n)) return true;
+  if (COMPACT_PLACEHOLDERS.has(n.replace(/ /g, ''))) return true;
+  const tokens = n.split(' ');
+  if (tokens.length <= 3 && LEADING_DISMISSIVE.has(tokens[0])) return true;
+  return false;
+}
+
+// memory/goal are required: empty OR placeholder/dismissive is a violation.
+function isMeaningfulContextValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (value.trim().length === 0) return false;
+  return !isPlaceholderText(value);
+}
+
+// workspaceId/sessionId carry valid silent defaults, so absence/empty is fine
+// ("default" / auto-session). Only a present, non-empty placeholder is junk.
+function isPlaceholderJunk(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (value.trim().length === 0) return false;
+  return isPlaceholderText(value);
+}
+
+/**
+ * Collect predictable steering for a useTools context block.
+ * - memory + goal: hard-required (empty or placeholder → steer).
+ * - workspaceId + sessionId: default silently; steer only if present-but-junk.
+ * Pure — no agent registry needed, so the eval harness can call it directly.
+ */
+export function collectContextContractViolations(
+  params: Pick<UseToolParams, 'memory' | 'goal' | 'workspaceId' | 'sessionId'>
+): ContextContractViolation[] {
+  const violations: ContextContractViolation[] = [];
+
+  if (!isMeaningfulContextValue(params.memory)) {
+    violations.push({
+      field: 'memory',
+      message: 'The "memory" field is empty. Fill it with a brief summary of the conversation so far — what you are doing and what you have learned — then re-issue the call.',
+    });
+  }
+  if (!isMeaningfulContextValue(params.goal)) {
+    violations.push({
+      field: 'goal',
+      message: 'The "goal" field is empty. State the current objective in one sentence, then re-issue the call.',
+    });
+  }
+  if (isPlaceholderJunk(params.workspaceId)) {
+    violations.push({
+      field: 'workspaceId',
+      message: 'The "workspaceId" looks like a placeholder. Use "default" for the global workspace, or a real workspace ID — or omit it to default to "default".',
+    });
+  }
+  if (isPlaceholderJunk(params.sessionId)) {
+    violations.push({
+      field: 'sessionId',
+      message: 'The "sessionId" looks like a placeholder. Reuse one stable, human-readable session name for the whole conversation.',
+    });
+  }
+
+  return violations;
+}
+
+/** Build one recoverable, model-facing steering message from violations. */
+export function formatContextContractError(violations: ContextContractViolation[]): string {
+  if (violations.length === 0) return '';
+  if (violations.length === 1) {
+    return `Context incomplete — ${violations[0].message}`;
+  }
+  const lines = violations.map((v) => `- ${v.message}`).join('\n');
+  return `Context incomplete. Fix the following, then re-issue the call:\n${lines}`;
+}
+
 export class ToolCliNormalizer {
   constructor(private agentRegistry: Map<string, IAgent>) {}
+
+  /**
+   * Enforce the required context contract for an EXECUTION (useTools) call.
+   * Throws a recoverable steering error if memory/goal are missing or any
+   * provided ID field is an obvious placeholder. Discovery (getTools) is exempt
+   * — it is often the first call, before there is any conversation to summarize.
+   */
+  validateExecutionContext(params: UseToolParams): void {
+    const violations = collectContextContractViolations(params);
+    if (violations.length > 0) {
+      throw new Error(formatContextContractError(violations));
+    }
+  }
 
   normalizeContext(params: GetToolsParams | UseToolParams): ToolContext {
     if (hasOwn(params, 'context')) {
@@ -561,8 +766,20 @@ export class ToolCliNormalizer {
     return splitTopLevelSegments(command).map(segment => this.parseCommandSegment(segment));
   }
 
-  buildCliSchema(agentName: string, tool: ToolLike): CliToolSchema {
+  buildCliSchema(agentName: string, tool: ToolLike, options?: { compact?: boolean }): CliToolSchema {
     const baseCommand = `${this.getAgentAlias(agentName)} ${toKebabCase(tool.slug)}`;
+
+    // Compact mode (broad/agent-level discovery): just enough to pick a tool and drill in.
+    // Skips the heavy per-argument descriptions + examples that bloat a full `--help` dump.
+    if (options?.compact) {
+      return {
+        agent: agentName,
+        tool: tool.slug,
+        description: tool.description,
+        command: baseCommand
+      };
+    }
+
     const inputSchema = this.stripCommonParams(tool.getParameterSchema() as Record<string, unknown>);
     const properties = isRecord(inputSchema.properties) ? inputSchema.properties : {};
     const required = new Set(Array.isArray(inputSchema.required) ? inputSchema.required.filter((value): value is string => typeof value === 'string') : []);
@@ -675,7 +892,7 @@ export class ToolCliNormalizer {
     });
 
     const params: Record<string, unknown> = {};
-    const positionalArgs = cliSchema.arguments.filter(arg => arg.positional);
+    const positionalArgs = (cliSchema.arguments ?? []).filter(arg => arg.positional);
     let positionalIndex = 0;
 
     for (let index = 2; index < tokens.length; index += 1) {
@@ -702,7 +919,7 @@ export class ToolCliNormalizer {
           if (inlineValue !== undefined) {
             throw new Error(`Negation flag "--${normalizedFlag}" cannot be combined with =value.`);
           }
-          const boolArg = cliSchema.arguments.find(arg => arg.flag === `--${normalizedFlag.slice(3)}` && arg.type === 'boolean');
+          const boolArg = (cliSchema.arguments ?? []).find(arg => arg.flag === `--${normalizedFlag.slice(3)}` && arg.type === 'boolean');
           if (!boolArg) {
             throw new Error(`Unknown flag "${token.value}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
           }
@@ -711,7 +928,7 @@ export class ToolCliNormalizer {
         }
 
         const flagSpec = `--${normalizedFlag}`;
-        const arg = cliSchema.arguments.find(item => item.flag === flagSpec);
+        const arg = (cliSchema.arguments ?? []).find(item => item.flag === flagSpec);
         if (!arg) {
           throw new Error(`Unknown flag "${token.value}" for ${resolved.agentName}.${resolved.toolSlug}. Call getTools first to inspect supported flags.`);
         }
@@ -793,7 +1010,7 @@ export class ToolCliNormalizer {
       positionalIndex += 1;
     }
 
-    for (const arg of cliSchema.arguments) {
+    for (const arg of (cliSchema.arguments ?? [])) {
       if (arg.required && params[arg.name] === undefined) {
         throw new Error(`Missing required argument "${arg.name}" for ${resolved.agentName}.${resolved.toolSlug}.`);
       }
@@ -835,7 +1052,7 @@ export class ToolCliNormalizer {
     };
   }
 
-  private getAgentAlias(agentName: string): string {
+  public getAgentAlias(agentName: string): string {
     return toKebabCase(agentName);
   }
 }

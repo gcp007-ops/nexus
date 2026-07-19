@@ -86,13 +86,6 @@ interface WebLLMInitProgressReport {
   text?: string;
 }
 
-interface WebLLMChatCompletionMessageParam {
-  role: string;
-  content: string;
-  name?: string;
-  tool_call_id?: string;
-}
-
 interface WebLLMChoice {
   message?: {
     content?: string;
@@ -295,7 +288,10 @@ async function loadWebLLM(): Promise<WebLLMLibrary> {
   try {
     // Dynamic import from jsDelivr's esm.run service
     // This serves ESM modules that work in browser contexts
-    const imported: unknown = await import('https://esm.run/@mlc-ai/web-llm');
+    // Pinned to match the model WASM version in WebLLMModels.ts (v0_2_80) and
+    // the worker import — an unpinned 'latest' would run whatever upstream
+    // publishes, in the renderer, with vault access.
+    const imported: unknown = await import('https://esm.run/@mlc-ai/web-llm@0.2.80');
     if (!isWebLLMLibrary(imported)) {
       throw new Error('CreateMLCEngine not found in module');
     }
@@ -507,7 +503,7 @@ export class WebLLMEngine {
 
       // Add a timeout to prevent infinite hangs (5 minute timeout for large models)
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Model loading timed out after 5 minutes')), 5 * 60 * 1000);
+        window.setTimeout(() => reject(new Error('Model loading timed out after 5 minutes')), 5 * 60 * 1000);
       });
 
       this.engine = await Promise.race([enginePromise, timeoutPromise]);
@@ -588,7 +584,7 @@ export class WebLLMEngine {
       await this.resetChat();
 
       const response = await this.engine.chat.completions.create({
-        messages: messages as WebLLMChatCompletionMessageParam[],
+        messages: messages,
         temperature: options?.temperature ?? 0.5,
         max_tokens: options?.maxTokens ?? 2048,
         top_p: options?.topP ?? 0.95,
@@ -658,7 +654,7 @@ export class WebLLMEngine {
       try {
         this.engine.interruptGenerate();
         // Longer wait for interrupt to take effect
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => window.setTimeout(resolve, 500));
       } catch {
         // Ignore interrupt errors
       }
@@ -678,14 +674,14 @@ export class WebLLMEngine {
 
       // For tool continuations, add a longer delay to let WebGPU fully release resources
       if (isToolContinuation) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
       }
 
       // Always reset KV cache BEFORE each generation to ensure clean state
       try {
         await this.resetChat();
         // Longer delay after reset for GPU to fully process
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => window.setTimeout(resolve, 300));
       } catch {
         // Ignore reset errors
       }
@@ -693,7 +689,7 @@ export class WebLLMEngine {
       // Wrap stream creation in try-catch to capture WebGPU errors
       try {
         const stream = (await this.engine.chat.completions.create({
-          messages: messages as WebLLMChatCompletionMessageParam[],
+          messages: messages,
           temperature: options?.temperature ?? 0.5,
           max_tokens: options?.maxTokens ?? 2048,
           top_p: options?.topP ?? 0.95,

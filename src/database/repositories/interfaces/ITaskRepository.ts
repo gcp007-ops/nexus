@@ -79,7 +79,8 @@ export interface UpdateTaskData {
   tags?: string[];
   projectId?: string;
   parentTaskId?: string | null;
-  completedAt?: number;
+  /** number = completion timestamp; null = explicitly clear a stale timestamp; undefined = no change. */
+  completedAt?: number | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -114,7 +115,7 @@ export interface TaskListOptions extends PaginationParams {
 /**
  * Task repository interface
  */
-export interface ITaskRepository extends IRepository<TaskMetadata> {
+export interface ITaskRepository extends IRepository<TaskMetadata, Partial<TaskMetadata>, UpdateTaskData> {
   /**
    * Get tasks for a project with optional filtering/pagination
    */
@@ -129,6 +130,14 @@ export interface ITaskRepository extends IRepository<TaskMetadata> {
    * Get tasks with a specific status in a project
    */
   getByStatus(projectId: string, status: TaskStatus): Promise<TaskMetadata[]>;
+
+  /**
+   * Find tasks whose normalized ID starts with the given compact prefix.
+   *
+   * Used for human-facing short task refs. Callers should treat more than one
+   * result as ambiguous and ask for a longer/full ID.
+   */
+  getByIdPrefix(prefix: string): Promise<TaskMetadata[]>;
 
   /**
    * Get tasks that this task depends ON (upstream dependencies)

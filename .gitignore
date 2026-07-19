@@ -1,12 +1,19 @@
 node_modules/
 
+# Runtime-vendored engine assets (downloaded once at runtime from the pinned CDN,
+# never committed — see HucreEnsurer / PyodideEnsurer).
+hucre/
+pyodide/
+
 cline_docs/
 
 main.js
+*.map
 
 .serena/
 
 connector.js
+nexus-cli.js
 
 .history
 
@@ -28,6 +35,9 @@ docs/mockups/*
 !docs/mockups/*.html
 !docs/mockups/*.css
 !docs/mockups/*.js
+!docs/audits/
+docs/audits/*
+!docs/audits/*.md
 
 Example Files/
 
@@ -98,3 +108,8 @@ claude-code-sourcemap-main/
 # Editor / agent scratch (user-side, not part of the repo)
 .codex-temp/
 .vscode/
+
+# Eval harness run scratch (regenerated each run; seeds under test-vault/notes are kept)
+test-artifacts/
+tests/eval/test-vault/*/
+!tests/eval/test-vault/notes/

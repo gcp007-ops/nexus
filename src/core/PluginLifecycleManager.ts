@@ -14,6 +14,7 @@ import { Settings } from '../settings';
 import { ServiceRegistrar } from './services/ServiceRegistrar';
 import { MaintenanceCommandManager } from './commands/MaintenanceCommandManager';
 import { InlineEditCommandManager } from './commands/InlineEditCommandManager';
+import { ReadAloudCommandManager } from './commands/ReadAloudCommandManager';
 import { ChatUIManager } from './ui/ChatUIManager';
 import { TaskBoardUIManager } from './ui/TaskBoardUIManager';
 import { BackgroundProcessor } from './background/BackgroundProcessor';
@@ -72,11 +73,12 @@ export class PluginLifecycleManager {
     private backgroundProcessor: BackgroundProcessor;
     private settingsTabManager: SettingsTabManager;
     private inlineEditCommandManager: InlineEditCommandManager;
+    private readAloudCommandManager: ReadAloudCommandManager;
     private vaultIngestionManager: VaultIngestionManager;
     private embeddingManager: EmbeddingManager | null = null;
 
     // Pending timer handles for cleanup on shutdown
-    private pendingTimers: ReturnType<typeof setTimeout>[] = [];
+    private pendingTimers: number[] = [];
 
     constructor(config: PluginLifecycleConfig) {
         this.config = config;
@@ -145,6 +147,11 @@ export class PluginLifecycleManager {
             getService: (name, timeoutMs) => this.serviceRegistrar.getService(name, timeoutMs)
         });
 
+        this.readAloudCommandManager = new ReadAloudCommandManager({
+            plugin: config.plugin,
+            app: config.app
+        });
+
         this.vaultIngestionManager = new VaultIngestionManager({
             plugin: config.plugin,
             app: config.app,
@@ -166,8 +173,8 @@ export class PluginLifecycleManager {
             await this.chatUIManager.registerViewEarly();
             await this.taskBoardUIManager.registerViewEarly();
 
-            // PHASE 4: Start background initialization via setTimeout(0)
-            const bgInitTimer = setTimeout(() => {
+            // PHASE 4: Start background initialization via window.setTimeout(0)
+            const bgInitTimer = window.setTimeout(() => {
                 this.startBackgroundInitialization().catch(error => {
                     console.error('[PluginLifecycleManager] Background initialization failed:', error);
                 });
@@ -219,7 +226,7 @@ export class PluginLifecycleManager {
             // Uses a fixed timeout from onload rather than onLayoutReady (which is unreliable, can take 13+s)
             // 3 second delay gives Obsidian enough time to finish loading screen
             if (!Platform.isMobile) {
-                const sqliteTimer = setTimeout(() => {
+                const sqliteTimer = window.setTimeout(() => {
                     void (async () => {
                         try {
                             const adapter = await this.config.serviceManager?.getService<HybridStorageAdapter>('hybridStorageAdapter');
@@ -240,11 +247,11 @@ export class PluginLifecycleManager {
             // Register inline edit commands and context menu
             this.inlineEditCommandManager.registerCommands();
 
+            // Register read-aloud commands and context menus
+            this.readAloudCommandManager.registerCommands();
+
             // Register vault-level ingestion triggers
             this.vaultIngestionManager.register();
-
-            // Check for updates
-            void this.backgroundProcessor.checkForUpdatesOnStartup();
 
             // Update settings tab with loaded services
             this.backgroundProcessor.updateSettingsTabServices();
@@ -350,7 +357,7 @@ export class PluginLifecycleManager {
         try {
             // Cancel any pending timers that haven't fired yet
             for (const timer of this.pendingTimers) {
-                clearTimeout(timer);
+                window.clearTimeout(timer);
             }
             this.pendingTimers = [];
 

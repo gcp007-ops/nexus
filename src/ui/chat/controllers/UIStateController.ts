@@ -60,7 +60,7 @@ export class UIStateController {
       // Normal welcome - ready to create conversation
       setIcon(welcomeIcon, 'sparkles');
 
-      welcomeContent.createEl('div', {
+      welcomeContent.createDiv({
         text: 'Welcome to chat',
         cls: 'chat-welcome-title'
       });
@@ -156,7 +156,7 @@ export class UIStateController {
       const errorEl = container.createDiv('chat-error');
       errorEl.textContent = message;
       
-      this.timeouts.setTimeout(() => errorEl.remove(), 5000);
+      this.timeouts.schedule(() => errorEl.remove(), 5000);
     }
   }
 

@@ -10,8 +10,9 @@
  * Note: Default provider/model/thinking settings moved to DefaultsTab
  */
 
-import { App, Notice } from 'obsidian';
+import { App, Notice, Setting } from 'obsidian';
 import { SettingsRouter } from '../SettingsRouter';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { LLMProviderSettings, LLMProviderConfig } from '../../types/llm/ProviderTypes';
 import { LLMProviderModal, LLMProviderModalConfig } from '../../components/LLMProviderModal';
 import { LLMProviderManager } from '../../services/llm/providers/ProviderManager';
@@ -108,9 +109,11 @@ export class ProvidersTab {
             category: 'cloud'
         },
         'google-gemini-cli': {
-            name: 'Gemini CLI',
-            keyFormat: 'Local Gemini CLI Google login required',
-            signupUrl: 'https://github.com/google-gemini/gemini-cli',
+            name: 'Antigravity CLI',
+            keyFormat: 'Local Antigravity CLI Google login required',
+            // TODO: set to the authoritative Antigravity CLI docs/install URL once published (TBD).
+            // Dropped the deprecated google-gemini/gemini-cli link rather than guess an agy URL.
+            signupUrl: '',
             category: 'cloud'
         },
         mistral: {
@@ -123,6 +126,12 @@ export class ProvidersTab {
             name: 'Groq',
             keyFormat: 'gsk_...',
             signupUrl: 'https://console.groq.com/keys',
+            category: 'cloud'
+        },
+        deepseek: {
+            name: 'DeepSeek',
+            keyFormat: 'sk-...',
+            signupUrl: 'https://platform.deepseek.com/api_keys',
             category: 'cloud'
         },
         deepgram: {
@@ -396,8 +405,69 @@ export class ProvidersTab {
     render(): void {
         this.container.empty();
 
-        // Provider groups only - defaults moved to DefaultsTab
+        // Opt-in secure key storage, then the provider groups.
+        this.renderSecuritySection();
         this.renderProviders();
+    }
+
+    /**
+     * Render the opt-in toggle that moves API keys into Obsidian's device-local
+     * secretStorage and out of the synced data.json. Disabled (with an
+     * explanatory note) when secretStorage is unavailable (Obsidian < 1.11.4).
+     */
+    private renderSecuritySection(): void {
+        const settings = this.services.settings;
+        const available = settings.isSecretStorageAvailable();
+        const enabled = settings.settings.secureApiKeyStorage === true;
+
+        new Setting(this.container)
+            .setName('Store API keys in secure storage')
+            .setDesc(available
+                ? 'Keep API keys in Obsidian’s device-local secure storage instead of the synced settings file. Keys never sync, so you’ll re-enter them once on each device.'
+                : 'Requires Obsidian 1.11.4 or later. On this version, API keys are stored in the settings file.')
+            .addToggle((toggle) => {
+                toggle
+                    .setValue(enabled)
+                    .setDisabled(!available)
+                    .onChange((value) => {
+                        void this.handleSecureStorageToggle(value);
+                    });
+            });
+    }
+
+    /**
+     * Confirm the security-toggle change, apply it, then re-render. A cancelled
+     * confirm re-renders with the unchanged value, resetting the toggle.
+     */
+    private async handleSecureStorageToggle(enable: boolean): Promise<void> {
+        const app = this.services.app;
+        const confirmed = enable
+            ? await ConfirmModal.confirm(app, {
+                variant: 'archive',
+                title: 'Move API keys to secure storage?',
+                body: 'Your API keys will be moved into Obsidian’s device-local secure storage and removed from the synced settings file. You’ll need to re-enter each key once on your other devices.',
+                ctaLabel: 'Move keys'
+            })
+            : await ConfirmModal.confirm(app, {
+                variant: 'remove',
+                title: 'Disable secure storage?',
+                body: 'Your API keys will be written back into the synced settings file and removed from secure storage. They will sync across your devices again.',
+                ctaLabel: 'Disable'
+            });
+
+        if (!confirmed) {
+            this.render();
+            return;
+        }
+
+        try {
+            await this.services.settings.setSecureApiKeyStorage(enable);
+            new Notice(enable ? 'API keys moved to secure storage' : 'Secure storage disabled');
+        } catch (error) {
+            console.error('Failed to update secure key storage:', error);
+            new Notice('Failed to update secure key storage');
+        }
+        this.render();
     }
 
     /**
@@ -487,7 +557,7 @@ export class ProvidersTab {
             groups.push({ title: 'LOCAL PROVIDERS', items: localItems });
         }
 
-        const cloudIds = ['openai', 'anthropic', 'google', 'mistral', 'groq', 'deepgram', 'assemblyai', 'openrouter', 'requesty', 'perplexity', 'github-copilot'];
+        const cloudIds = ['openai', 'anthropic', 'google', 'mistral', 'groq', 'deepseek', 'deepgram', 'assemblyai', 'openrouter', 'requesty', 'perplexity', 'github-copilot'];
         const cloudItems = cloudIds
             .map(id => this.buildProviderCardItem(id, settings))
             .filter((item): item is ProviderCardItem => item !== null);
@@ -598,18 +668,18 @@ export class ProvidersTab {
 
             secondaryOAuthProvider = {
                 providerId: 'google-gemini-cli',
-                providerLabel: 'Gemini CLI',
-                description: 'Use Gemini models through the desktop CLI. Authenticate by running `gemini` in your terminal first.',
+                providerLabel: 'Antigravity CLI',
+                description: 'Use Gemini models through the Antigravity CLI. Install the Antigravity CLI, then run `agy` once in your terminal to complete Google browser sign-in. (There is no `agy auth` command.)',
                 config: { ...geminiCliConfig },
                 oauthConfig: {
-                    providerLabel: 'Gemini CLI',
+                    providerLabel: 'Antigravity CLI',
                     startFlow: () => this.startGeminiCliConnectFlow(),
                 },
                 onConfigChange: async (updatedGeminiCliConfig: LLMProviderConfig) => {
                     await this.persistSecondaryProviderConfig(settings, 'google-gemini-cli', updatedGeminiCliConfig);
                 },
                 statusOnly: true,
-                statusHint: 'run `gemini auth` in your terminal',
+                statusHint: 'run `agy` once in your terminal to sign in (no `agy auth` command)',
             };
         }
 

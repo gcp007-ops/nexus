@@ -35,7 +35,7 @@ export class ConfigModal extends Modal {
 
         // Add configuration type toggle
         const toggleContainer = contentEl.createDiv({ cls: 'mcp-config-toggle' });
-        toggleContainer.createEl('span', { text: 'Configuration type:', cls: 'mcp-config-label' });
+        toggleContainer.createSpan({ text: 'Configuration type:', cls: 'mcp-config-label' });
         new Setting(toggleContainer)
             .setName('First time setup')
             .setDesc('Toggle between first-time setup and adding to an existing configuration')
@@ -122,7 +122,7 @@ export class ConfigModal extends Modal {
         const windowsContent = container.createDiv({ cls: 'mcp-tab-content hidden' });
         this.tabContents['windows'] = windowsContent;
         
-        const instructions = windowsContent.createEl('div');
+        const instructions = windowsContent.createDiv();
         instructions.createEl('p', { text: `To configure Claude Desktop to work with ${BRAND_NAME} on Windows:` });
 
         const steps = instructions.createEl('ol');
@@ -186,7 +186,7 @@ export class ConfigModal extends Modal {
         const macContent = container.createDiv({ cls: 'mcp-tab-content hidden' });
         this.tabContents['mac'] = macContent;
         
-        const instructions = macContent.createEl('div');
+        const instructions = macContent.createDiv();
         instructions.createEl('p', { text: `To configure Claude Desktop to work with ${BRAND_NAME} on Mac:` });
 
         const steps = instructions.createEl('ol');
@@ -250,7 +250,7 @@ export class ConfigModal extends Modal {
         const linuxContent = container.createDiv({ cls: 'mcp-tab-content hidden' });
         this.tabContents['linux'] = linuxContent;
         
-        const instructions = linuxContent.createEl('div');
+        const instructions = linuxContent.createDiv();
         instructions.createEl('p', { text: `To configure Claude Desktop to work with ${BRAND_NAME} on Linux:` });
 
         const steps = instructions.createEl('ol');
@@ -439,7 +439,7 @@ export class ConfigModal extends Modal {
             throw new Error(`${moduleName} is only available on desktop.`);
         }
 
-        const maybeRequire = (globalThis as typeof globalThis & {
+        const maybeRequire = (window.activeWindow as Window & {
             require?: (moduleId: string) => unknown;
         }).require;
 
@@ -476,7 +476,7 @@ export class ConfigModal extends Modal {
             copyButton.onclick = () => {
                 void navigator.clipboard.writeText(JSON.stringify(config, null, 2));
                 copyButton.setText('Copied!');
-                setTimeout(() => copyButton.setText('Copy configuration'), 2000);
+                window.setTimeout(() => copyButton.setText('Copy configuration'), 2000);
             };
         } catch (error) {
             console.error(`[ConfigModal] Failed to populate config for ${tabId}:`, error);

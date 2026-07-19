@@ -19,6 +19,7 @@ import { SearchableCardManager } from '../../components/SearchableCardManager';
 export interface PromptsTabServices {
     customPromptStorage?: CustomPromptStorageService;
     component?: Component;
+    app?: App;
 }
 
 type PromptsView = 'list' | 'detail';
@@ -83,7 +84,7 @@ export class PromptsTab {
     private isNewPrompt = false;
 
     // Auto-save debounce
-    private saveTimeout?: ReturnType<typeof setTimeout>;
+    private saveTimeout?: number;
 
     // Searchable card manager for list view
     private searchableCardManager?: SearchableCardManager<CardItem>;
@@ -234,7 +235,7 @@ export class PromptsTab {
         // Description field
         const descField = form.createDiv('nexus-form-field');
         descField.createEl('label', { text: 'Description', cls: 'nexus-form-label' });
-        descField.createEl('span', {
+        descField.createSpan({
             text: 'A brief description of what this prompt does',
             cls: 'nexus-form-hint'
         });
@@ -249,7 +250,7 @@ export class PromptsTab {
         // System Prompt field
         const promptField = form.createDiv('nexus-form-field');
         promptField.createEl('label', { text: 'System prompt', cls: 'nexus-form-label' });
-        promptField.createEl('span', {
+        promptField.createSpan({
             text: 'Instructions that define this prompt\'s behavior and expertise',
             cls: 'nexus-form-hint'
         });
@@ -273,7 +274,7 @@ export class PromptsTab {
             .onClick(() => {
                 // Cancel any pending debounced save to prevent double-save
                 if (this.saveTimeout) {
-                    clearTimeout(this.saveTimeout);
+                    window.clearTimeout(this.saveTimeout);
                     this.saveTimeout = undefined;
                 }
                 void (async () => {
@@ -399,7 +400,7 @@ export class PromptsTab {
     }
 
     private async confirmDeletePrompt(promptName: string): Promise<boolean> {
-        const modalApp = (globalThis as typeof globalThis & { app?: App }).app;
+        const modalApp = this.services.app;
         if (!modalApp) {
             return false;
         }
@@ -413,10 +414,10 @@ export class PromptsTab {
      */
     private debouncedSave(): void {
         if (this.saveTimeout) {
-            clearTimeout(this.saveTimeout);
+            window.clearTimeout(this.saveTimeout);
         }
 
-        this.saveTimeout = setTimeout(() => {
+        this.saveTimeout = window.setTimeout(() => {
             void this.saveCurrentPrompt();
         }, 500);
     }
@@ -426,7 +427,7 @@ export class PromptsTab {
      */
     destroy(): void {
         if (this.saveTimeout) {
-            clearTimeout(this.saveTimeout);
+            window.clearTimeout(this.saveTimeout);
         }
     }
 }

@@ -9,14 +9,16 @@
  * - FilePickerRenderer (file picker)
  */
 
-import { App, Notice, Component, Modal, ButtonComponent } from 'obsidian';
+import { App, Notice, Component } from 'obsidian';
 import { SettingsRouter } from '../SettingsRouter';
 import { BreadcrumbNav, BreadcrumbNavItem } from '../components/BreadcrumbNav';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { WorkflowEditorRenderer, Workflow } from '../../components/workspace/WorkflowEditorRenderer';
 import { FilePickerRenderer } from '../../components/workspace/FilePickerRenderer';
 import { WorkspaceListRenderer } from '../../components/workspace/WorkspaceListRenderer';
 import { WorkspaceDetailRenderer, DetailCallbacks } from '../../components/workspace/WorkspaceDetailRenderer';
 import { ProjectsManagerView } from '../../components/workspace/ProjectsManagerView';
+import { StatesSectionService, StateSummary } from '../../components/workspace/StatesSectionRenderer';
 import { ProjectWorkspace } from '../../database/workspace-types';
 import { WorkspaceService, type WorkspaceChangeEvent } from '../../services/WorkspaceService';
 import { CustomPromptStorageService } from '../../agents/promptManager/services/CustomPromptStorageService';
@@ -26,14 +28,15 @@ import type { ServiceManager } from '../../core/ServiceManager';
 import type { WorkflowRunService } from '../../services/workflows/WorkflowRunService';
 import type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
 import type { ExternalSyncEvent, HybridStorageAdapter } from '../../database/adapters/HybridStorageAdapter';
+import type { MemoryService } from '../../agents/memoryManager/services/MemoryService';
 
 export interface WorkspacesTabServices {
     app: App;
+    component: Component;
     workspaceService?: WorkspaceService;
     customPromptStorage?: CustomPromptStorageService;
     prefetchedWorkspaces?: ProjectWorkspace[] | null;
     serviceManager?: ServiceManager;
-    component?: Component;
 }
 
 type WorkspacesView = 'list' | 'detail' | 'workflow' | 'filepicker' | 'projects' | 'project-detail' | 'task-detail';
@@ -58,7 +61,7 @@ export class WorkspacesTab {
     private filePickerRenderer?: FilePickerRenderer;
 
     // Auto-save debounce
-    private saveTimeout?: ReturnType<typeof setTimeout>;
+    private saveTimeout?: number;
 
     // Loading state
     private isLoading = true;
@@ -80,8 +83,12 @@ export class WorkspacesTab {
                 getCurrentWorkspace: () => this.currentWorkspace,
                 onNavigateList: () => this.showWorkspaceList(),
                 onNavigateDetail: () => this.showWorkspaceDetail(),
+                onNavigateProjectDetail: () => this.showProjectDetailView(),
+                onNavigateTaskDetail: () => this.showTaskDetailView(),
                 onRender: () => this.render(),
-                buildDetailCallbacks: () => this.buildDetailCallbacks()
+                buildDetailCallbacks: () => this.buildDetailCallbacks(),
+                getApp: () => this.services.app,
+                getComponent: () => this.services.component
             }
         );
 
@@ -238,7 +245,7 @@ export class WorkspacesTab {
         let workspaceService = this.services.workspaceService;
 
         if (this.services.serviceManager) {
-            const timeout = <T>(ms: number) => new Promise<T | undefined>(r => setTimeout(() => r(undefined), ms));
+            const timeout = <T>(ms: number) => new Promise<T | undefined>(r => window.setTimeout(() => r(undefined), ms));
             try {
                 const [service, adapter] = await Promise.all([
                     Promise.race([
@@ -385,8 +392,89 @@ export class WorkspacesTab {
             getTaskService: () => this.projectsManager.getTaskService(),
             onRefreshProjects: () => this.projectsManager.refreshProjects(),
             onOpenProjectDetail: (project) => { void this.openProjectDetailAndRender(project); },
-            safeRegisterDomEvent: (el, eventName, handler) => this.safeRegisterDomEvent(el, eventName, handler)
+            onToggleProjectArchive: (project) => this.toggleProjectArchive(project),
+            safeRegisterDomEvent: (el, eventName, handler) => this.safeRegisterDomEvent(el, eventName, handler),
+            getStatesService: () => this.getStatesService(),
+            getApp: () => this.services.app
         };
+    }
+
+    /**
+     * Build the StatesSectionService implementation by composing MemoryService
+     * (read + update path) and HybridStorageAdapter (delete path).
+     *
+     * Backend contracts (issue #215, backend-coder confirmed):
+     * - Read: MemoryService.getStates(workspaceId) returns workspace-scoped
+     *   states across all sessions, with full snapshot under `item.state`.
+     *   Archive flag lives at `item.state.state.metadata.isArchived`.
+     * - Update: MemoryService.updateState(workspaceId, sessionId, stateId,
+     *   {name?, description?, tags?, state?}) routes through the adapter via
+     *   state_updated JSONL events + SQLite patch.
+     * - Archive: same updateState call with a full snapshot whose
+     *   `state.metadata.isArchived` is toggled.
+     * - Delete: HybridStorageAdapter.deleteState(stateId) directly.
+     */
+    private async getStatesService(): Promise<StatesSectionService | null> {
+        if (!this.services.serviceManager) return null;
+
+        try {
+            const [memoryService, adapter] = await Promise.all([
+                this.services.serviceManager.getService<MemoryService>('memoryService'),
+                this.services.serviceManager.getService<HybridStorageAdapter>('hybridStorageAdapter')
+            ]);
+            if (!memoryService || !adapter) return null;
+
+            const readArchiveFlag = (item: { state?: { state?: { metadata?: Record<string, unknown> } } }): boolean | undefined => {
+                const flag = item.state?.state?.metadata?.isArchived;
+                return typeof flag === 'boolean' ? flag : undefined;
+            };
+
+            return {
+                listStates: async (workspaceId, includeArchived) => {
+                    const result = await memoryService.getStates(workspaceId);
+                    const items: StateSummary[] = result.items.map(item => ({
+                        id: item.id,
+                        name: item.name,
+                        description: item.description,
+                        sessionId: item.sessionId,
+                        workspaceId: item.workspaceId,
+                        created: item.created,
+                        tags: item.tags,
+                        isArchived: readArchiveFlag(item)
+                    }));
+                    return includeArchived
+                        ? items
+                        : items.filter(item => !item.isArchived);
+                },
+                updateState: async (workspaceId, sessionId, stateId, patch) => {
+                    await memoryService.updateState(workspaceId, sessionId, stateId, patch);
+                },
+                archiveState: async (workspaceId, sessionId, stateId, restore) => {
+                    const existing = await memoryService.getState(workspaceId, sessionId, stateId);
+                    if (!existing) {
+                        throw new Error('State not found');
+                    }
+                    const nextInner = {
+                        workspace: existing.state?.workspace,
+                        recentTraces: existing.state?.recentTraces ?? [],
+                        contextFiles: existing.state?.contextFiles ?? [],
+                        metadata: {
+                            ...(existing.state?.metadata ?? {}),
+                            isArchived: !restore
+                        }
+                    };
+                    await memoryService.updateState(workspaceId, sessionId, stateId, {
+                        state: { ...existing, state: nextInner }
+                    });
+                },
+                deleteState: async (_workspaceId, _sessionId, stateId) => {
+                    await adapter.deleteState(stateId);
+                }
+            };
+        } catch (error) {
+            console.error('[WorkspacesTab] Failed to resolve states service:', error);
+            return null;
+        }
     }
 
     // --- Navigation ---
@@ -479,14 +567,11 @@ export class WorkspacesTab {
         }
     }
 
-    private async confirmDeleteWorkspace(workspaceName = this.currentWorkspace?.name || 'Workspace'): Promise<boolean> {
-        return new Promise<boolean>((resolve) => {
-            const modal = new WorkspaceDeleteConfirmModal(
-                this.services.app,
-                workspaceName,
-                resolve
-            );
-            modal.open();
+    private confirmDeleteWorkspace(workspaceName = this.currentWorkspace?.name || 'Workspace'): Promise<boolean> {
+        return ConfirmModal.confirm(this.services.app, {
+            variant: 'delete',
+            title: 'Delete workspace?',
+            body: `Delete workspace "${workspaceName}"? This cannot be undone.`
         });
     }
 
@@ -511,6 +596,38 @@ export class WorkspacesTab {
         if (success) {
             this.currentView = 'project-detail';
             this.render();
+        }
+    }
+
+    /** Switch to the project-detail view (task-detail back-navigation). */
+    private showProjectDetailView(): void {
+        this.currentView = 'project-detail';
+        this.render();
+    }
+
+    /** Switch to the task-detail view (opening a task or jumping via a dep row). */
+    private showTaskDetailView(): void {
+        this.currentView = 'task-detail';
+        this.render();
+    }
+
+    private async toggleProjectArchive(project: ProjectMetadata): Promise<void> {
+        const taskService = await this.projectsManager.getTaskService();
+        if (!taskService) {
+            new Notice('Task service is not available yet');
+            return;
+        }
+
+        const nextStatus: ProjectMetadata['status'] = project.status === 'archived' ? 'active' : 'archived';
+
+        try {
+            await taskService.updateProject(project.id, { status: nextStatus });
+            await this.projectsManager.refreshProjects();
+            this.render();
+            new Notice(nextStatus === 'archived' ? 'Project archived' : 'Project restored');
+        } catch (error) {
+            console.error('[WorkspacesTab] Failed to toggle project archive:', error);
+            new Notice('Failed to update project');
         }
     }
 
@@ -546,7 +663,8 @@ export class WorkspacesTab {
                 this.currentView = 'detail';
                 this.render();
             },
-            async (workflowToRun) => { await this.runWorkflowFromEditor(workflowToRun); }
+            async (workflowToRun) => { await this.runWorkflowFromEditor(workflowToRun); },
+            this.services.component
         );
 
         this.workflowRenderer.render(contentContainer, workflow, isNew, { showBackButton: false });
@@ -758,65 +876,15 @@ export class WorkspacesTab {
     }
 
     private debouncedSave(): void {
-        if (this.saveTimeout) clearTimeout(this.saveTimeout);
-        this.saveTimeout = setTimeout(() => {
+        if (this.saveTimeout) window.clearTimeout(this.saveTimeout);
+        this.saveTimeout = window.setTimeout(() => {
             void this.saveCurrentWorkspace();
         }, 500);
     }
 
     destroy(): void {
-        if (this.saveTimeout) clearTimeout(this.saveTimeout);
+        if (this.saveTimeout) window.clearTimeout(this.saveTimeout);
         this.detailRenderer.destroyForm();
     }
 }
 
-class WorkspaceDeleteConfirmModal extends Modal {
-    private resolved = false;
-
-    constructor(
-        app: App,
-        private readonly workspaceName: string,
-        private readonly onResolve: (confirmed: boolean) => void
-    ) {
-        super(app);
-    }
-
-    onOpen(): void {
-        const { contentEl } = this;
-        contentEl.empty();
-
-        contentEl.createEl('h2', { text: 'Delete workspace?' });
-        contentEl.createEl('p', {
-            text: `Delete workspace "${this.workspaceName}"? This cannot be undone.`,
-            cls: 'setting-item-description'
-        });
-
-        const buttonRow = contentEl.createDiv('modal-button-container');
-
-        new ButtonComponent(buttonRow)
-            .setButtonText('Cancel')
-            .onClick(() => {
-                this.resolve(false);
-                this.close();
-            });
-
-        new ButtonComponent(buttonRow)
-            .setButtonText('Delete')
-            .setWarning()
-            .onClick(() => {
-                this.resolve(true);
-                this.close();
-            });
-    }
-
-    onClose(): void {
-        this.resolve(false);
-        this.contentEl.empty();
-    }
-
-    private resolve(confirmed: boolean): void {
-        if (this.resolved) return;
-        this.resolved = true;
-        this.onResolve(confirmed);
-    }
-}

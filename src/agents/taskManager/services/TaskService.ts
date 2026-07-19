@@ -22,11 +22,24 @@ import {
   ProjectSummary,
   WorkspaceTaskSummary,
   LinkType,
-  TaskStatus
+  TaskStatus,
+  TaskWithNoteLinks,
+  TaskNoteLink,
+  LinkedNoteInput
 } from '../types';
 import type { IProjectRepository, ProjectMetadata } from '../../../database/repositories/interfaces/IProjectRepository';
 import type { ITaskRepository, TaskMetadata, NoteLink } from '../../../database/repositories/interfaces/ITaskRepository';
 import { PaginatedResult } from '../../../types/pagination/PaginationTypes';
+import { logger } from '../../../utils/logger';
+import { formatTaskRef, taskRefToIdPrefix } from '../utils/taskRefs';
+
+/**
+ * Page size used when draining a paginated repository query to build a
+ * full-workspace snapshot. Matches BaseRepository's hard cap
+ * (Math.min(pageSize ?? 25, 200)) so each drained page is the largest the
+ * repository will actually return — minimizing the number of round-trips.
+ */
+const SNAPSHOT_PAGE_SIZE = 200;
 
 export interface TaskBoardEventPayload {
   workspaceId: string;
@@ -46,6 +59,28 @@ export interface TaskBoardNotifier {
  */
 export type WorkspaceResolver = (workspaceId: string) => Promise<string | null>;
 export type TaskQueryReadyWaiter = () => Promise<boolean>;
+
+/**
+ * Normalize a createTask linkedNotes item to a uniform { notePath, linkType } shape.
+ * A plain string is a vault path with linkType defaulting to "reference"; an object
+ * keeps its notePath and falls back to "reference" when linkType is omitted.
+ *
+ * notePath is required and must be non-empty. Tool param schemas are advisory only —
+ * they are not enforced at runtime before reaching the service — so guard here to reject
+ * a missing/empty/whitespace notePath rather than silently persist an empty link.
+ */
+function normalizeLinkedNote(link: LinkedNoteInput): { notePath: string; linkType: LinkType } {
+  if (typeof link === 'string') {
+    if (link.trim().length === 0) {
+      throw new Error('linkedNotes: notePath is required and cannot be empty');
+    }
+    return { notePath: link, linkType: 'reference' };
+  }
+  if (!link.notePath || link.notePath.trim().length === 0) {
+    throw new Error('linkedNotes: notePath is required and cannot be empty');
+  }
+  return { notePath: link.notePath, linkType: link.linkType ?? 'reference' };
+}
 
 export class TaskService {
   private resolveWorkspace: WorkspaceResolver | null;
@@ -68,6 +103,7 @@ export class TaskService {
    */
   private async resolveWorkspaceId(rawId: string): Promise<string> {
     if (!this.resolveWorkspace) return rawId;
+    if (rawId === 'default') return rawId;
 
     const resolvedId = await this.resolveWorkspace(rawId);
     if (!resolvedId) {
@@ -89,6 +125,36 @@ export class TaskService {
     if (!ready) {
       throw new Error('Task storage is not ready yet');
     }
+  }
+
+  private async resolveTask(rawTaskId: string): Promise<TaskMetadata | null> {
+    const exact = await this.taskRepo.getById(rawTaskId);
+    if (exact) return exact;
+
+    const prefix = taskRefToIdPrefix(rawTaskId);
+    if (!prefix) return null;
+
+    const matches = await this.taskRepo.getByIdPrefix(prefix);
+    if (matches.length === 1) {
+      return matches[0];
+    }
+    if (matches.length > 1) {
+      throw new Error(`Task reference "${rawTaskId}" is ambiguous. Use a longer reference or the full taskId.`);
+    }
+
+    return null;
+  }
+
+  private async resolveTaskId(rawTaskId: string): Promise<string> {
+    const task = await this.resolveTask(rawTaskId);
+    return task?.id ?? rawTaskId;
+  }
+
+  private withTaskRef<T extends TaskMetadata>(task: T): T & { taskRef: string } {
+    return {
+      ...task,
+      taskRef: formatTaskRef(task.id)
+    };
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -217,14 +283,16 @@ export class TaskService {
     }
 
     // Verify parent task exists if specified
+    let parentTaskId: string | undefined;
     if (data.parentTaskId) {
-      const parent = await this.taskRepo.getById(data.parentTaskId);
+      const parent = await this.resolveTask(data.parentTaskId);
       if (!parent) {
         throw new Error(`Parent task "${data.parentTaskId}" not found`);
       }
       if (parent.projectId !== projectId) {
         throw new Error('Parent task must be in the same project');
       }
+      parentTaskId = parent.id;
     }
 
     const taskId = await this.taskRepo.create({
@@ -232,7 +300,7 @@ export class TaskService {
       workspaceId: project.workspaceId,
       title: data.title,
       description: data.description,
-      parentTaskId: data.parentTaskId,
+      parentTaskId,
       priority: data.priority ?? 'medium',
       dueDate: data.dueDate,
       assignee: data.assignee,
@@ -243,13 +311,14 @@ export class TaskService {
     // Create initial dependency edges
     if (data.dependsOn && data.dependsOn.length > 0) {
       const allEdges = await this.taskRepo.getAllDependencyEdges(projectId);
-      for (const depId of data.dependsOn) {
-        const depTask = await this.taskRepo.getById(depId);
+      for (const rawDepId of data.dependsOn) {
+        const depTask = await this.resolveTask(rawDepId);
         if (!depTask) {
-          throw new Error(`Dependency task "${depId}" not found`);
+          throw new Error(`Dependency task "${rawDepId}" not found`);
         }
+        const depId = depTask.id;
         if (depTask.projectId !== projectId) {
-          throw new Error(`Dependency task "${depId}" is in a different project`);
+          throw new Error(`Dependency task "${rawDepId}" is in a different project`);
         }
         // Validate no cycle (add edge to check list for subsequent checks)
         const isSafe = this.dagService.validateNoCycle(taskId, depId, allEdges);
@@ -261,10 +330,13 @@ export class TaskService {
       }
     }
 
-    // Create initial note links
+    // Create initial note links. Each item is either a plain string (vault path,
+    // linkType defaults to "reference") or an object { notePath, linkType? }.
+    // Normalize to { notePath, linkType } first so the link-creation loop has a
+    // single shape.
     if (data.linkedNotes && data.linkedNotes.length > 0) {
-      for (const notePath of data.linkedNotes) {
-        await this.taskRepo.addNoteLink(taskId, notePath, 'reference');
+      for (const link of data.linkedNotes.map(normalizeLinkedNote)) {
+        await this.taskRepo.addNoteLink(taskId, link.notePath, link.linkType);
       }
     }
 
@@ -279,19 +351,26 @@ export class TaskService {
     return taskId;
   }
 
-  async listTasks(projectId: string, options?: TaskListOptions): Promise<PaginatedResult<TaskMetadata>> {
+  async listTasks(projectId: string, options?: TaskListOptions): Promise<PaginatedResult<TaskWithNoteLinks>> {
     await this.ensureQueryReady();
 
-    return this.taskRepo.getByProject(projectId, {
+    const parentTaskId = options?.parentTaskId ? await this.resolveTaskId(options.parentTaskId) : undefined;
+
+    const result = await this.taskRepo.getByProject(projectId, {
       page: options?.page,
       pageSize: options?.pageSize,
       status: options?.status,
       priority: options?.priority,
       assignee: options?.assignee,
-      parentTaskId: options?.parentTaskId,
+      parentTaskId,
       sortBy: options?.sortBy,
       sortOrder: options?.sortOrder
     });
+
+    return {
+      ...result,
+      items: await this.attachNoteLinks(result.items)
+    };
   }
 
   async listWorkspaceTasks(workspaceId: string, options?: TaskListOptions): Promise<PaginatedResult<TaskMetadata>> {
@@ -314,23 +393,27 @@ export class TaskService {
   async updateTask(taskId: string, data: UpdateTaskData): Promise<void> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
     if (!task) {
       throw new Error(`Task "${taskId}" not found`);
     }
+    taskId = task.id;
 
-    const updateData: Partial<TaskMetadata> & { updated: number } = {
+    const updateData: Partial<Omit<TaskMetadata, 'completedAt'>> & { updated: number; completedAt?: number | null } = {
       ...data,
       updated: Date.now()
     };
 
-    // Set completedAt when marking done
-    if (data.status === 'done' && task.status !== 'done') {
+    // Invariant: completedAt exists iff the (post-update) status is 'done'.
+    // Use null (not undefined) to clear — undefined is dropped by the repository's
+    // "no change" guards and never reaches the JSONL event or SQLite.
+    const effectiveStatus = data.status ?? task.status;
+    if (effectiveStatus === 'done' && task.status !== 'done') {
+      // Newly completed — stamp the timestamp.
       updateData.completedAt = Date.now();
-    }
-    // Clear completedAt if re-opening
-    if (data.status && data.status !== 'done' && task.status === 'done') {
-      updateData.completedAt = undefined;
+    } else if (effectiveStatus !== 'done' && task.completedAt != null) {
+      // Re-opened, or a non-done task carrying a stale timestamp — clear it.
+      updateData.completedAt = null;
     }
 
     await this.taskRepo.update(taskId, updateData);
@@ -347,10 +430,11 @@ export class TaskService {
   async moveTask(taskId: string, target: { projectId?: string; parentTaskId?: string | null }): Promise<void> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
     if (!task) {
       throw new Error(`Task "${taskId}" not found`);
     }
+    taskId = task.id;
 
     const updateData: Partial<TaskMetadata> & { updated: number } = { updated: Date.now() };
 
@@ -371,15 +455,16 @@ export class TaskService {
         // Move to top-level
         updateData.parentTaskId = undefined;
       } else {
-        const parent = await this.taskRepo.getById(target.parentTaskId);
+        const parent = await this.resolveTask(target.parentTaskId);
         if (!parent) {
           throw new Error(`Parent task "${target.parentTaskId}" not found`);
         }
+        const parentTaskId = parent.id;
         // Can't make a task its own parent
-        if (target.parentTaskId === taskId) {
+        if (parentTaskId === taskId) {
           throw new Error('A task cannot be its own parent');
         }
-        updateData.parentTaskId = target.parentTaskId;
+        updateData.parentTaskId = parentTaskId;
       }
     }
 
@@ -397,10 +482,11 @@ export class TaskService {
   async deleteTask(taskId: string): Promise<void> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
     if (!task) {
       throw new Error(`Task "${taskId}" not found`);
     }
+    taskId = task.id;
 
     await this.taskRepo.delete(taskId);
 
@@ -420,11 +506,13 @@ export class TaskService {
   async addDependency(taskId: string, dependsOnTaskId: string): Promise<void> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
     if (!task) throw new Error(`Task "${taskId}" not found`);
+    taskId = task.id;
 
-    const depTask = await this.taskRepo.getById(dependsOnTaskId);
+    const depTask = await this.resolveTask(dependsOnTaskId);
     if (!depTask) throw new Error(`Dependency task "${dependsOnTaskId}" not found`);
+    dependsOnTaskId = depTask.id;
 
     if (task.projectId !== depTask.projectId) {
       throw new Error('Dependencies must be within the same project');
@@ -442,6 +530,8 @@ export class TaskService {
   async removeDependency(taskId: string, dependsOnTaskId: string): Promise<void> {
     await this.ensureQueryReady();
 
+    taskId = await this.resolveTaskId(taskId);
+    dependsOnTaskId = await this.resolveTaskId(dependsOnTaskId);
     await this.taskRepo.removeDependency(taskId, dependsOnTaskId);
   }
 
@@ -449,7 +539,7 @@ export class TaskService {
   // DAG Queries
   // ────────────────────────────────────────────────────────────────
 
-  async getNextActions(projectId: string): Promise<TaskMetadata[]> {
+  async getNextActions(projectId: string): Promise<TaskWithNoteLinks[]> {
     await this.ensureQueryReady();
 
     const allTasks = await this.taskRepo.getByProject(projectId, { pageSize: 10000 });
@@ -461,12 +551,14 @@ export class TaskService {
 
     // Sort by priority then creation date
     const priorityOrder: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 };
-    return allTasks.items
+    const ready = allTasks.items
       .filter(t => readyIds.has(t.id))
       .sort((a, b) => {
         const pDiff = (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
         return pDiff !== 0 ? pDiff : a.created - b.created;
       });
+
+    return this.attachNoteLinks(ready);
   }
 
   async getBlockedTasks(projectId: string): Promise<TaskWithBlockers[]> {
@@ -484,44 +576,87 @@ export class TaskService {
     const blockedNodes = this.dagService.getBlockedTasks(nodes, allEdges);
     const blockedIds = new Set(blockedNodes.map(n => n.id));
 
-    const result: TaskWithBlockers[] = [];
+    // First pass: build the result from raw tasks, recording which task IDs actually
+    // land in the response (blocked tasks ∪ their active blockers). We then enrich ONLY
+    // that subset with note links, rather than every task in the project — getNoteLinks
+    // is one query per task, so enriching all project tasks here would be O(all-tasks)
+    // even when only a handful are returned.
+    const rawResult: TaskWithBlockers[] = [];
+    const returnedIds = new Set<string>();
     for (const task of allTasks.items) {
       if (!blockedIds.has(task.id)) continue;
 
       // Find which dependencies are blocking
-      const blockers: TaskMetadata[] = [];
+      const blockers: TaskWithNoteLinks[] = [];
       for (const edge of allEdges) {
         if (edge.taskId !== task.id) continue;
         const depTask = taskMap.get(edge.dependsOnTaskId);
         if (depTask && depTask.status !== 'done' && depTask.status !== 'cancelled') {
-          blockers.push(depTask);
+          returnedIds.add(depTask.id);
+          // Cast: placeholder until enrichment below replaces this with the enriched task.
+          blockers.push(depTask as TaskWithNoteLinks);
         }
       }
-      result.push({ task, blockedBy: blockers });
+      returnedIds.add(task.id);
+      rawResult.push({ task: task as TaskWithNoteLinks, blockedBy: blockers });
     }
 
-    return result;
+    // Enrich only the tasks that appear in the result, then swap placeholders for the
+    // enriched versions via a lookup (keeps the enrich-once dedup — each returned task
+    // is fetched at most once).
+    const enriched = await this.attachNoteLinks(
+      allTasks.items.filter(t => returnedIds.has(t.id))
+    );
+    const enrichedById = new Map<string, TaskWithNoteLinks>();
+    for (const t of enriched) {
+      enrichedById.set(t.id, t);
+    }
+
+    return rawResult.map(entry => ({
+      task: enrichedById.get(entry.task.id) ?? { ...this.withTaskRef(entry.task), noteLinks: [] },
+      blockedBy: entry.blockedBy.map(b => enrichedById.get(b.id) ?? { ...this.withTaskRef(b), noteLinks: [] })
+    }));
   }
 
   async getDependencyTree(taskId: string): Promise<DependencyTree> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
     if (!task) throw new Error(`Task "${taskId}" not found`);
+    taskId = task.id;
 
     const allTasks = await this.taskRepo.getByProject(task.projectId, { pageSize: 10000 });
     const allEdges = await this.taskRepo.getAllDependencyEdges(task.projectId);
 
-    const taskMap = new Map<string, TaskMetadata>();
-    for (const t of allTasks.items) {
-      taskMap.set(t.id, t);
-    }
-
     const nodes: TaskNode[] = allTasks.items.map(t => ({ id: t.id, status: t.status }));
     const { dependencies, dependents } = this.dagService.getDependencyTree(taskId, nodes, allEdges);
-    const mapTaskIds = (taskIds: string[]): Array<{ task: TaskMetadata; dependencies: never[]; dependents: never[] }> =>
-      taskIds.reduce<Array<{ task: TaskMetadata; dependencies: never[]; dependents: never[] }>>((acc, relatedTaskId) => {
-        const relatedTask = taskMap.get(relatedTaskId);
+
+    // Enrich ONLY the tasks that appear in the tree (root ∪ dependencies ∪ dependents),
+    // not every task in the project. getNoteLinks is one query per task, so enriching all
+    // project tasks would be O(all-tasks) even when the tree is small. The root may not
+    // appear in getByProject results (e.g. cross-project edge cases), so include it
+    // explicitly to guarantee it carries note links.
+    const treeIds = new Set<string>([task.id, ...dependencies, ...dependents]);
+    const tasksById = new Map<string, TaskMetadata>();
+    for (const t of allTasks.items) {
+      tasksById.set(t.id, t);
+    }
+    const tasksToEnrich: TaskMetadata[] = [task];
+    for (const id of treeIds) {
+      if (id === task.id) continue;
+      const t = tasksById.get(id);
+      if (t) tasksToEnrich.push(t);
+    }
+
+    const enriched = await this.attachNoteLinks(tasksToEnrich);
+    const enrichedById = new Map<string, TaskWithNoteLinks>();
+    for (const t of enriched) {
+      enrichedById.set(t.id, t);
+    }
+
+    const mapTaskIds = (taskIds: string[]): DependencyTree[] =>
+      taskIds.reduce<DependencyTree[]>((acc, relatedTaskId) => {
+        const relatedTask = enrichedById.get(relatedTaskId);
         if (relatedTask) {
           acc.push({ task: relatedTask, dependencies: [], dependents: [] });
         }
@@ -529,7 +664,7 @@ export class TaskService {
       }, []);
 
     return {
-      task,
+      task: enrichedById.get(task.id) ?? { ...this.withTaskRef(task), noteLinks: [] },
       dependencies: mapTaskIds(dependencies),
       dependents: mapTaskIds(dependents)
     };
@@ -542,8 +677,9 @@ export class TaskService {
   async linkNote(taskId: string, notePath: string, linkType: LinkType): Promise<void> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
     if (!task) throw new Error(`Task "${taskId}" not found`);
+    taskId = task.id;
 
     await this.taskRepo.addNoteLink(taskId, notePath, linkType);
 
@@ -559,7 +695,8 @@ export class TaskService {
   async unlinkNote(taskId: string, notePath: string): Promise<void> {
     await this.ensureQueryReady();
 
-    const task = await this.taskRepo.getById(taskId);
+    const task = await this.resolveTask(taskId);
+    taskId = task?.id ?? taskId;
     await this.taskRepo.removeNoteLink(taskId, notePath);
 
     if (task) {
@@ -576,13 +713,85 @@ export class TaskService {
   async getNoteLinks(taskId: string): Promise<NoteLink[]> {
     await this.ensureQueryReady();
 
-    return this.taskRepo.getNoteLinks(taskId);
+    const task = await this.resolveTask(taskId);
+    return this.taskRepo.getNoteLinks(task?.id ?? taskId);
+  }
+
+  /**
+   * Enrich a batch of tasks with their linked-note metadata for AI-facing read surfaces.
+   *
+   * Note links live in a separate table from tasks, so they must be joined per task.
+   * Fetches are parallelized with Promise.all (no batch repo method exists) and each
+   * task's lookup falls back to an empty array on failure so one bad task never sinks
+   * the whole read. Mirrors the UI enrichment in TaskBoardDataController.
+   *
+   * N+1 note: this issues one getNoteLinks call per task. Parallelization keeps it to a
+   * single await; an aggregate repo method (e.g. getNoteLinksForTasks) would reduce the
+   * round-trip count if list sizes grow — documented as acceptable for current scale.
+   */
+  private async attachNoteLinks(tasks: TaskMetadata[]): Promise<TaskWithNoteLinks[]> {
+    const linkArrays = await Promise.all(
+      tasks.map(task =>
+        this.taskRepo.getNoteLinks(task.id).catch((error) => {
+          // Degrade to [] so one bad task never sinks the whole read, but route the
+          // failure through the observability seam so a persistent getNoteLinks failure
+          // is distinguishable from a task that genuinely has no links. systemWarn is the
+          // project's centralized warn-level seam (muted by default; flipping warn on
+          // emits everywhere) — so this is latent until warn-level logging is enabled.
+          logger.systemWarn(
+            `getNoteLinks failed for task ${task.id}; returning empty noteLinks: ${error instanceof Error ? error.message : String(error)}`,
+            'TaskService.attachNoteLinks'
+          );
+          return [] as NoteLink[];
+        })
+      )
+    );
+
+    return tasks.map((task, index) => ({
+      ...this.withTaskRef(task),
+      noteLinks: linkArrays[index].map((link): TaskNoteLink => ({
+        notePath: link.notePath,
+        linkType: link.linkType
+      }))
+    }));
   }
 
   async getTasksForNote(notePath: string): Promise<TaskMetadata[]> {
     await this.ensureQueryReady();
 
     return this.taskRepo.getByLinkedNote(notePath);
+  }
+
+  /**
+   * Drain every page of a paginated repository query into a single array.
+   *
+   * The underlying repository hard-caps pageSize at SNAPSHOT_PAGE_SIZE
+   * (BaseRepository.queryPaginated), so a single large-pageSize request
+   * silently returns only the first page while totalItems still reports the
+   * true count — the root cause of issue #272's undercount. This walks
+   * pages sequentially until hasNextPage is false so callers see the whole set.
+   *
+   * @param loadPage - loads a single 0-indexed page
+   * @returns all items across pages plus the repository's reported totalItems
+   */
+  private async collectAllPages<T>(
+    loadPage: (page: number) => Promise<PaginatedResult<T>>
+  ): Promise<{ items: T[]; totalItems: number }> {
+    const items: T[] = [];
+    let page = 0;
+    let totalItems = 0;
+
+    for (;;) {
+      const result = await loadPage(page);
+      if (page === 0) {
+        totalItems = result.totalItems;
+      }
+      items.push(...result.items);
+      if (!result.hasNextPage) {
+        return { items, totalItems };
+      }
+      page += 1;
+    }
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -593,16 +802,40 @@ export class TaskService {
     await this.ensureQueryReady();
 
     workspaceId = await this.resolveWorkspaceId(workspaceId);
-    const projects = await this.projectRepo.getByWorkspace(workspaceId, { pageSize: 1000 });
-    const allTasks = await this.taskRepo.getByWorkspace(workspaceId, { pageSize: 10000 });
+    // Drain all pages — a single large-pageSize request would clamp to
+    // SNAPSHOT_PAGE_SIZE and silently truncate workspaces with >200 tasks
+    // (issue #272). projectSnapshot.totalItems / taskSnapshot.totalItems
+    // remain the true repository-reported totals.
+    const [projectSnapshot, taskSnapshot] = await Promise.all([
+      this.collectAllPages(page =>
+        this.projectRepo.getByWorkspace(workspaceId, { page, pageSize: SNAPSHOT_PAGE_SIZE })
+      ),
+      this.collectAllPages(page =>
+        this.taskRepo.getByWorkspace(workspaceId, { page, pageSize: SNAPSHOT_PAGE_SIZE })
+      )
+    ]);
+
+    const projects = projectSnapshot.items;
+    const allTasks = taskSnapshot.items;
+
+    // Visible projects exclude archived ones. A task is visible iff it has no
+    // owning project (orphan) OR its owning project is not archived. Filtering
+    // at the TASK level (rather than "if any projects exist, filter; else keep
+    // all") means: when every project is archived, only genuinely orphan tasks
+    // survive — archived-project tasks are never silently counted, and
+    // legitimate projectless tasks are never wrongly hidden (issue #272 MINOR-2).
+    const archivedProjectIds = new Set(
+      projects.filter(project => project.status === 'archived').map(project => project.id)
+    );
+    const visibleTasks = allTasks.filter(task => !archivedProjectIds.has(task.projectId));
 
     // Build project summaries
     const projectItems: ProjectSummary[] = [];
     const taskCountByProject = new Map<string, number>();
-    for (const task of allTasks.items) {
+    for (const task of visibleTasks) {
       taskCountByProject.set(task.projectId, (taskCountByProject.get(task.projectId) ?? 0) + 1);
     }
-    for (const project of projects.items) {
+    for (const project of projects) {
       if (project.status !== 'archived') {
         projectItems.push({
           id: project.id,
@@ -617,7 +850,7 @@ export class TaskService {
     const byStatus: Record<TaskStatus, number> = { todo: 0, in_progress: 0, done: 0, cancelled: 0 };
     let overdue = 0;
     const now = Date.now();
-    for (const task of allTasks.items) {
+    for (const task of visibleTasks) {
       byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
       if (task.dueDate && task.dueDate < now && task.status !== 'done' && task.status !== 'cancelled') {
         overdue++;
@@ -627,14 +860,14 @@ export class TaskService {
     // Compute next actions in-memory from already-fetched workspace tasks.
     // Fetch edges per active project in parallel (avoids N+1 sequential getNextActions calls
     // that each re-fetched all tasks + edges independently).
-    const activeProjects = projects.items.filter(p => p.status === 'active');
+    const activeProjects = projects.filter(p => p.status === 'active');
     const edgeArrays = await Promise.all(
       activeProjects.map(p => this.taskRepo.getAllDependencyEdges(p.id))
     );
     const allEdges: Edge[] = edgeArrays.flat();
 
     const activeProjectIds = new Set(activeProjects.map(p => p.id));
-    const activeTasks = allTasks.items.filter(t => activeProjectIds.has(t.projectId));
+    const activeTasks = visibleTasks.filter(t => activeProjectIds.has(t.projectId));
     const nodes: TaskNode[] = activeTasks.map(t => ({ id: t.id, status: t.status }));
     const readyNodes = this.dagService.getNextActions(nodes, allEdges);
     const readyIds = new Set(readyNodes.map(n => n.id));
@@ -649,23 +882,39 @@ export class TaskService {
       .slice(0, 5);
 
     // Recently completed (last 5)
-    const completed = allTasks.items
+    const completed = visibleTasks
       .filter(t => t.status === 'done' && t.completedAt)
       .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
       .slice(0, 5);
 
+    // Enrich only the two short lists surfaced to the AI (max 5 each) with note links —
+    // enriching the entire workspace task set would be wasteful since the summary only
+    // returns these slices.
+    const [nextActionsWithLinks, completedWithLinks] = await Promise.all([
+      this.attachNoteLinks(topNextActions),
+      this.attachNoteLinks(completed)
+    ]);
+
+    // INTENTIONAL ASYMMETRY (issue #272, user-confirmed):
+    //  - projects.total stays the TRUE repository count (includes archived
+    //    projects) so any "N projects" header keeps showing the real total.
+    //  - tasks.total becomes the VISIBLE-only count (excludes archived-project
+    //    tasks) so it is consistent with byStatus/nextActions/recentlyCompleted,
+    //    which are all computed from visibleTasks. #272 is specifically a
+    //    task-undercount bug; flipping projects.total to visible-only would be
+    //    an unflagged scope expansion. Documented here + in the PR description.
     return {
       projects: {
-        total: projects.totalItems,
+        total: projectSnapshot.totalItems,
         active: projectItems.filter(p => p.status === 'active').length,
         items: projectItems
       },
       tasks: {
-        total: allTasks.totalItems,
+        total: visibleTasks.length,
         byStatus,
         overdue,
-        nextActions: topNextActions,
-        recentlyCompleted: completed
+        nextActions: nextActionsWithLinks,
+        recentlyCompleted: completedWithLinks
       }
     };
   }

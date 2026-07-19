@@ -12,7 +12,6 @@ import {
   ImageValidationResult,
   ImageCostDetails,
   ImageGenerationError,
-  ImageProvider,
   ImageModel,
   ImageUsage
 } from '../types/ImageTypes';
@@ -93,7 +92,7 @@ export abstract class BaseImageAdapter extends BaseAdapter {
           prompt: finalParams.prompt,
           revisedPrompt: response.revisedPrompt,
           model: finalParams.model || this.currentModel,
-          provider: this.name as ImageProvider,
+          provider: this.name,
           dimensions: response.dimensions,
           fileSize: response.imageData.length,
           format: response.format,
@@ -136,7 +135,7 @@ export abstract class BaseImageAdapter extends BaseAdapter {
    */
   private createTimeoutPromise(timeoutMs: number): Promise<never> {
     return new Promise((_, reject) => {
-      setTimeout(() => {
+      window.setTimeout(() => {
         reject(new Error('Image generation timed out'));
       }, timeoutMs);
     });

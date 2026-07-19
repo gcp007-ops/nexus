@@ -10,12 +10,13 @@
  */
 
 import { Vault, TFile, normalizePath } from 'obsidian';
+import { tryResolveVaultPath } from '../../../../core/vaultPath';
 import {
   IngestFileRequest,
   IngestToolResult,
   IngestProgressCallback,
   PdfPageContent,
-  SpreadsheetSheetContent,
+  OcrExtractedImage,
   TranscriptionSegment,
 } from '../../types';
 import { detectFileType } from './FileTypeDetector';
@@ -24,16 +25,10 @@ import { extractPdfText } from './PdfTextExtractor';
 import { extractPptxContent } from './PptxExtractionService';
 import { ocrPdf, OcrServiceDeps } from './OcrService';
 import {
-  extractSpreadsheetSheets,
-  MAX_SHEET_COLUMNS,
-  MAX_SHEET_ROWS
-} from './SpreadsheetExtractionService';
-import {
   buildAudioNote,
   buildDocxNote,
   buildPdfNote,
   buildPptxNote,
-  buildSpreadsheetSheetNote
 } from './OutputNoteBuilder';
 import { TranscriptionService } from '../../../../services/llm/TranscriptionService';
 import { getTranscriptionProviders, type TranscriptionProvider } from '../../../../services/llm/types/VoiceTypes';
@@ -58,7 +53,14 @@ export async function processFile(
   onProgress?: IngestProgressCallback
 ): Promise<IngestToolResult> {
   const startTime = Date.now();
-  const filePath = normalizePath(request.filePath);
+  // Confine the caller-supplied input path to the vault. The output note and any
+  // OCR asset folder are both derived from this path, so confining it here keeps
+  // every downstream write inside the vault.
+  const resolvedInput = tryResolveVaultPath(request.filePath);
+  if (!resolvedInput.ok) {
+    return { success: false, error: resolvedInput.error };
+  }
+  const filePath = resolvedInput.path;
   const warnings: string[] = [];
 
   // Validate file exists
@@ -75,7 +77,7 @@ export async function processFile(
   if (!fileType) {
     return {
       success: false,
-      error: 'Unsupported file type. Supported: PDF, DOCX, PPTX, XLSX, MP3, WAV, M4A, OGG, FLAC, WEBM, AAC',
+      error: 'Unsupported file type. Supported: PDF, DOCX, PPTX, MP3, WAV, M4A, OGG, FLAC, WEBM, AAC',
     };
   }
 
@@ -117,18 +119,22 @@ export async function processFile(
     if (result.warnings) warnings.push(...result.warnings);
     onProgress?.({ filePath, stage: 'extracting', progress: 100 });
   } else {
-    onProgress?.({ filePath, stage: 'extracting', progress: 0 });
-    const result = await processSpreadsheet(fileData, file.name, filePath);
-    noteWrites = result.notes;
-    if (result.warnings) warnings.push(...result.warnings);
-    onProgress?.({ filePath, stage: 'extracting', progress: 100 });
+    return {
+      success: false,
+      error: 'Unsupported file type.',
+    };
   }
 
   onProgress?.({ filePath, stage: 'building' });
 
   const outputPaths: string[] = [];
   for (const noteWrite of noteWrites) {
-    const normalizedOutput = normalizePath(noteWrite.outputPath);
+    // Defence in depth: confine the derived output note path to the vault.
+    const resolvedOutput = tryResolveVaultPath(noteWrite.outputPath);
+    if (!resolvedOutput.ok) {
+      return { success: false, error: resolvedOutput.error };
+    }
+    const normalizedOutput = resolvedOutput.path;
     const existingFile = deps.vault.getFileByPath(normalizedOutput);
 
     if (existingFile) {
@@ -166,6 +172,7 @@ async function processPdf(
   const warnings: string[] = [];
 
   let pages: PdfPageContent[];
+  let images: OcrExtractedImage[] = [];
 
   if (mode === 'vision') {
     onProgress?.({ filePath, stage: 'extracting', progress: 0 });
@@ -176,7 +183,7 @@ async function processPdf(
       throw new Error('Vision mode requires ocrProvider and ocrModel parameters');
     }
 
-    pages = await ocrPdf(
+    const ocrResult = await ocrPdf(
       fileData,
       provider,
       model,
@@ -186,6 +193,8 @@ async function processPdf(
         onProgress?.({ filePath, stage: 'extracting', progress });
       }
     );
+    pages = ocrResult.pages;
+    images = ocrResult.images;
   } else {
     onProgress?.({ filePath, stage: 'extracting', progress: 0 });
     pages = await extractPdfText(fileData);
@@ -201,8 +210,153 @@ async function processPdf(
     );
   }
 
+  // Save any embedded OCR images into a per-note asset folder and rewrite the
+  // markdown refs to Obsidian embeds. The folder is namespaced by the source
+  // file, so images from different PDFs (both named "img-0.jpeg") never collide.
+  if (images.length > 0) {
+    const saved = await saveOcrImages(images, filePath, deps.vault);
+    if (saved.length > 0) {
+      pages = pages.map(page => ({
+        ...page,
+        // Match refs against only this page's images — native Mistral reuses
+        // ids like "img-0.jpeg" across pages.
+        text: rewriteImageRefs(page.text, saved.filter(s => s.pageNumber === page.pageNumber)),
+      }));
+    }
+    if (saved.length < images.length) {
+      warnings.push(
+        `${images.length - saved.length} OCR image(s) could not be saved.`
+      );
+    }
+  }
+
   const content = buildPdfNote(fileName, pages);
   return { content, pageCount: pages.length, warnings };
+}
+
+interface SavedOcrImage {
+  pageNumber: number;
+  refId: string;
+  vaultPath: string;
+}
+
+/**
+ * Decode and write OCR images into a per-note asset folder next to the output
+ * note. For "notes/report.pdf" the folder is "notes/report/", so re-ingesting
+ * overwrites deterministically and cross-document names never collide.
+ */
+async function saveOcrImages(
+  images: OcrExtractedImage[],
+  sourceFilePath: string,
+  vault: Vault
+): Promise<SavedOcrImage[]> {
+  // Defence in depth: confine the per-note OCR asset folder to the vault.
+  const assetFolderResult = tryResolveVaultPath(buildAssetFolderPath(sourceFilePath));
+  if (!assetFolderResult.ok) {
+    return [];
+  }
+  const assetFolder = assetFolderResult.path;
+  await ensureFolder(vault, assetFolder);
+
+  const saved: SavedOcrImage[] = [];
+  for (let i = 0; i < images.length; i++) {
+    const decoded = decodeDataUrl(images[i].dataUrl);
+    if (!decoded) continue;
+
+    const fileName = `img-${i}.${decoded.extension}`;
+    const vaultPath = normalizePath(`${assetFolder}/${fileName}`);
+
+    const existing = vault.getFileByPath(vaultPath);
+    if (existing instanceof TFile) {
+      await vault.modifyBinary(existing, decoded.bytes);
+    } else {
+      await vault.createBinary(vaultPath, decoded.bytes);
+    }
+
+    saved.push({ pageNumber: images[i].pageNumber, refId: images[i].refId, vaultPath });
+  }
+
+  return saved;
+}
+
+/** Rewrite markdown `![alt](refId)` image links into Obsidian `![[vaultPath]]` embeds. */
+function rewriteImageRefs(text: string, saved: SavedOcrImage[]): string {
+  let result = text;
+  for (const img of saved) {
+    const escaped = img.refId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`!\\[[^\\]]*\\]\\(\\s*${escaped}\\s*(?:\\s+"[^"]*")?\\)`, 'g');
+    result = result.replace(re, `![[${img.vaultPath}]]`);
+  }
+  return result;
+}
+
+/** "notes/report.pdf" -> "notes/report" (per-note asset folder). */
+function buildAssetFolderPath(sourceFilePath: string): string {
+  const normalized = normalizePath(sourceFilePath);
+  const dotIndex = normalized.lastIndexOf('.');
+  const base = dotIndex === -1 ? normalized : normalized.slice(0, dotIndex);
+  return base;
+}
+
+/** Ensure a folder (and its ancestors) exists in the vault. */
+async function ensureFolder(vault: Vault, folderPath: string): Promise<void> {
+  const normalized = normalizePath(folderPath);
+  if (!normalized || normalized === '/' || normalized === '.') return;
+  if (vault.getFolderByPath(normalized)) return;
+
+  const segments = normalized.split('/').filter(Boolean);
+  let current = '';
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment;
+    if (vault.getFolderByPath(current)) continue;
+    try {
+      await vault.createFolder(current);
+    } catch {
+      // Race or already-exists — safe to ignore; verified on next iteration.
+    }
+  }
+}
+
+/** Decode a base64 data URL into bytes plus a file extension derived from its MIME. */
+function decodeDataUrl(
+  dataUrl: string
+): { bytes: ArrayBuffer; extension: string } | null {
+  const match = /^data:([^;,]+)?(?:;base64)?,([\s\S]*)$/.exec(dataUrl);
+  if (!match) return null;
+
+  const mime = (match[1] || 'image/png').toLowerCase();
+  const base64 = match[2];
+  if (!base64) return null;
+
+  let binary: string;
+  try {
+    binary = atob(base64);
+  } catch {
+    return null;
+  }
+
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return { bytes: bytes.buffer, extension: mimeToExtension(mime) };
+}
+
+function mimeToExtension(mime: string): string {
+  const map: Record<string, string> = {
+    'image/jpeg': 'jpeg',
+    'image/jpg': 'jpeg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'image/bmp': 'bmp',
+    'image/tiff': 'tiff',
+    'image/svg+xml': 'svg',
+  };
+  if (map[mime]) return map[mime];
+  const subtype = mime.split('/')[1] || 'png';
+  return subtype.replace(/[^a-z0-9]/g, '') || 'png';
 }
 
 /** Process a DOCX file */
@@ -228,44 +382,6 @@ async function processPptx(
   return {
     content: buildPptxNote(fileName, result.slides),
     warnings: result.warnings.length > 0 ? result.warnings : undefined
-  };
-}
-
-/** Process an XLSX file */
-async function processSpreadsheet(
-  fileData: ArrayBuffer,
-  fileName: string,
-  filePath: string
-): Promise<{ notes: NoteWrite[]; warnings?: string[] }> {
-  const sheets = await extractSpreadsheetSheets(fileData);
-  const validSheets: SpreadsheetSheetContent[] = [];
-  const warnings: string[] = [];
-
-  for (const sheet of sheets) {
-    if (sheet.totalColumns > MAX_SHEET_COLUMNS || sheet.totalRows > MAX_SHEET_ROWS) {
-      warnings.push(
-        `Skipped sheet "${sheet.sheetName}" because it exceeds the spreadsheet limit ` +
-        `(${sheet.totalColumns} columns x ${sheet.totalRows} rows; max ${MAX_SHEET_COLUMNS} x ${MAX_SHEET_ROWS}).`
-      );
-      continue;
-    }
-
-    validSheets.push(sheet);
-  }
-
-  if (validSheets.length === 0) {
-    throw new Error(
-      `No sheets were converted. All sheets exceed the spreadsheet limit ` +
-      `(max ${MAX_SHEET_COLUMNS} columns x ${MAX_SHEET_ROWS} rows).`
-    );
-  }
-
-  return {
-    notes: validSheets.map((sheet) => ({
-      outputPath: buildSpreadsheetSheetOutputPath(filePath, sheet.sheetName),
-      content: buildSpreadsheetSheetNote(fileName, sheet)
-    })),
-    warnings: warnings.length > 0 ? warnings : undefined
   };
 }
 
@@ -331,25 +447,10 @@ async function processAudio(
 
 /**
  * Build the output .md path from the source file path.
- * Example: "notes/report.pdf" → "notes/report.md"
+ * Example: "notes/report.pdf" -> "notes/report.md"
  */
 function buildOutputPath(filePath: string): string {
   const dotIndex = filePath.lastIndexOf('.');
   if (dotIndex === -1) return filePath + '.md';
   return filePath.slice(0, dotIndex) + '.md';
-}
-
-function buildSpreadsheetSheetOutputPath(filePath: string, sheetName: string): string {
-  const basePath = buildOutputPath(filePath).replace(/\.md$/i, '');
-  const safeSheetName = sanitizeSheetNameForPath(sheetName);
-  return `${basePath} - ${safeSheetName}.md`;
-}
-
-function sanitizeSheetNameForPath(sheetName: string): string {
-  const sanitized = sheetName
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return sanitized || 'Sheet';
 }

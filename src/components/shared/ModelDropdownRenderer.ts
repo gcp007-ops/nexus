@@ -20,9 +20,10 @@ const PROVIDER_NAMES: Record<string, string> = {
   anthropic: 'Anthropic',
   'anthropic-claude-code': 'Claude Code',
   google: 'Google AI',
-  'google-gemini-cli': 'Gemini CLI',
+  'google-gemini-cli': 'Antigravity CLI',
   mistral: 'Mistral AI',
   groq: 'Groq',
+  deepseek: 'DeepSeek',
   deepgram: 'Deepgram',
   assemblyai: 'AssemblyAI',
   openrouter: 'OpenRouter',
@@ -61,12 +62,6 @@ export interface ModelDropdownConfig {
 
   /** Empty-state text for provider dropdown when none available */
   noProvidersText: string;
-
-  /** Whether to show Ollama as a text input instead of dropdown */
-  showOllamaTextInput: boolean;
-
-  /** Get Ollama model name for text input display */
-  getOllamaModel?: () => string;
 
   /** The model option map to populate (maps option key -> { provider, modelId }) */
   modelOptionMap: Map<string, { provider: string; modelId: string }>;
@@ -208,17 +203,6 @@ function renderModelDropdown(
         ? 'google'
       : currentProvider;
 
-  // Ollama special case: show text input instead of dropdown
-  if (config.showOllamaTextInput && modelProviderId === 'ollama') {
-    new Setting(content)
-      .setName('Model')
-      .addText(text => text
-        .setValue(config.getOllamaModel?.() || '')
-        .setDisabled(true)
-        .setPlaceholder('Configure in settings'));
-    return;
-  }
-
   new Setting(content)
     .setName('Model')
     .addDropdown(async dropdown => {
@@ -252,7 +236,7 @@ function renderModelDropdown(
           const geminiCliModels = await config.providerManager.getModelsForProvider('google-gemini-cli');
           models = [
             ...models,
-            ...geminiCliModels.map(model => ({ ...model, name: `${model.name} (Gemini CLI)` }))
+            ...geminiCliModels.map(model => ({ ...model, name: `${model.name} (Antigravity CLI)` }))
           ];
         }
 

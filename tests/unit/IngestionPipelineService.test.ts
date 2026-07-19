@@ -37,27 +37,15 @@ jest.mock(
   })
 );
 
-// Mock SpreadsheetExtractionService
-jest.mock(
-  '../../src/agents/ingestManager/tools/services/SpreadsheetExtractionService',
-  () => ({
-    extractSpreadsheetSheets: jest.fn(),
-    MAX_SHEET_COLUMNS: 50,
-    MAX_SHEET_ROWS: 1500,
-  })
-);
-
 import { processFile } from '../../src/agents/ingestManager/tools/services/IngestionPipelineService';
 import { extractDocxMarkdown } from '../../src/agents/ingestManager/tools/services/DocxExtractionService';
 import { extractPdfText } from '../../src/agents/ingestManager/tools/services/PdfTextExtractor';
 import { extractPptxContent } from '../../src/agents/ingestManager/tools/services/PptxExtractionService';
 import { ocrPdf } from '../../src/agents/ingestManager/tools/services/OcrService';
-import { extractSpreadsheetSheets } from '../../src/agents/ingestManager/tools/services/SpreadsheetExtractionService';
 import {
   IngestFileRequest,
   IngestProgress,
   PdfPageContent,
-  SpreadsheetSheetContent,
   TranscriptionSegment,
 } from '../../src/agents/ingestManager/types';
 import { TFile, Vault } from 'obsidian';
@@ -66,7 +54,6 @@ const extractDocxMarkdownMock = extractDocxMarkdown as jest.MockedFunction<typeo
 const extractPdfTextMock = extractPdfText as jest.MockedFunction<typeof extractPdfText>;
 const extractPptxContentMock = extractPptxContent as jest.MockedFunction<typeof extractPptxContent>;
 const ocrPdfMock = ocrPdf as jest.MockedFunction<typeof ocrPdf>;
-const extractSpreadsheetSheetsMock = extractSpreadsheetSheets as jest.MockedFunction<typeof extractSpreadsheetSheets>;
 
 /** Create a mock Vault with configurable getFileByPath, readBinary, create, modify */
 function createMockVault(options: {
@@ -133,6 +120,16 @@ describe('IngestionPipelineService', () => {
       vault.getFileByPath = jest.fn().mockReturnValue(new TFile('image.png', 'notes/image.png'));
       const deps = createMockDeps(vault);
       const request: IngestFileRequest = { filePath: 'notes/image.png' };
+
+      const result = await processFile(request, deps);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Unsupported file type');
+    });
+
+    it('should return error for XLSX files because spreadsheet ingestion is optional', async () => {
+      const deps = createMockDeps();
+      const request: IngestFileRequest = { filePath: 'notes/finance.xlsx' };
 
       const result = await processFile(request, deps);
 
@@ -211,7 +208,7 @@ describe('IngestionPipelineService', () => {
 
   describe('PDF vision mode', () => {
     it('should route to ocrPdf in vision mode', async () => {
-      ocrPdfMock.mockResolvedValue([{ pageNumber: 1, text: 'OCR text' }]);
+      ocrPdfMock.mockResolvedValue({ pages: [{ pageNumber: 1, text: 'OCR text' }], images: [] });
       const deps = createMockDeps();
       const request: IngestFileRequest = {
         filePath: 'notes/report.pdf',
@@ -225,6 +222,50 @@ describe('IngestionPipelineService', () => {
       expect(ocrPdfMock).toHaveBeenCalled();
       expect(extractPdfTextMock).not.toHaveBeenCalled();
       expect(result.success).toBe(true);
+    });
+
+    it('should save OCR images to a per-note folder and rewrite refs to embeds', async () => {
+      // 1x1 transparent PNG
+      const pngDataUrl =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+      ocrPdfMock.mockResolvedValue({
+        pages: [{ pageNumber: 1, text: 'Intro text\n\n![img-0.png](img-0.png)\n\nMore text' }],
+        images: [{ pageNumber: 1, refId: 'img-0.png', dataUrl: pngDataUrl }],
+      });
+
+      let createdNote = '';
+      const createBinary = jest.fn().mockResolvedValue(undefined);
+      const createFolder = jest.fn().mockResolvedValue(undefined);
+      const vault = {
+        getFileByPath: jest.fn((path: string) =>
+          path === 'notes/report.pdf' ? new TFile('report.pdf', 'notes/report.pdf') : null
+        ),
+        getFolderByPath: jest.fn().mockReturnValue(null),
+        createFolder,
+        createBinary,
+        readBinary: jest.fn().mockResolvedValue(new ArrayBuffer(1024)),
+        create: jest.fn((_path: string, content: string) => {
+          createdNote = content;
+          return Promise.resolve(undefined);
+        }),
+        modify: jest.fn().mockResolvedValue(undefined),
+      } as unknown as Vault;
+      const deps = createMockDeps(vault);
+      const request: IngestFileRequest = {
+        filePath: 'notes/report.pdf',
+        mode: 'vision',
+        ocrProvider: 'mistral',
+        ocrModel: 'mistral-ocr',
+      };
+
+      const result = await processFile(request, deps);
+
+      expect(result.success).toBe(true);
+      // Image written into the per-note asset folder.
+      expect(createBinary).toHaveBeenCalledWith('notes/report/img-0.png', expect.anything());
+      // Markdown ref rewritten to an Obsidian embed; no dangling markdown-image link.
+      expect(createdNote).toContain('![[notes/report/img-0.png]]');
+      expect(createdNote).not.toContain('![img-0.png](img-0.png)');
     });
 
     it('should throw when vision mode is missing provider/model', async () => {
@@ -293,7 +334,7 @@ describe('IngestionPipelineService', () => {
   });
 
   // ==========================================================================
-  // DOCX/XLSX routing
+  // DOCX/PPTX routing
   // ==========================================================================
 
   describe('office document conversion', () => {
@@ -338,72 +379,6 @@ describe('IngestionPipelineService', () => {
       );
     });
 
-    it('should route XLSX files to extractSpreadsheetSheets', async () => {
-      const sheets: SpreadsheetSheetContent[] = [
-        { sheetName: 'Sheet1', rows: [['A', 'B']], totalRows: 1, totalColumns: 2 }
-      ];
-      extractSpreadsheetSheetsMock.mockResolvedValue(sheets);
-      const deps = createMockDeps();
-      const request: IngestFileRequest = { filePath: 'notes/finance.xlsx' };
-
-      const result = await processFile(request, deps);
-
-      expect(extractSpreadsheetSheetsMock).toHaveBeenCalled();
-      expect(result.success).toBe(true);
-      expect(result.outputPath).toBe('notes/finance - Sheet1.md');
-      expect(result.outputPaths).toEqual(['notes/finance - Sheet1.md']);
-      expect(deps.vault.create).toHaveBeenCalledWith(
-        'notes/finance - Sheet1.md',
-        expect.stringContaining('![[finance.xlsx]]')
-      );
-    });
-
-    it('should skip oversized sheets and warn', async () => {
-      extractSpreadsheetSheetsMock.mockResolvedValue([
-        {
-          sheetName: 'Large',
-          rows: [['A']],
-          totalRows: 1600,
-          totalColumns: 60
-        },
-        {
-          sheetName: 'Valid',
-          rows: [['A']],
-          totalRows: 10,
-          totalColumns: 2
-        }
-      ]);
-      const deps = createMockDeps();
-      const request: IngestFileRequest = { filePath: 'notes/finance.xlsx' };
-
-      const result = await processFile(request, deps);
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toEqual([
-        'Skipped sheet "Large" because it exceeds the spreadsheet limit (60 columns x 1600 rows; max 50 x 1500).'
-      ]);
-      expect(deps.vault.create).toHaveBeenCalledWith(
-        'notes/finance - Valid.md',
-        expect.any(String)
-      );
-    });
-
-    it('should fail when all sheets exceed the spreadsheet limit', async () => {
-      extractSpreadsheetSheetsMock.mockResolvedValue([
-        {
-          sheetName: 'Large',
-          rows: [['A']],
-          totalRows: 1600,
-          totalColumns: 60
-        }
-      ]);
-      const deps = createMockDeps();
-      const request: IngestFileRequest = { filePath: 'notes/finance.xlsx' };
-
-      await expect(processFile(request, deps)).rejects.toThrow(
-        'No sheets were converted. All sheets exceed the spreadsheet limit (max 50 columns x 1500 rows).'
-      );
-    });
   });
 
   // ==========================================================================

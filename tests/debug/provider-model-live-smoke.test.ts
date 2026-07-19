@@ -7,14 +7,14 @@
  *   RUN_MODEL_SMOKE=1 npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
  *
  * Run one provider/model:
- *   RUN_MODEL_SMOKE=1 MODEL_SMOKE_PROVIDER=openai MODEL_SMOKE_MODEL=gpt-5.5 npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
- *   RUN_MODEL_SMOKE=1 MODEL_SMOKE_PROVIDER=openrouter MODEL_SMOKE_MODEL=gpt-5.5 npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
- *   RUN_MODEL_SMOKE=1 MODEL_SMOKE_PROVIDER=openai-codex MODEL_SMOKE_MODEL=gpt-5.5 npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
+ *   RUN_MODEL_SMOKE=1 MODEL_SMOKE_PROVIDER=openai MODEL_SMOKE_MODEL=gpt-5.6-sol npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
+ *   RUN_MODEL_SMOKE=1 MODEL_SMOKE_PROVIDER=openrouter MODEL_SMOKE_MODEL=gpt-5.6-sol npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
+ *   RUN_MODEL_SMOKE=1 MODEL_SMOKE_PROVIDER=openai-codex MODEL_SMOKE_MODEL=gpt-5.6-sol npx jest tests/debug/provider-model-live-smoke.test.ts --runInBand --no-coverage --verbose
  *
  * Provider-specific overrides when running all:
- *   OPENAI_SMOKE_MODEL=gpt-5.5
- *   OPENROUTER_SMOKE_MODEL=openai/gpt-5.5
- *   CODEX_SMOKE_MODEL=gpt-5.5
+ *   OPENAI_SMOKE_MODEL=gpt-5.6-sol
+ *   OPENROUTER_SMOKE_MODEL=openai/gpt-5.6-sol
+ *   CODEX_SMOKE_MODEL=gpt-5.6-sol
  */
 
 import * as fs from 'node:fs';
@@ -30,11 +30,14 @@ import { DEFAULT_MODELS } from '../../src/services/llm/adapters/ModelRegistry';
 import { OpenAIAdapter } from '../../src/services/llm/adapters/openai/OpenAIAdapter';
 import { OpenRouterAdapter } from '../../src/services/llm/adapters/openrouter/OpenRouterAdapter';
 import { OpenAICodexAdapter, type CodexOAuthTokens } from '../../src/services/llm/adapters/openai-codex/OpenAICodexAdapter';
+import { GoogleAdapter } from '../../src/services/llm/adapters/google/GoogleAdapter';
+import { RequestyAdapter } from '../../src/services/llm/adapters/requesty/RequestyAdapter';
+import { AnthropicAdapter } from '../../src/services/llm/adapters/anthropic/AnthropicAdapter';
 import type { GenerateOptions, LLMResponse } from '../../src/services/llm/adapters/types';
 
 jest.setTimeout(240_000);
 
-type SmokeProvider = 'openai' | 'openrouter' | 'openai-codex';
+type SmokeProvider = 'openai' | 'openrouter' | 'openai-codex' | 'google' | 'requesty' | 'anthropic';
 
 interface ProviderSettingsShape {
   llmProviders?: {
@@ -58,7 +61,7 @@ interface SmokeTarget {
 }
 
 const RUN_LIVE = process.env.RUN_MODEL_SMOKE === '1';
-const PROVIDERS: SmokeProvider[] = ['openai', 'openrouter', 'openai-codex'];
+const PROVIDERS: SmokeProvider[] = ['openai', 'openrouter', 'openai-codex', 'google', 'requesty', 'anthropic'];
 
 function readDotEnv(): Map<string, string> {
   const envPath = path.join(process.cwd(), '.env');
@@ -123,6 +126,14 @@ function normalizeModelForProvider(provider: SmokeProvider, model: string): stri
     return model.slice('openai/'.length);
   }
 
+  if (provider === 'google' && model.startsWith('google/')) {
+    return model.slice('google/'.length);
+  }
+
+  if (provider === 'anthropic' && model.startsWith('anthropic/')) {
+    return model.slice('anthropic/'.length);
+  }
+
   return model;
 }
 
@@ -132,6 +143,9 @@ function getProviderModel(provider: SmokeProvider): string {
     openai: getEnv('OPENAI_SMOKE_MODEL'),
     openrouter: getEnv('OPENROUTER_SMOKE_MODEL'),
     'openai-codex': getEnv('CODEX_SMOKE_MODEL'),
+    google: getEnv('GOOGLE_SMOKE_MODEL'),
+    requesty: getEnv('REQUESTY_SMOKE_MODEL'),
+    anthropic: getEnv('ANTHROPIC_SMOKE_MODEL'),
   }[provider];
 
   const model = providerOverride || sharedOverride || DEFAULT_MODELS[provider];
@@ -184,7 +198,7 @@ function setRequestUrlToRealFetch(): void {
   });
 }
 
-function createAdapter(provider: SmokeProvider): OpenAIAdapter | OpenRouterAdapter | OpenAICodexAdapter {
+function createAdapter(provider: SmokeProvider): OpenAIAdapter | OpenRouterAdapter | OpenAICodexAdapter | GoogleAdapter | RequestyAdapter | AnthropicAdapter {
   if (provider === 'openai') {
     const apiKey = getEnv('OPENAI_API_KEY');
     if (!apiKey) {
@@ -199,6 +213,30 @@ function createAdapter(provider: SmokeProvider): OpenAIAdapter | OpenRouterAdapt
       throw new Error('OPENROUTER_API_KEY is required for OpenRouter smoke tests');
     }
     return new OpenRouterAdapter(apiKey);
+  }
+
+  if (provider === 'google') {
+    const apiKey = getEnv('GEMINI_API_KEY');
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY is required for Google smoke tests');
+    }
+    return new GoogleAdapter(apiKey);
+  }
+
+  if (provider === 'requesty') {
+    const apiKey = getEnv('REQUESTY_API_KEY');
+    if (!apiKey) {
+      throw new Error('REQUESTY_API_KEY is required for Requesty smoke tests');
+    }
+    return new RequestyAdapter(apiKey);
+  }
+
+  if (provider === 'anthropic') {
+    const apiKey = getEnv('ANTHROPIC_API_KEY');
+    if (!apiKey) {
+      throw new Error('ANTHROPIC_API_KEY is required for Anthropic smoke tests');
+    }
+    return new AnthropicAdapter(apiKey);
   }
 
   const tokens = loadCodexTokensFromLocalDataJson();
@@ -217,7 +255,7 @@ async function callModel(target: SmokeTarget): Promise<LLMResponse> {
 
   // Codex currently rejects max_output_tokens on the OAuth endpoint.
   if (target.provider !== 'openai-codex') {
-    options.maxTokens = Number(getEnv('MODEL_SMOKE_MAX_TOKENS') || 16);
+    options.maxTokens = Number(getEnv('MODEL_SMOKE_MAX_TOKENS') || 64);
   }
 
   return adapter.generateUncached(

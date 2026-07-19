@@ -19,6 +19,7 @@ import { OPENAI_CODEX_MODELS, OPENAI_CODEX_DEFAULT_MODEL } from './openai-codex/
 import { ANTHROPIC_CLAUDE_CODE_MODELS, ANTHROPIC_CLAUDE_CODE_DEFAULT_MODEL } from './anthropic-claude-code/AnthropicClaudeCodeModels';
 import { GOOGLE_GEMINI_CLI_MODELS, GOOGLE_GEMINI_CLI_DEFAULT_MODEL } from './google-gemini-cli/GoogleGeminiCliModels';
 import { GITHUB_COPILOT_MODELS, GITHUB_COPILOT_DEFAULT_MODEL } from './github-copilot/GithubCopilotModels';
+import { DEEPSEEK_MODELS, DEEPSEEK_DEFAULT_MODEL } from './deepseek/DeepSeekModels';
 import type { LLMProviderSettings } from '../../../types';
 import type { ModelInfo } from './types';
 
@@ -48,7 +49,8 @@ export const AI_MODELS: Record<string, ModelSpec[]> = {
   openrouter: OPENROUTER_MODELS,
   requesty: REQUESTY_MODELS,
   groq: GROQ_MODELS,
-  'github-copilot': GITHUB_COPILOT_MODELS
+  'github-copilot': GITHUB_COPILOT_MODELS,
+  deepseek: DEEPSEEK_MODELS
 };
 
 /**
@@ -57,40 +59,12 @@ export const AI_MODELS: Record<string, ModelSpec[]> = {
 export class ModelRegistry {
   /**
    * Get all models for a specific provider
-   * For Ollama, returns user-configured model dynamically
-   * For LM Studio, returns empty array (models discovered via adapter.listModels())
+   * For Ollama and LM Studio, returns empty array (models discovered via adapter.listModels())
    */
-  static getProviderModels(provider: string, settings?: LLMProviderSettings): ModelSpec[] {
-    // Special handling for Ollama - user-configured models only
-    if (provider === 'ollama') {
-      const ollamaModel = settings?.providers?.ollama?.ollamaModel;
-
-      if (!ollamaModel || !ollamaModel.trim()) {
-        return []; // No models if not configured
-      }
-
-      // Create dynamic ModelSpec for user's configured model
-      return [{
-        provider: 'ollama',
-        name: ollamaModel,
-        apiName: ollamaModel,
-        contextWindow: 128000, // Fixed reasonable default
-        maxTokens: 4096,
-        inputCostPerMillion: 0,
-        outputCostPerMillion: 0,
-        capabilities: {
-          supportsJSON: false,
-          supportsImages: ollamaModel.includes('vision') || ollamaModel.includes('llava'),
-          supportsFunctions: false,
-          supportsStreaming: true,
-          supportsThinking: false
-        }
-      }];
-    }
-
-    // Special handling for LM Studio - models discovered dynamically
+  static getProviderModels(provider: string, _settings?: LLMProviderSettings): ModelSpec[] {
+    // Special handling for Ollama and LM Studio - models discovered dynamically
     // Return empty array here; models will be loaded via adapter.listModels()
-    if (provider === 'lmstudio') {
+    if (provider === 'ollama' || provider === 'lmstudio') {
       return [];
     }
 
@@ -233,5 +207,6 @@ export const DEFAULT_MODELS: Record<string, string> = {
   openrouter: OPENROUTER_DEFAULT_MODEL,
   requesty: REQUESTY_DEFAULT_MODEL,
   groq: GROQ_DEFAULT_MODEL,
-  'github-copilot': GITHUB_COPILOT_DEFAULT_MODEL
+  'github-copilot': GITHUB_COPILOT_DEFAULT_MODEL,
+  deepseek: DEEPSEEK_DEFAULT_MODEL
 };

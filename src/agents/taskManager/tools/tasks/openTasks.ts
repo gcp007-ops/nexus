@@ -1,7 +1,7 @@
 import { JSONSchema } from '../../../../types/schema/JSONSchemaTypes';
 import { BaseTool } from '../../../baseTool';
 import { OpenTasksParameters, OpenTasksResult } from '../../types';
-import { openTaskBoardView, type TaskBoardOpenMode } from '../../../../ui/tasks/taskBoardNavigation';
+import { openTaskBoardView } from '../../../../ui/tasks/taskBoardNavigation';
 import { createErrorMessage } from '../../../../utils/errorUtils';
 import type { App } from 'obsidian';
 import { ToolStatusTense } from '../../../interfaces/ITool';
@@ -10,7 +10,7 @@ import { verbs, labelQuery } from '../../../utils/toolStatusLabels';
 export class OpenTasksTool extends BaseTool<OpenTasksParameters, OpenTasksResult> {
   constructor(private app: App) {
     super(
-      'openTasks',
+      'open',
       'Open Tasks',
       'Open the native Task Board workspace view in Obsidian. Optional filters let you preselect a workspace, project, or search query before the board is shown.',
       '1.0.0'
@@ -19,7 +19,7 @@ export class OpenTasksTool extends BaseTool<OpenTasksParameters, OpenTasksResult
 
   async execute(params: OpenTasksParameters): Promise<OpenTasksResult> {
     try {
-      const mode = (params.mode || 'tab') as TaskBoardOpenMode;
+      const mode = (params.mode || 'tab');
       const leaf = await openTaskBoardView(this.app, {
         workspaceId: params.workspaceId,
         projectId: params.projectId,

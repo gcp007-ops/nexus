@@ -43,6 +43,7 @@ import {
   SSEParsedUsage,
   SSEStreamOptions
 } from '../streaming/SSEStreamProcessor';
+import { pumpSseEventQueue } from './shared/SseStreamPump';
 
 // Browser-compatible hash function (djb2 algorithm)
 // Not cryptographically secure but sufficient for cache keys
@@ -181,13 +182,14 @@ export abstract class BaseAdapter {
     const { createParser } = await import('eventsource-parser');
 
     const eventQueue: StreamChunk[] = [];
-    let isCompleted = false;
+    const pumpState = { isCompleted: false };
     let usage: SSEParsedUsage | undefined = undefined;
     let metadata: Record<string, unknown> | undefined = undefined;
+    let streamError: string | undefined = undefined;
     const toolCallsAccumulator: Map<number, ToolCall> = new Map();
 
     const parser = createParser((event) => {
-      if (event.type === 'reconnect-interval' || isCompleted) return;
+      if (event.type === 'reconnect-interval' || pumpState.isCompleted) return;
 
       if (event.data === '[DONE]') {
         const finalToolCalls = this.getFinalToolCallsFromAccumulator(toolCallsAccumulator, options);
@@ -199,12 +201,24 @@ export abstract class BaseAdapter {
           toolCallsReady: finalToolCalls && finalToolCalls.length > 0 ? true : undefined,
           metadata
         });
-        isCompleted = true;
+        pumpState.isCompleted = true;
         return;
       }
 
       try {
         const parsed = JSON.parse(event.data) as SSEParsedEvent;
+
+        // A fatal error delivered mid-stream (HTTP 200, then an {"error": {...}} frame).
+        // Record it and stop; we throw after the pump drains so the caller can react
+        // (e.g. LM Studio's draft-model rejection → retry without speculative decoding).
+        if (options.extractError) {
+          const errMsg = options.extractError(parsed);
+          if (errMsg) {
+            streamError = errMsg;
+            pumpState.isCompleted = true;
+            return;
+          }
+        }
 
         if (options.extractMetadata) {
           metadata = { ...(metadata || {}), ...(options.extractMetadata(parsed) || {}) };
@@ -299,7 +313,7 @@ export abstract class BaseAdapter {
             toolCallsReady: finalToolCalls && finalToolCalls.length > 0 ? true : undefined,
             metadata
           });
-          isCompleted = true;
+          pumpState.isCompleted = true;
         }
       } catch (parseError) {
         if (options.onParseError) {
@@ -309,49 +323,17 @@ export abstract class BaseAdapter {
     });
 
     // Read from the Node.js stream and feed to the SSE parser
-    try {
-      for await (const chunk of nodeStream as AsyncIterable<Buffer>) {
-        if (isCompleted) break;
+    yield* pumpSseEventQueue(nodeStream, (text) => parser.feed(text), eventQueue, pumpState, {
+      buildFinalChunk: () => (streamError
+        // Don't emit a "successful" final chunk when the stream carried a fatal error —
+        // the throw below is the real outcome.
+        ? { content: '', complete: false }
+        : { content: '', complete: true, usage: this.formatStreamUsage(usage) }),
+      buildErrorChunk: () => ({ content: '', complete: false })
+    });
 
-        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
-        parser.feed(text);
-
-        // Yield queued events
-        while (eventQueue.length > 0) {
-          const event = eventQueue.shift();
-          if (!event) {
-            break;
-          }
-          yield event;
-          if (event.complete) {
-            isCompleted = true;
-            break;
-          }
-        }
-      }
-
-      // Yield remaining events after stream ends
-      while (eventQueue.length > 0) {
-        const event = eventQueue.shift();
-        if (event) {
-          yield event;
-        }
-      }
-
-      // If stream ended without a completion event, yield one
-      if (!isCompleted) {
-        yield {
-          content: '',
-          complete: true,
-          usage: this.formatStreamUsage(usage)
-        };
-      }
-    } catch (error) {
-      // If stream was destroyed (abort), yield completion
-      if (!isCompleted) {
-        yield { content: '', complete: true };
-      }
-      throw error;
+    if (streamError) {
+      throw new LLMProviderError(streamError, this.name, 'PROVIDER_STREAM_ERROR');
     }
   }
 
@@ -705,7 +687,7 @@ export abstract class BaseAdapter {
           throw error;
         }
 
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise(resolve => window.setTimeout(resolve, delay));
         delay *= 2; // Exponential backoff: 50ms, 100ms, 200ms
       }
     }
@@ -875,7 +857,7 @@ export abstract class BaseAdapter {
 
         if (attempt < maxRetries) {
           const delay = baseDelay * Math.pow(2, attempt);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise(resolve => window.setTimeout(resolve, delay));
         }
       }
     }

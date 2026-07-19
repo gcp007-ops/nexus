@@ -205,12 +205,12 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
             agentName = this.extractAgentName(fullToolName);
             const { tool: toolFromArgs, ...restParams } = parsedArgs as { tool: string; [key: string]: unknown };
             tool = toolFromArgs;
-            params = restParams as typeof params;
+            params = restParams;
 
             if (!tool) {
                 throw new McpError(
                     ErrorCode.InvalidParams,
-                    `❌ Missing required parameter: tool for agent ${agentName}\n\n💡 Specify which tool to use.\n\nExample: { "tool": "searchDirectory", "query": "search term", ... }`
+                    `❌ Missing required parameter: tool for agent ${agentName}\n\n💡 Specify which tool to use.\n\nExample: { "tool": "directory", "query": "search term", ... }`
                 );
             }
         }

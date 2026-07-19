@@ -1,6 +1,6 @@
 /**
  * Location: src/agents/ingestManager/types.ts
- * Purpose: Shared types for the Nexus Ingester agent — document, spreadsheet, PDF, and audio ingestion pipeline.
+ * Purpose: Shared types for the Nexus Ingester agent - document, PDF, and audio ingestion pipeline.
  *
  * Used by: IngestAgent, IngestTool, ListCapabilitiesTool, all ingestion services
  * Dependencies: CommonParameters, CommonResult from types
@@ -11,19 +11,17 @@ import { CommonParameters, CommonResult } from '../../types';
 export const ACCEPTED_PDF_EXTENSIONS = ['.pdf'] as const;
 export const ACCEPTED_DOCX_EXTENSIONS = ['.docx'] as const;
 export const ACCEPTED_PPTX_EXTENSIONS = ['.pptx'] as const;
-export const ACCEPTED_XLSX_EXTENSIONS = ['.xlsx'] as const;
 export const ACCEPTED_AUDIO_EXTENSIONS = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.webm', '.opus'] as const;
 export const ACCEPTED_EXTENSIONS = [
   ...ACCEPTED_PDF_EXTENSIONS,
   ...ACCEPTED_DOCX_EXTENSIONS,
   ...ACCEPTED_PPTX_EXTENSIONS,
-  ...ACCEPTED_XLSX_EXTENSIONS,
   ...ACCEPTED_AUDIO_EXTENSIONS
 ] as const;
 
 // ─── File Detection ──────────────────────────────────────────────────────────
 
-export type IngestFileType = 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'audio';
+export type IngestFileType = 'pdf' | 'docx' | 'pptx' | 'audio';
 
 export interface FileTypeInfo {
   type: IngestFileType;
@@ -94,6 +92,24 @@ export interface PdfPageImage {
   height: number;
 }
 
+/**
+ * An image extracted from OCR output (e.g. Mistral OCR via OpenRouter).
+ * `refId` is the exact link target used in the OCR markdown (e.g. "img-0.jpeg"),
+ * used to rewrite `![alt](refId)` into an Obsidian embed once the image is saved.
+ */
+export interface OcrExtractedImage {
+  /** 1-based page the image belongs to (refIds like "img-0.jpeg" repeat across pages). */
+  pageNumber: number;
+  refId: string;
+  dataUrl: string;
+}
+
+/** Result of an OCR pass: page text plus any embedded images. */
+export interface OcrResult {
+  pages: PdfPageContent[];
+  images: OcrExtractedImage[];
+}
+
 // ─── DOCX Services ───────────────────────────────────────────────────────────
 
 export interface DocxExtractionResult {
@@ -114,14 +130,6 @@ export interface PptxExtractionResult {
   warnings: string[];
 }
 
-// ─── Spreadsheet Services ────────────────────────────────────────────────────
-
-export interface SpreadsheetSheetContent {
-  sheetName: string;
-  rows: string[][];
-  totalRows: number;
-  totalColumns: number;
-}
 
 // ─── Audio Services ──────────────────────────────────────────────────────────
 

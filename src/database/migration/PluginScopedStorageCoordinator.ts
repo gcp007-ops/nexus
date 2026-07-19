@@ -1,5 +1,6 @@
 import { App, Plugin, normalizePath } from 'obsidian';
 import type { MCPSettings } from '../../types/plugin/PluginTypes';
+import type { CacheBackendState } from './CacheBackendMigration';
 import {
   resolveVaultRoot,
   type VaultRootResolution
@@ -32,6 +33,12 @@ export interface PluginScopedStorageState {
     legacySourcesDetected: string[];
     activeDestination: string;
   };
+  /**
+   * Cache-backend migration state (cache.db file → IndexedDB on desktop).
+   * Independent from the plugin-scoped JSONL migration above. Optional for
+   * backwards compatibility with persisted state from prior versions.
+   */
+  cacheBackend?: CacheBackendState;
 }
 
 export interface PluginScopedStoragePlan {
@@ -137,7 +144,16 @@ export class PluginScopedStorageCoordinator {
   private async saveState(state: PluginScopedStorageState): Promise<void> {
     await pluginDataLock.acquire(async () => {
       const pluginData = await this.loadPluginData();
-      pluginData.pluginStorage = state;
+      // Preserve cacheBackend across JSONL-migration state writes. saveState()
+      // operates on PluginScopedStorageState (the JSONL-migration shape) and
+      // does not carry cacheBackend in `state`; without this merge, every boot
+      // would clobber the persisted cacheBackend record from runCacheBackendMigration,
+      // forcing the cache-backend FSM to re-run on every restart (issue: Windows
+      // janitor file-lock + saveState clobber → infinite migration loop).
+      const existingCacheBackend = pluginData.pluginStorage?.cacheBackend;
+      pluginData.pluginStorage = existingCacheBackend !== undefined
+        ? { ...state, cacheBackend: existingCacheBackend }
+        : state;
       await this.plugin.saveData(pluginData);
     });
   }
@@ -163,13 +179,36 @@ export class PluginScopedStorageCoordinator {
     return nextState;
   }
 
+  /**
+   * Read the persisted cache-backend state (independent of the JSONL
+   * migration state). Returns undefined on first launch or if persisted
+   * state predates the cache-backend extension.
+   */
+  async readCacheBackendState(): Promise<CacheBackendState | undefined> {
+    const data = await this.loadPluginData();
+    return data.pluginStorage?.cacheBackend;
+  }
+
+  /**
+   * Persist the cache-backend state. Merges into the existing pluginStorage
+   * record so the JSONL-migration fields survive untouched.
+   */
+  async writeCacheBackendState(state: CacheBackendState): Promise<void> {
+    await pluginDataLock.acquire(async () => {
+      const data = await this.loadPluginData();
+      const existing = data.pluginStorage ?? this.createNotNeededState('');
+      data.pluginStorage = { ...existing, cacheBackend: state };
+      await this.plugin.saveData(data);
+    });
+  }
+
   private async loadPluginData(): Promise<StoredPluginData> {
     const data = await this.plugin.loadData() as StoredPluginData | null;
     if (!isRecord(data)) {
       return {} as StoredPluginData;
     }
 
-    return data as StoredPluginData;
+    return data;
   }
 
   private async collectExistingLegacySources(basePaths: string[]): Promise<string[]> {

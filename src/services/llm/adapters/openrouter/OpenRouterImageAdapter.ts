@@ -74,12 +74,13 @@ export class OpenRouterImageAdapter extends BaseImageAdapter {
   readonly name = 'openrouter-image';
   readonly baseUrl = 'https://openrouter.ai/api/v1';
   readonly supportedModels: ImageModel[] = [
-    'gemini-2.5-flash-image' as ImageModel,
-    'gemini-3-pro-image-preview' as ImageModel,
-    'gemini-3.1-flash-image-preview' as ImageModel,
-    'gpt-5-image' as ImageModel,
-    'flux-2-pro' as ImageModel,
-    'flux-2-flex' as ImageModel
+    'gemini-2.5-flash-image',
+    'gemini-3-pro-image-preview',
+    'gemini-3.1-flash-image-preview',
+    'gpt-5-image',
+    'gpt-5.4-image-2',
+    'flux-2-pro',
+    'flux-2-flex'
   ];
   readonly supportedSizes: string[] = ['1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792'];
   readonly supportedFormats: string[] = ['png', 'jpeg', 'webp'];
@@ -94,6 +95,7 @@ export class OpenRouterImageAdapter extends BaseImageAdapter {
     'gemini-3-pro-image-preview': 'google/gemini-3-pro-image-preview',
     'gemini-3.1-flash-image-preview': 'google/gemini-3.1-flash-image-preview',
     'gpt-5-image': 'openai/gpt-5-image',
+    'gpt-5.4-image-2': 'openai/gpt-5.4-image-2',
     // Add other image-capable models as they become available
     'flux-2-pro': 'black-forest-labs/flux.2-pro',
     'flux-2-flex': 'black-forest-labs/flux.2-flex'
@@ -369,6 +371,7 @@ export class OpenRouterImageAdapter extends BaseImageAdapter {
       'gemini-3-pro-image-preview': 0.08,
       'gemini-3.1-flash-image-preview': 0.04,
       'gpt-5-image': 0.08,
+      'gpt-5.4-image-2': 0.08,
       'flux-2-pro': 0.05,
       'flux-2-flex': 0.03
     };
@@ -464,6 +467,25 @@ export class OpenRouterImageAdapter extends BaseImageAdapter {
           imageGeneration: 0.08,
           currency: 'USD',
           lastUpdated: '2026-02-26'
+        }
+      },
+      {
+        id: 'gpt-5.4-image-2',
+        name: 'GPT-5.4 Image 2 (via OpenRouter)',
+        contextWindow: 272000,
+        maxOutputTokens: 128000,
+        supportsJSON: false,
+        supportsImages: true,
+        supportsFunctions: false,
+        supportsStreaming: false,
+        supportsThinking: false,
+        supportsImageGeneration: true,
+        pricing: {
+          inputPerMillion: 8,
+          outputPerMillion: 15,
+          imageGeneration: 0.08,
+          currency: 'USD',
+          lastUpdated: '2026-04-24'
         }
       },
       {

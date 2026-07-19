@@ -1,6 +1,6 @@
 /**
  * OpenAI Model Specifications
- * Updated April 2026 - Added GPT-5.5 family
+ * Updated July 2026 — added the GPT-5.6 Sol, Terra, and Luna family
  *
  * Pricing Notes:
  * - GPT-5 family supports 90% caching discount (cached tokens: $0.125/M vs $1.25/M fresh)
@@ -13,7 +13,57 @@
 import { ModelSpec } from '../modelTypes';
 
 export const OPENAI_MODELS: ModelSpec[] = [
-  // GPT-5.5 family (latest models)
+  // GPT-5.6 family (latest models)
+  {
+    provider: 'openai',
+    name: 'GPT-5.6 Sol',
+    apiName: 'gpt-5.6-sol',
+    contextWindow: 1050000,
+    maxTokens: 128000,
+    inputCostPerMillion: 5.00,
+    outputCostPerMillion: 30.00,
+    capabilities: {
+      supportsJSON: true,
+      supportsImages: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsThinking: true
+    }
+  },
+  {
+    provider: 'openai',
+    name: 'GPT-5.6 Terra',
+    apiName: 'gpt-5.6-terra',
+    contextWindow: 1050000,
+    maxTokens: 128000,
+    inputCostPerMillion: 2.50,
+    outputCostPerMillion: 15.00,
+    capabilities: {
+      supportsJSON: true,
+      supportsImages: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsThinking: true
+    }
+  },
+  {
+    provider: 'openai',
+    name: 'GPT-5.6 Luna',
+    apiName: 'gpt-5.6-luna',
+    contextWindow: 1050000,
+    maxTokens: 128000,
+    inputCostPerMillion: 1.00,
+    outputCostPerMillion: 6.00,
+    capabilities: {
+      supportsJSON: true,
+      supportsImages: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsThinking: true
+    }
+  },
+
+  // GPT-5.5 family
   {
     provider: 'openai',
     name: 'GPT-5.5',
@@ -179,76 +229,10 @@ export const OPENAI_MODELS: ModelSpec[] = [
       supportsStreaming: true,
       supportsThinking: true
     }
-  },
-
-  // GPT-5 model family
-  {
-    provider: 'openai',
-    name: 'GPT-5.1',
-    apiName: 'gpt-5.1-2025-11-13',
-    contextWindow: 400000,
-    maxTokens: 128000,
-    inputCostPerMillion: 1.25,
-    outputCostPerMillion: 10.00,
-    capabilities: {
-      supportsJSON: true,
-      supportsImages: true,
-      supportsFunctions: true,
-      supportsStreaming: true,
-      supportsThinking: true
-    }
-  },
-  {
-    provider: 'openai',
-    name: 'GPT-5',
-    apiName: 'gpt-5',
-    contextWindow: 400000,
-    maxTokens: 128000,
-    inputCostPerMillion: 1.25,
-    outputCostPerMillion: 10.00,
-    capabilities: {
-      supportsJSON: true,
-      supportsImages: true,
-      supportsFunctions: true,
-      supportsStreaming: true,
-      supportsThinking: true
-    }
-  },
-  {
-    provider: 'openai',
-    name: 'GPT-5 Mini',
-    apiName: 'gpt-5-mini',
-    contextWindow: 400000,
-    maxTokens: 128000,
-    inputCostPerMillion: 0.25,
-    outputCostPerMillion: 2.00,
-    capabilities: {
-      supportsJSON: true,
-      supportsImages: true,
-      supportsFunctions: true,
-      supportsStreaming: true,
-      supportsThinking: true
-    }
-  },
-  {
-    provider: 'openai',
-    name: 'GPT-5 Nano',
-    apiName: 'gpt-5-nano',
-    contextWindow: 400000,
-    maxTokens: 128000,
-    inputCostPerMillion: 0.05,
-    outputCostPerMillion: 0.40,
-    capabilities: {
-      supportsJSON: true,
-      supportsImages: true,
-      supportsFunctions: true,
-      supportsStreaming: true,
-      supportsThinking: true
-    }
   }
 
   // Note: o3/o4 reasoning models removed due to incompatible API (requires max_completion_tokens)
   // These models use a different parameter structure and would need special handling
 ];
 
-export const OPENAI_DEFAULT_MODEL = 'gpt-5.5';
+export const OPENAI_DEFAULT_MODEL = 'gpt-5.6-sol';

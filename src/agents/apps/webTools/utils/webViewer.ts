@@ -1,5 +1,6 @@
 import { App, normalizePath, TFile, TFolder, Vault, View, WorkspaceLeaf } from 'obsidian';
 import { sanitizeName } from '../../../../utils/pathUtils';
+import { resolveVaultPath } from '../../../../core/vaultPath';
 
 export type WebViewerOpenMode = 'tab' | 'split' | 'window' | 'current';
 
@@ -52,12 +53,30 @@ export function getWebViewerLeaf(app: App): WorkspaceLeaf | null {
   return app.workspace.getLeavesOfType(WEB_VIEWER_VIEW_TYPE)[0] ?? null;
 }
 
+/**
+ * Reject any URL that is not http/https before it reaches the web viewer.
+ * Blocks file:// (local file reads) and other schemes an LLM-supplied URL
+ * could otherwise request. Throws on an invalid or unsupported URL.
+ */
+export function assertSafeWebUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid URL: ${url}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Unsupported URL scheme "${parsed.protocol}" — only http and https URLs are allowed.`);
+  }
+}
+
 export async function openWebViewerUrl(
   app: App,
   url: string,
   mode: WebViewerOpenMode,
   focus: boolean
 ): Promise<WorkspaceLeaf> {
+  assertSafeWebUrl(url);
   const leaf = getLeafForMode(app, mode);
 
   await leaf.setViewState({
@@ -170,7 +189,9 @@ export function resolveUniqueMarkdownPath(vault: Vault, outputPath: string): str
 }
 
 export function resolveUniqueFilePath(vault: Vault, outputPath: string, extension: string): string {
-  const normalized = normalizePath(outputPath);
+  // Confine to the vault: reject traversal/absolute/home-expansion paths. Throws
+  // VaultPathError, which each capture tool's try/catch surfaces as a failure.
+  const normalized = resolveVaultPath(outputPath);
   const suffix = `.${extension}`;
   const withoutExtension = normalized.endsWith(suffix)
     ? normalized.slice(0, -suffix.length)

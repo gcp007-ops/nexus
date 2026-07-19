@@ -15,8 +15,9 @@ import { labelNamed, verbs } from '../../../utils/toolStatusLabels';
 import type { ToolStatusTense } from '../../../interfaces/ITool';
 import { createServiceIntegration } from '../../services/ValidationService';
 import type { IndividualWorkspace } from '../../../../types/storage/StorageTypes';
-import { addRecommendations, Recommendation } from '../../../../utils/recommendationUtils';
+import { addRecommendations } from '../../../../utils/recommendationUtils';
 import { NudgeHelpers } from '../../../../utils/nudgeHelpers';
+import { tryResolveVaultPath } from '../../../../core/vaultPath';
 
 // Import types from existing workspace mode
 import { 
@@ -25,10 +26,6 @@ import {
 } from '../../../../database/types/workspace/ParameterTypes';
 import { WorkspaceContext } from '../../../../database/types/workspace/WorkspaceTypes';
 import { createErrorMessage } from '../../../../utils/errorUtils';
-
-type CreateWorkspaceResultWithRecommendations = CreateWorkspaceResult & {
-    recommendations: Recommendation[];
-};
 
 interface WorkspaceServiceLike {
     getWorkspaceByNameOrId(identifier: string): Promise<IndividualWorkspace | null>;
@@ -81,7 +78,19 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
             if (!params.purpose) {
                 return this.prepareResult(false, undefined, 'Purpose is required. Describe what this workspace is used for.');
             }
-            
+
+            // Confine the workspace root to the vault (reject traversal/absolute
+            // paths). The root sentinels "/", "." and "" legitimately mean the
+            // vault root, so they are preserved as-is; everything else is confined.
+            const rootTrimmed = params.rootFolder.trim();
+            if (rootTrimmed !== '' && rootTrimmed !== '/' && rootTrimmed !== '.') {
+                const resolvedRoot = tryResolveVaultPath(params.rootFolder);
+                if (!resolvedRoot.ok) {
+                    return this.prepareResult(false, undefined, resolvedRoot.error);
+                }
+                params.rootFolder = resolvedRoot.path;
+            }
+
             // Ensure root folder exists
             try {
                 const folder = this.app.vault.getAbstractFileByPath(params.rootFolder);
@@ -148,7 +157,7 @@ export class CreateWorkspaceTool extends BaseTool<CreateWorkspaceParameters, Cre
             const result = this.prepareResult(true);
             return addRecommendations(result, [
                 NudgeHelpers.suggestWorkspaceNameFollowup(workspace.name)
-            ]) as CreateWorkspaceResultWithRecommendations;
+            ]);
 
         } catch (error) {
             return this.prepareResult(false, undefined, createErrorMessage('Error creating workspace: ', error));

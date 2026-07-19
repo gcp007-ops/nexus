@@ -28,6 +28,7 @@ import { MessageData, AlternativeMessage } from '../../types/storage/HybridStora
 import { MessageEvent, MessageUpdatedEvent, MessageDeletedEvent, AlternativeMessageEvent } from '../interfaces/StorageEvents';
 import { PaginatedResult, PaginationParams } from '../../types/pagination/PaginationTypes';
 import { DatabaseRow, QueryParams } from './base/BaseRepository';
+import { parseJsonColumn } from '../utils/jsonColumn';
 
 interface MessageRow extends DatabaseRow {
   id: string;
@@ -438,12 +439,17 @@ export class MessageRepository
    * O(N) redundant JSONL events when callers pass the full message array
    * through ConversationService.updateConversation().
    */
-  async update(messageId: string, data: UpdateMessageData): Promise<void> {
+  async update(messageId: string, data: UpdateMessageData, expectedConversationId?: string): Promise<void> {
     try {
       // Load full current message — used for both change detection and conversationId
       const current = await this.getById(messageId);
       if (!current) {
         throw new Error(`Message ${messageId} not found`);
+      }
+      if (expectedConversationId !== undefined && current.conversationId !== expectedConversationId) {
+        throw new Error(
+          `Message ${messageId} belongs to conversation ${current.conversationId}, not ${expectedConversationId}`
+        );
       }
 
       // Skip entirely if nothing actually changed (prevents JSONL write amplification)
@@ -619,37 +625,11 @@ export class MessageRepository
    * Convert SQLite row to MessageData
    */
   private rowToMessage(row: MessageRow): MessageData {
-    let toolCalls: MessageData['toolCalls'];
-    let metadata: MessageJSONValue | undefined;
-    let alternatives: AlternativeMessage[] | undefined;
-
-    // Defensive JSON parsing — corrupt data shouldn't crash the entire message load
-    if (row.toolCallsJson) {
-      try {
-        toolCalls = this.parseJsonValue<MessageData['toolCalls']>(row.toolCallsJson);
-      } catch {
-        console.error(`[MessageRepository] Failed to parse toolCallsJson for message ${row.id}`);
-        toolCalls = undefined;
-      }
-    }
-
-    if (row.metadataJson) {
-      try {
-        metadata = this.parseJsonValue<MessageJSONValue>(row.metadataJson);
-      } catch {
-        console.error(`[MessageRepository] Failed to parse metadataJson for message ${row.id}`);
-        metadata = undefined;
-      }
-    }
-
-    if (row.alternativesJson) {
-      try {
-        alternatives = this.parseJsonValue<AlternativeMessage[]>(row.alternativesJson);
-      } catch {
-        console.error(`[MessageRepository] Failed to parse alternativesJson for message ${row.id}`);
-        alternatives = undefined;
-      }
-    }
+    // Defensive JSON parsing — a corrupt column is logged (with the message id)
+    // and skipped rather than crashing the entire message load.
+    const toolCalls = parseJsonColumn<MessageData['toolCalls']>(row.toolCallsJson, `MessageRepository.toolCalls#${row.id}`);
+    const metadata = parseJsonColumn<MessageJSONValue>(row.metadataJson, `MessageRepository.metadata#${row.id}`);
+    const alternatives = parseJsonColumn<AlternativeMessage[]>(row.alternativesJson, `MessageRepository.alternatives#${row.id}`);
 
     return {
       id: row.id,
@@ -681,13 +661,6 @@ export class MessageRepository
     return parsed;
   }
 
-  private parseJsonValue<T>(json: string): T | undefined {
-    try {
-      return JSON.parse(json) as T;
-    } catch {
-      return undefined;
-    }
-  }
 
   /**
    * Convert AlternativeMessage[] to AlternativeMessageEvent[] for JSONL storage

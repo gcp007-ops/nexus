@@ -252,11 +252,41 @@ function buildStubRegistry(): Map<string, IAgent> {
     }),
   ]);
 
+  // unionItemsAgent → create(linkedNotes: array<oneOf[string, object]>)
+  // Mirrors the real createTask.linkedNotes union schema so the CLI coercion
+  // path for the widened linkedNotes (string CSV back-compat + object JSON
+  // literal) is exercised end-to-end through normalizeExecutionCalls.
+  const unionItemsAgent = makeStubAgent('unionItemsAgent', [
+    makeStubTool('create', {
+      type: 'object',
+      properties: {
+        linkedNotes: {
+          type: 'array',
+          items: {
+            oneOf: [
+              { type: 'string' },
+              {
+                type: 'object',
+                properties: {
+                  notePath: { type: 'string' },
+                  linkType: { type: 'string', enum: ['reference', 'output', 'input'] },
+                },
+                required: ['notePath'],
+              },
+            ],
+          },
+        },
+      },
+      required: [],
+    }),
+  ]);
+
   return new Map<string, IAgent>([
     ['contentManager', contentAgent],
     ['storageManager', storageAgent],
     ['numericAgent', coerceAgent],
     ['oneOfAgent', oneOfAgent],
+    ['unionItemsAgent', unionItemsAgent],
     ['toolManager', makeStubAgent('toolManager', [])], // excluded from --help
   ]);
 }
@@ -294,7 +324,7 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
     it('"--help" expands to all agents except toolManager', () => {
       const result = makeNormalizer().normalizeDiscoveryRequests({ tool: '--help' });
       const agents = result.map(r => r.agent).sort();
-      expect(agents).toEqual(['contentManager', 'numericAgent', 'oneOfAgent', 'storageManager']);
+      expect(agents).toEqual(['contentManager', 'numericAgent', 'oneOfAgent', 'storageManager', 'unionItemsAgent']);
     });
 
     it('throws on unknown agent token', () => {
@@ -489,6 +519,32 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Compact vs full schemas (broad discovery cap)
+  // -------------------------------------------------------------------------
+
+  describe('buildCliSchema compact mode', () => {
+    it('compact omits usage/arguments/examples but keeps command + description', () => {
+      const normalizer = makeNormalizer();
+      const tool = buildStubRegistry().get('contentManager')!.getTools()[0];
+
+      const compact = normalizer.buildCliSchema('contentManager', tool, { compact: true });
+      expect(compact.command).toBeTruthy();
+      expect(compact.description).toBe(tool.description);
+      expect(compact.usage).toBeUndefined();
+      expect(compact.arguments).toBeUndefined();
+      expect(compact.examples).toBeUndefined();
+
+      const full = normalizer.buildCliSchema('contentManager', tool);
+      expect(full.usage).toBeTruthy();
+      expect(Array.isArray(full.arguments)).toBe(true);
+      expect(Array.isArray(full.examples)).toBe(true);
+
+      // The cap is real: compact serializes much smaller than full.
+      expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Value coercion — coerceValue branches
   // -------------------------------------------------------------------------
 
@@ -587,16 +643,16 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       expect(call.params.tags).toEqual(['[broken']);
     });
 
-    it('falls back to CSV split on multi-item malformed JSON and preserves all items', () => {
+    it('strips outer array literal brackets on multi-item malformed JSON and preserves all items', () => {
       // `[a,b,c]` wraps with [] so the JSON-parse branch IS attempted, then
-      // throws (unquoted identifiers). The catch falls through to
-      // splitCsvRespectingQuotes, which splits on top-level commas. This is
-      // the real proof that the fallback preserves every item, not just the
-      // single-token case above.
+      // throws (unquoted identifiers). Outer `[...]` is then stripped by
+      // stripOuterArrayBrackets and the inner CSV splits on top-level commas
+      // — the wikilink frontmatter bug fix path. (Previously the outer
+      // brackets stayed glued to the first/last items.)
       const [call] = makeNormalizer().normalizeExecutionCalls({
         tool: 'numeric convert --tags "[a,b,c]"',
       });
-      expect(call.params.tags).toEqual(['[a', 'b', 'c]']);
+      expect(call.params.tags).toEqual(['a', 'b', 'c']);
     });
 
     it('non-wrapped multi-item raw input skips JSON branch and CSV-splits', () => {
@@ -714,15 +770,50 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       expect(call.params.value).toBe('   ');
     });
 
-    it('bracket-wrapped malformed JSON falls through to CSV split', () => {
-      // `[a,b,c]` wraps in brackets so the JSON branch is attempted, fails
-      // on unquoted identifiers, and falls through to splitCsvRespectingQuotes.
-      // Outer brackets stay attached to the first/last items. Matches the
-      // array<string> branch's fallback behavior (see Bug #2 characterization).
+    it('bracket-wrapped malformed JSON strips outer brackets before CSV split', () => {
+      // `[a,b,c]` wraps in brackets so the JSON branch is attempted and fails
+      // on unquoted identifiers. Previously the fallback split the raw string
+      // verbatim, gluing `[` to the first item and `]` to the last. Now the
+      // outer pair is stripped first via stripOuterArrayBrackets, recovering
+      // the intended three-item array.
       const [call] = makeNormalizer().normalizeExecutionCalls({
         tool: 'one-of set-prop "[a,b,c]"',
       });
-      expect(call.params.value).toEqual(['[a', 'b', 'c]']);
+      expect(call.params.value).toEqual(['a', 'b', 'c']);
+    });
+
+    it('Obsidian wikilinks wrapped in array literal — triple-bracket repro', () => {
+      // Real-world bug: setProperty --value "[[[A]],[[B]],[[C]]]" intends an
+      // array of three Obsidian wikilinks. JSON.parse fails (wikilinks aren't
+      // valid JSON); fallback used to split the raw string and write
+      // `[[[A]]` and `[[C]]]` to frontmatter. Now the outer `[...]` is
+      // stripped first, leaving `[[A]],[[B]],[[C]]` which CSV-splits cleanly.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[[[A]],[[B]],[[C]]]"',
+      });
+      expect(call.params.value).toEqual(['[[A]]', '[[B]]', '[[C]]']);
+    });
+
+    it('bare CSV of wikilinks (no outer wrapper) preserved unchanged', () => {
+      // Counter-case: `[[A]],[[B]]` starts with `[` and ends with `]` but the
+      // outer pair is part of a wikilink, not a wrapper. stripOuterArrayBrackets
+      // must detect that depth zeroes out before the final char and leave the
+      // raw string alone, so CSV-split sees both wikilinks intact.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[[A]],[[B]]"',
+      });
+      expect(call.params.value).toEqual(['[[A]]', '[[B]]']);
+    });
+
+    it('single Obsidian wikilink stays a scalar — both bracket pairs kept', () => {
+      // Regression: `set-property --value "[[Note]]"` is a lone wikilink, not a
+      // one-element array literal. With no top-level comma it must be treated as
+      // a scalar and returned verbatim. The old strip-then-split path ate the
+      // outer pair and wrote the corrupted `[Note]`.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'one-of set-prop "[[wikilink]]"',
+      });
+      expect(call.params.value).toBe('[[wikilink]]');
     });
 
     it('bracket-prefix-only (no closing bracket) skips JSON and splits as CSV', () => {
@@ -931,6 +1022,36 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
         tool: 'storage archive --paths "a,,b,"',
       });
       expect(call.params.paths).toEqual(['a', 'b']);
+    });
+
+    it('outer-bracket-wrapped non-JSON CSV strips outer brackets before split', () => {
+      // Symmetric with the oneOfArray fix: a `--flag "[a,b,c]"` value where the
+      // caller used array-literal shape but JSON.parse can't handle unquoted
+      // identifiers. Outer pair stripped, inner CSV-split clean.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "[a,b,c]"',
+      });
+      expect(call.params.paths).toEqual(['a', 'b', 'c']);
+    });
+
+    it('Obsidian wikilinks wrapped in array literal — array<string> path', () => {
+      // The setProperty bug also reaches the array<string> branch when a tool
+      // schema declares an explicit `array: { items: { type: 'string' } }`.
+      // Same fix applies via stripOuterArrayBrackets.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "[[[A]],[[B]]]"',
+      });
+      expect(call.params.paths).toEqual(['[[A]]', '[[B]]']);
+    });
+
+    it('single wikilink into array<string> slot — one intact element', () => {
+      // Regression: a lone `[[A]]` in an explicit array<string> slot must yield
+      // a one-element array with the wikilink intact, not the stripped `[A]`.
+      // No top-level comma ⇒ scalar ⇒ wrapped as a single item, brackets kept.
+      const [call] = makeNormalizer().normalizeExecutionCalls({
+        tool: 'storage archive --paths "[[A]]"',
+      });
+      expect(call.params.paths).toEqual(['[[A]]']);
     });
   });
 });
@@ -1356,6 +1477,48 @@ describe('EC-3: array<X> coerces every element to X', () => {
       tool: 'numeric convert --pages "1,not-a-number,3"',
     });
     expect(call.params.pages).toEqual([1, 'not-a-number', 3]);
+  });
+});
+
+describe('union-items array (createTask.linkedNotes shape): string CSV back-compat + object JSON literal', () => {
+  // The widened createTask.linkedNotes uses items: { oneOf: [string, object] },
+  // so getSchemaType derives array<unknown> (no single items.type). That routes
+  // through the array<...> branch: JSON array literals parse (preserving object
+  // items) and bare CSV splits into strings. This guards both the back-compat
+  // string path and the new object-item path at the CLI layer.
+
+  it('string CSV form still parses to a string[] (back-compat)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'union-items create --linked-notes "a.md,b.md"',
+    });
+    expect(call.params.linkedNotes).toEqual(['a.md', 'b.md']);
+  });
+
+  it('string JSON-array form still parses to a string[] (back-compat)', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'union-items create --linked-notes \'["a.md","b.md"]\'',
+    });
+    expect(call.params.linkedNotes).toEqual(['a.md', 'b.md']);
+  });
+
+  it('object JSON-literal form parses to objects with linkType', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'union-items create --linked-notes \'[{"notePath":"src.md","linkType":"input"},{"notePath":"out.md","linkType":"output"}]\'',
+    });
+    expect(call.params.linkedNotes).toEqual([
+      { notePath: 'src.md', linkType: 'input' },
+      { notePath: 'out.md', linkType: 'output' },
+    ]);
+  });
+
+  it('mixed JSON-literal array (string + object items) is preserved per item', () => {
+    const [call] = makeNormalizer().normalizeExecutionCalls({
+      tool: 'union-items create --linked-notes \'["plain.md",{"notePath":"consumed.md","linkType":"input"}]\'',
+    });
+    expect(call.params.linkedNotes).toEqual([
+      'plain.md',
+      { notePath: 'consumed.md', linkType: 'input' },
+    ]);
   });
 });
 

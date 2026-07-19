@@ -3,8 +3,10 @@ import { BaseAgent } from '../baseAgent';
 import {
   SearchContentTool,
   SearchDirectoryTool,
-  SearchMemoryTool
+  SearchMemoryTool,
+  QueryNotesTool
 } from './tools';
+import type { SQLiteCacheManager } from '../../database/storage/SQLiteCacheManager';
 import { MemorySettings, DEFAULT_MEMORY_SETTINGS } from '../../types';
 import { MemoryService } from "../memoryManager/services/MemoryService";
 import { WorkspaceService } from '../../services/WorkspaceService';
@@ -20,7 +22,7 @@ const noop = (): void => {
 
 const noopAsync = async (): Promise<void> => Promise.resolve();
 
-const createFallbackElement = (): HTMLDivElement => document.createElement('div');
+const createFallbackElement = (): HTMLDivElement => createDiv();
 
 const createFallbackCommand = () => ({ id: '', name: '', callback: noop });
 
@@ -142,7 +144,7 @@ export class SearchManagerAgent extends BaseAgent {
 
     // Register focused search tools - lazy loaded
     this.registerLazyTool({
-      slug: 'searchDirectory', name: 'Search Directory',
+      slug: 'directory', name: 'Search Directory',
       description: 'FOCUSED directory search with REQUIRED paths parameter. Search for files and/or folders within specific directory paths using fuzzy matching and optional workspace context. Requires: query (search terms) and paths (directory paths to search - cannot be empty).',
       version: '2.0.0',
       factory: () => new SearchDirectoryTool(
@@ -152,7 +154,7 @@ export class SearchManagerAgent extends BaseAgent {
     });
 
     this.registerLazyTool({
-      slug: 'searchMemory', name: 'Search Memory',
+      slug: 'memory', name: 'Search Memory',
       description: 'Search workspace memory for past conversations, tool execution history, and workspace state snapshots.\n\nTWO MODES:\n- Discovery (default): Search all memory across a workspace. Best for finding past discussions, tool usage, or workspace context.\n- Scoped (provide sessionId or sessionName): Search within a specific session and get surrounding message context around each match. Best for recovering what happened in a particular session.\n\nTIPS:\n- Use natural language queries for conversations (e.g., "how did we implement auth?").\n- Use specific terms for tool history (e.g., agent or tool names).\n- Narrow results with memoryTypes if you know what you need.\n- Use sessionName + windowSize to get full context around a named session match.\n\nREQUIRES: query. Optional: workspaceId accepts the workspace name from load-workspace; omit it to search the global workspace.',
       version: '2.1.0',
       factory: () => new SearchMemoryTool(
@@ -162,6 +164,22 @@ export class SearchManagerAgent extends BaseAgent {
         this.storageAdapterResolver || undefined
       ),
     });
+
+    this.registerLazyTool({
+      slug: 'queryNotes', name: 'Query Notes',
+      description: 'Run a read-only SQL SELECT over the notes index — your vault\'s notes + frontmatter as a queryable database. Filter by arbitrary frontmatter properties, compute aggregates, and sort/group, all in SQL (SQLite does the work; there is no separate query language).\n\nTABLES:\n- notes(n): id, path, basename, folder, ext, title, ctime, mtime, size, tags_json, links_json, frontmatter_json (ctime/mtime are epoch ms).\n- note_properties(p): note_id, key, key_raw, value_text, value_num, value_type, position — one row per frontmatter property (per list element). This is the INDEXED filter path.\n\nPATTERNS:\n- Filter by a property: ... WHERE EXISTS (SELECT 1 FROM note_properties p WHERE p.note_id = n.id AND p.key = \'status\' AND p.value_text = \'active\').\n- Dates/numbers: compare p.value_num (dates stored as epoch ms).\n- Project a value: SELECT json_extract(n.frontmatter_json, \'$.status\') AS status FROM notes n.\n\nOnly a single SELECT/WITH statement is allowed. Pass describe=true to get live columns + the distinct property keys present in the vault.',
+      version: '1.0.0',
+      factory: () => new QueryNotesTool(
+        () => this.resolveSqliteCache()
+      ),
+    });
+  }
+
+  /** Resolve the shared SQLite cache from the storage adapter, for QueryNotesTool. */
+  private resolveSqliteCache(): SQLiteCacheManager | undefined {
+    const adapter = this.storageAdapterResolver?.();
+    const provider = adapter as unknown as { getSqliteCache?: () => SQLiteCacheManager } | undefined;
+    return typeof provider?.getSqliteCache === 'function' ? provider.getSqliteCache() : undefined;
   }
 
   private setStorageAdapterResolver(storageAdapter?: StorageAdapterResolver | null): void {

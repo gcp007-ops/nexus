@@ -323,6 +323,7 @@ describe('TaskManager Tools', () => {
 
       expect(result.success).toBe(true);
       expect(result.taskId).toBe('task-new');
+      expect(result.taskRef).toBe('T-tasknew');
     });
 
     it('should return error when projectId missing', async () => {
@@ -343,6 +344,39 @@ describe('TaskManager Tools', () => {
       });
       expect(result.success).toBe(false);
       expect(result.error).toContain('title');
+    });
+
+    it('should return error when title is whitespace-only', async () => {
+      const result = await tool.execute({
+        ...baseParams,
+        projectId: 'proj-1',
+        title: '   '
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('title');
+      expect(mockService.createTask).not.toHaveBeenCalled();
+    });
+
+    it('should return error when title is the wrong type', async () => {
+      const result = await tool.execute({
+        ...baseParams,
+        projectId: 'proj-1',
+        title: 123 as unknown as string
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('title');
+      expect(mockService.createTask).not.toHaveBeenCalled();
+    });
+
+    it('should return error when projectId is the wrong type', async () => {
+      const result = await tool.execute({
+        ...baseParams,
+        projectId: { id: 'p' } as unknown as string,
+        title: 'Task'
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('projectId');
+      expect(mockService.createTask).not.toHaveBeenCalled();
     });
 
     it('should pass all optional params to service', async () => {
@@ -424,6 +458,15 @@ describe('TaskManager Tools', () => {
       const result = await tool.execute({ ...baseParams, projectId: '' });
       expect(result.success).toBe(false);
     });
+
+    it('result schema advertises noteLinks items with required notePath + linkType', () => {
+      const schema = tool.getResultSchema() as Record<string, any>;
+      const taskItem = schema.properties.tasks.items;
+      expect(taskItem.properties.taskRef).toBeDefined();
+      expect(taskItem.properties.noteLinks).toBeDefined();
+      const noteLinkItem = taskItem.properties.noteLinks.items;
+      expect(noteLinkItem.required).toEqual(['notePath', 'linkType']);
+    });
   });
 
   // ============================================================================
@@ -458,6 +501,15 @@ describe('TaskManager Tools', () => {
       const result = await tool.execute({ ...baseParams, taskId: '' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('taskId');
+    });
+
+    it('should shorten UUID task IDs in status labels', () => {
+      const label = tool.getStatusLabel(
+        { taskId: '12345678-90ab-cdef-1234-567890abcdef' },
+        'present'
+      );
+
+      expect(label).toBe('Updating task T-12345678');
     });
 
     it('should add dependencies', async () => {
@@ -699,6 +751,25 @@ describe('TaskManager Tools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Unknown query type');
+    });
+
+    it('result schema advertises noteLinks items with required notePath + linkType', () => {
+      const schema = tool.getResultSchema() as Record<string, any>;
+      const noteLinkItem = schema.properties.tasks.items.properties.noteLinks.items;
+      expect(noteLinkItem.required).toEqual(['notePath', 'linkType']);
+    });
+
+    it('dependencyTree node schema advertises noteLinks on the recursive node task', () => {
+      const schema = tool.getResultSchema() as Record<string, any>;
+      const tree = schema.properties.tree;
+      // Root task carries noteLinks.
+      expect(tree.properties.task.properties.noteLinks).toBeDefined();
+      // Recursive dependency/dependent nodes carry a task with noteLinks (runtime returns
+      // them, so the AI-advertised schema must show them).
+      const depNode = tree.properties.dependencies.items;
+      expect(depNode.properties.task.properties.noteLinks).toBeDefined();
+      const dependentNode = tree.properties.dependents.items;
+      expect(dependentNode.properties.task.properties.noteLinks).toBeDefined();
     });
   });
 

@@ -2,6 +2,7 @@ import { App, TFile } from 'obsidian';
 import { BaseTool } from '../../baseTool';
 import { SetPropertyParams, SetPropertyResult } from '../types';
 import { createErrorMessage } from '../../../utils/errorUtils';
+import { tryResolveVaultPath } from '../../../core/vaultPath';
 import type { ToolStatusTense } from '../../interfaces/ITool';
 import { labelFileOp, verbs } from '../../utils/toolStatusLabels';
 
@@ -118,12 +119,16 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
     try {
       const { path, property, value, mode = 'replace' } = params;
 
-      const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
-      const file = this.app.vault.getAbstractFileByPath(normalizedPath);
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const resolved = tryResolveVaultPath(path);
+      if (!resolved.ok) {
+        return this.prepareResult(false, undefined, resolved.error);
+      }
+      const file = this.app.vault.getAbstractFileByPath(resolved.path);
 
       if (!file) {
         return this.prepareResult(false, undefined,
-          `File not found: "${path}". Use searchContent to find files by name, or storageManager.list to explore folders.`
+          `File not found: "${path}". Use search content to find files by name, or storageManager.list to explore folders.`
         );
       }
 
@@ -177,7 +182,7 @@ export class SetPropertyTool extends BaseTool<SetPropertyParams, SetPropertyResu
             { type: 'boolean' },
             { type: 'array', items: { type: 'string' } }
           ],
-          description: 'Value to set. Can be a string, number, boolean, or array of strings.'
+          description: 'Value to set: a string, number, boolean, or array of strings. Pass a single value (including an Obsidian wikilink) verbatim — e.g. --value "[[Note]]" — do NOT add wrapping brackets. For multiple values use a comma-separated list: --value "[[A]],[[B]]". The CLI parses these reliably; no bracket-escaping is needed.'
         },
         mode: {
           type: 'string',

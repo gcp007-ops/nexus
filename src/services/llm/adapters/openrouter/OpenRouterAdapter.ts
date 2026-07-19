@@ -24,6 +24,7 @@ import { WebSearchUtils } from '../../utils/WebSearchUtils';
 import { BRAND_NAME } from '../../../../constants/branding';
 import { MCPToolExecution } from '../shared/ToolExecutionUtils';
 import { SSEToolCall } from '../../streaming/SSEStreamProcessor';
+import { getRegistryModelPricing } from '../shared/StaticModelHelpers';
 
 type JsonObject = Record<string, unknown>;
 
@@ -157,7 +158,7 @@ export class OpenRouterAdapter extends BaseAdapter {
     apiKey: string,
     options?: { httpReferer?: string; xTitle?: string }
   ) {
-    super(apiKey, 'openai/gpt-5.5');
+    super(apiKey, 'openai/gpt-5.6-sol');
     this.httpReferer = options?.httpReferer?.trim() || 'https://synapticlabs.ai';
     this.xTitle = options?.xTitle?.trim() || BRAND_NAME;
     this.initializeCache();
@@ -428,7 +429,7 @@ export class OpenRouterAdapter extends BaseAdapter {
                   }
                 ) as unknown as OpenRouterToolCall[];
               }
-              return toolCalls as unknown as SSEToolCall[];
+              return toolCalls;
             }
           }
           return null;
@@ -580,7 +581,7 @@ export class OpenRouterAdapter extends BaseAdapter {
         // Linear backoff: 800ms, 1000ms, 1200ms, 1400ms, 1600ms
         if (attempt > 0) {
           const delay = baseDelay + (incrementDelay * attempt);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise(resolve => window.setTimeout(resolve, delay));
         }
 
         const response = await this.request<OpenRouterResponse>({
@@ -827,21 +828,7 @@ export class OpenRouterAdapter extends BaseAdapter {
    * Get model pricing
    */
   getModelPricing(modelId: string): Promise<ModelPricing | null> {
-    try {
-      const models = ModelRegistry.getProviderModels('openrouter');
-      const model = models.find(m => m.apiName === modelId);
-      if (!model) {
-        return Promise.resolve(null);
-      }
-
-      return Promise.resolve({
-        rateInputPerMillion: model.inputCostPerMillion,
-        rateOutputPerMillion: model.outputCostPerMillion,
-        currency: 'USD'
-      });
-    } catch {
-      return Promise.resolve(null);
-    }
+    return Promise.resolve(getRegistryModelPricing('openrouter', modelId));
   }
 
   private convertTools(tools: Tool[]): OpenRouterTool[] {
@@ -876,7 +863,7 @@ function toOpenRouterResponse(value: unknown): OpenRouterResponse {
     return {};
   }
 
-  return value as OpenRouterResponse;
+  return value;
 }
 
 function parseToolArguments(value: unknown): Record<string, unknown> {

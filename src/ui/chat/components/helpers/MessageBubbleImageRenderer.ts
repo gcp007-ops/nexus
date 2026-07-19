@@ -96,7 +96,7 @@ export class MessageBubbleImageRenderer {
   }
 
   private buildImageBubbleElement(imageData: MessageBubbleImageData): HTMLElement {
-    const imageBubble = document.createElement('div');
+    const imageBubble = createDiv();
     imageBubble.addClass('message-container');
     imageBubble.addClass('message-image');
     imageBubble.setAttribute('data-message-id', `${this.deps.getMessage().id}_image`);

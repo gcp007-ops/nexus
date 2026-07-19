@@ -51,6 +51,8 @@ interface MockStorageAdapter {
   addTrace: MockFn<[], Promise<string>>;
   getTraces: MockFn<[], Promise<Record<string, unknown>>>;
   saveState: MockFn<[], Promise<string>>;
+  updateState: MockFn;
+  deleteState: MockFn;
   getState: MockFn<[], Promise<unknown>>;
   getStates: MockFn<[], Promise<Record<string, unknown>>>;
   getConversations: MockFn<[], Promise<Record<string, unknown>>>;
@@ -77,6 +79,7 @@ interface MockElement {
   };
   addClass: MockFn<[string], MockElement>;
   removeClass: MockFn<[string], MockElement>;
+  toggleClass: MockFn<[string, boolean?], MockElement>;
   hasClass: MockFn<[string], boolean>;
   setText: MockFn<[string], MockElement>;
   createEl: MockFn<[string, MockElementOptions?], MockElement>;
@@ -174,6 +177,8 @@ export function createMockAdapter(ready: boolean): MockStorageAdapter {
     addTrace: jest.fn().mockResolvedValue('trace-new'),
     getTraces: jest.fn().mockResolvedValue({ ...EMPTY_PAGE }),
     saveState: jest.fn().mockResolvedValue('state-new'),
+    updateState: jest.fn(),
+    deleteState: jest.fn(),
     getState: jest.fn().mockResolvedValue(null),
     getStates: jest.fn().mockResolvedValue({ ...EMPTY_PAGE }),
     getConversations: jest.fn().mockResolvedValue({ ...EMPTY_PAGE }),
@@ -199,6 +204,17 @@ function createBaseElement(tag: string): MockElement {
       return this;
     }),
     removeClass: jest.fn().mockReturnThis(),
+    toggleClass: jest.fn().mockImplementation(function (this: MockElement, cls: string, force?: boolean) {
+      if (force === false) {
+        this._cls = this._cls.split(/\s+/).filter(candidate => candidate && candidate !== cls).join(' ');
+        return this;
+      }
+
+      if (!this._cls.split(/\s+/).includes(cls)) {
+        this._cls = `${this._cls} ${cls}`.trim();
+      }
+      return this;
+    }),
     hasClass: jest.fn(() => false),
     setText: jest.fn().mockImplementation(function (this: MockElement, text: string) {
       this.textContent = text;

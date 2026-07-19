@@ -55,7 +55,8 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
         .map(tool => tool.slug)
         .filter(slug => !INTERNAL_ONLY_TOOLS.has(slug));
       if (tools.length > 0) {
-        lines.push(`${agentName}: [${tools.join(',')}]`);
+        const alias = this.cliNormalizer.getAgentAlias(agentName);
+        lines.push(`${alias}: [${tools.join(',')}]`);
       }
     }
 
@@ -85,6 +86,11 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
       const requests = this.cliNormalizer.normalizeDiscoveryRequests(params);
       const resultSchemas = [];
       const notFound: string[] = [];
+      // A broad/agent-level selector (`--help` or just an agent name) lists tools COMPACTLY
+      // — command + description only — so discovery never re-dumps every tool's full args
+      // and examples (that catalog was ~25k tokens and persisted in chat history). The model
+      // drills into a specific "agent tool" to get the full signature before calling it.
+      let returnedCompact = false;
 
       for (const item of requests) {
         const agent = this.agentRegistry.get(item.agent);
@@ -96,8 +102,9 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
         if (!item.tools || item.tools.length === 0) {
           const allTools = agent.getTools().filter(tool => !INTERNAL_ONLY_TOOLS.has(tool.slug));
           for (const tool of allTools) {
-            resultSchemas.push(this.cliNormalizer.buildCliSchema(item.agent, tool));
+            resultSchemas.push(this.cliNormalizer.buildCliSchema(item.agent, tool, { compact: true }));
           }
+          returnedCompact = true;
           continue;
         }
 
@@ -121,7 +128,10 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
         success: true,
         ...(notFound.length > 0 ? { error: `Some items not found: ${notFound.join(', ')}` } : {}),
         data: {
-          tools: resultSchemas
+          tools: resultSchemas,
+          ...(returnedCompact
+            ? { note: 'Compact list (command + description). For a tool\'s full arguments and examples, call getTools with a specific "agent tool" selector (e.g. "storage move") before using it.' }
+            : {})
         }
       };
     } catch (error) {
@@ -204,9 +214,12 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
                     items: { type: 'string' }
                   }
                 },
-                required: ['agent', 'tool', 'description', 'command', 'usage', 'arguments', 'examples']
+                // usage/arguments/examples are present only for FULL schemas (a specific
+                // "agent tool" request); broad discovery returns compact entries.
+                required: ['agent', 'tool', 'description', 'command']
               }
-            }
+            },
+            note: { type: 'string' }
           }
         }
       },

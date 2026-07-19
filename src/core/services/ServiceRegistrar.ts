@@ -15,6 +15,7 @@ import type { MCPSettings } from '../../types/plugin/PluginTypes';
 import { CORE_SERVICE_DEFINITIONS, ADDITIONAL_SERVICE_FACTORIES } from './ServiceDefinitions';
 import type { ServiceCreationContext, AdditionalServiceFactory } from './ServiceDefinitions';
 import type { VaultOperations } from '../VaultOperations';
+import { vaultPathFromTrusted } from '../vaultPath';
 import type { ChatService } from '../../services/chat/ChatService';
 import { resolvePluginStorageRoot } from '../../database/storage/PluginStoragePathResolver';
 
@@ -22,7 +23,7 @@ export class ServiceRegistrar {
     private context: ServiceCreationContext;
 
     // Pending timer handle for deferred migration work
-    private migrationTimer: ReturnType<typeof setTimeout> | null = null;
+    private migrationTimer: number | null = null;
 
     constructor(context: ServiceCreationContext) {
         this.context = context;
@@ -119,8 +120,8 @@ export class ServiceRegistrar {
             const storageDir = `${dataDir}/storage`;
 
             try {
-                await vaultOperations.ensureDirectory(dataDir);
-                await vaultOperations.ensureDirectory(storageDir);
+                await vaultOperations.ensureDirectory(vaultPathFromTrusted(dataDir));
+                await vaultOperations.ensureDirectory(vaultPathFromTrusted(storageDir));
             } catch {
                 // Directories may already exist
             }
@@ -135,7 +136,7 @@ export class ServiceRegistrar {
 
             // DEFER heavy migration work to background (2 second delay)
             // This allows the UI to appear immediately while migrations run later
-            this.migrationTimer = setTimeout(() => {
+            this.migrationTimer = window.setTimeout(() => {
                 void this.runDeferredMigrations(plugin, serviceManager);
             }, 2000);
 
@@ -177,6 +178,15 @@ export class ServiceRegistrar {
             await this.context.serviceManager.getService('llmService');
             await this.context.serviceManager.getService('toolCallTraceService');
             await this.context.serviceManager.getService('conversationService');
+
+            // Notes query index — fire-and-forget so it never gates boot. Nothing
+            // depends on it, and it is NOT reached by any other getService() path,
+            // so it must be explicitly kicked off here or it never instantiates
+            // (and its `notes`/`note_properties` tables never get created). The
+            // service's create() backgrounds the actual vault walk internally.
+            void this.context.serviceManager.getService('notesIndex').catch((error) => {
+                console.error('[ServiceRegistrar] notesIndex initialization failed:', error);
+            });
 
             // ChatService initialization deferred - will be called after agents are registered
         } catch (error) {
@@ -293,7 +303,7 @@ export class ServiceRegistrar {
             }
 
             // Wait before retrying
-            await new Promise(resolve => setTimeout(resolve, retryInterval));
+            await new Promise(resolve => window.setTimeout(resolve, retryInterval));
         }
 
         return null;
@@ -306,7 +316,7 @@ export class ServiceRegistrar {
      */
     shutdown(): void {
         if (this.migrationTimer !== null) {
-            clearTimeout(this.migrationTimer);
+            window.clearTimeout(this.migrationTimer);
             this.migrationTimer = null;
         }
     }

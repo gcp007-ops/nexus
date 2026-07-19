@@ -3,13 +3,15 @@
  * Follows Single Responsibility Principle by focusing only on IPC transport
  */
 
-import type { Server as NetServer, Socket } from 'net';
 import { desktopRequire } from '../../utils/desktopRequire';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Server as MCPSDKServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { ServerConfiguration } from '../services/ServerConfiguration';
 import { StdioTransportManager } from './StdioTransportManager';
 import { logger } from '../../utils/logger';
+
+type NetServer = ReturnType<typeof import('net')['createServer']>;
+type Socket = import('net').Socket;
 
 /**
  * Service responsible for IPC transport management
@@ -158,7 +160,7 @@ export class IPCTransportManager {
                 try {
                     await Promise.race([
                         this.currentTransport.close(),
-                        new Promise(resolve => setTimeout(resolve, 500))
+                        new Promise(resolve => window.setTimeout(resolve, 500))
                     ]);
                 } catch (err) {
                     logger.systemError(err as Error, 'Proactive Transport Cleanup');
@@ -245,7 +247,9 @@ export class IPCTransportManager {
     ): void {
         if (!isWindows) {
             const fs = desktopRequire<typeof import('fs')>('fs').promises;
-            fs.chmod(ipcPath, 0o666).catch(error => {
+            // Owner-only: the MCP socket is unauthenticated, so a world-writable
+            // socket would let any local user/process drive vault tools.
+            fs.chmod(ipcPath, 0o600).catch(error => {
                 logger.systemError(error as Error, 'Socket Permissions');
             });
         }

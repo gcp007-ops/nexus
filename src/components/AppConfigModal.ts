@@ -32,6 +32,25 @@ export interface AppSettingsSection {
   loadOptions: () => Promise<{ success: boolean; options?: AppSettingOption[]; error?: string }>;
 }
 
+/**
+ * A custom settings section rendered after the dropdown `settingsSections`.
+ * Unlike AppSettingsSection (a single async-loaded dropdown), this hands the
+ * app full control of a container element so it can mount a richer management
+ * UI (e.g., the Skills list + edit modal). The `render` callback owns the
+ * element's lifecycle.
+ */
+export interface AppCustomSection {
+  /** Heading text shown above the section's container. */
+  title: string;
+  /**
+   * Mount the section's UI into the given container element. May return a
+   * teardown function (a disposer) that the modal calls on close — used to
+   * `unload()` any Obsidian Component the section loaded, so registered DOM
+   * events don't leak across repeated modal opens.
+   */
+  render: (container: HTMLElement) => void | (() => void);
+}
+
 export interface AppConfigModalConfig {
   manifest: AppManifest;
   credentials: Record<string, string>;
@@ -42,13 +61,16 @@ export interface AppConfigModalConfig {
   onValidate?: () => Promise<{ success: boolean; error?: string; data?: unknown }>;
   validateLabel?: string;
   settingsSections?: AppSettingsSection[];
+  customSections?: AppCustomSection[];
 }
 
 export class AppConfigModal extends Modal {
   private config: AppConfigModalConfig;
   private currentCredentials: Record<string, string>;
   private currentSettings: Record<string, string>;
-  private saveTimeout: ReturnType<typeof setTimeout> | null = null;
+  private saveTimeout: number | null = null;
+  /** Teardown callbacks returned by custom-section render(), invoked on close. */
+  private customSectionDisposers: Array<() => void> = [];
 
   constructor(app: App, config: AppConfigModalConfig) {
     super(app);
@@ -61,6 +83,10 @@ export class AppConfigModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass('app-config-modal');
+
+    // Dispose any prior custom-section components before re-rendering (onOpen
+    // could in principle run more than once over the modal's life).
+    this.disposeCustomSections();
 
     // Title
     contentEl.createEl('h2', { text: this.config.manifest.name });
@@ -109,6 +135,21 @@ export class AppConfigModal extends Modal {
       }
     }
 
+    // Custom sections (e.g., the Skills management UI). Each gets its own
+    // divider + heading, mirroring the settingsSections styling, then a
+    // container the app renders into.
+    if (this.config.customSections && this.config.customSections.length > 0) {
+      for (const section of this.config.customSections) {
+        contentEl.createDiv('app-config-settings-divider');
+        contentEl.createEl('h3', { text: section.title, cls: 'app-config-settings-heading' });
+        const sectionEl = contentEl.createDiv('app-config-custom-section');
+        const dispose = section.render(sectionEl);
+        if (typeof dispose === 'function') {
+          this.customSectionDisposers.push(dispose);
+        }
+      }
+    }
+
     // Save status
     const statusEl = contentEl.createDiv('app-config-status');
     statusEl.setText('Ready');
@@ -131,7 +172,7 @@ export class AppConfigModal extends Modal {
             const result = await onValidate();
             if (result.success) {
               const missing = (result.data != null && typeof result.data === 'object' && 'missingPermissions' in result.data)
-                ? (result.data as { missingPermissions: unknown }).missingPermissions
+                ? (result.data).missingPermissions
                 : undefined;
               if (Array.isArray(missing) && missing.length > 0) {
                 const msg = `Valid, but missing permissions: ${missing.join(', ')}`;
@@ -218,9 +259,9 @@ export class AppConfigModal extends Modal {
 
   private debounceSave(): void {
     if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+      window.clearTimeout(this.saveTimeout);
     }
-    this.saveTimeout = setTimeout(() => {
+    this.saveTimeout = window.setTimeout(() => {
       void (async () => {
         try {
           await this.config.onSave(this.currentCredentials);
@@ -234,9 +275,9 @@ export class AppConfigModal extends Modal {
 
   private debounceSaveSettings(): void {
     if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+      window.clearTimeout(this.saveTimeout);
     }
-    this.saveTimeout = setTimeout(() => {
+    this.saveTimeout = window.setTimeout(() => {
       void (async () => {
         try {
           if (this.config.onSaveSettings) {
@@ -255,7 +296,7 @@ export class AppConfigModal extends Modal {
     if (statusEl) {
       statusEl.setText(text);
       statusEl.className = 'app-config-status app-config-status-saved';
-      setTimeout(() => {
+      window.setTimeout(() => {
         if (statusEl) {
           statusEl.setText('Ready');
           statusEl.className = 'app-config-status';
@@ -266,8 +307,21 @@ export class AppConfigModal extends Modal {
 
   onClose(): void {
     if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+      window.clearTimeout(this.saveTimeout);
     }
+    this.disposeCustomSections();
     this.contentEl.empty();
+  }
+
+  /** Run + clear all custom-section teardown callbacks (Component unload, etc.). */
+  private disposeCustomSections(): void {
+    for (const dispose of this.customSectionDisposers) {
+      try {
+        dispose();
+      } catch (error) {
+        console.error('[AppConfigModal] Custom section teardown failed:', error);
+      }
+    }
+    this.customSectionDisposers = [];
   }
 }

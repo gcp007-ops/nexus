@@ -2,9 +2,12 @@
  * Location: src/agents/contentManager/tools/replace.ts
  *
  * Replace tool for ContentManager.
- * Validates that the content at the specified lines matches oldContent before making changes.
- * If the content has moved (e.g., due to other edits), returns the new line numbers where it
- * can be found via sliding-window search.
+ *
+ * Replaces or deletes a range of content in a note, identified by `start` and
+ * `end` text anchors. Anchors are matched as whole lines (multi-line anchors
+ * join lines with `\n`); both anchors must be globally unique in the file.
+ * Line numbers are never required — anchors are content-based and survive
+ * prior edits that shift lines around.
  *
  * Relationships:
  * - Paired with insert.ts (insert handles adding new content; this handles modifying existing)
@@ -15,6 +18,9 @@ import { App, TFile } from 'obsidian';
 import { BaseTool } from '../../baseTool';
 import { ReplaceParams, ReplaceResult } from '../types';
 import { createErrorMessage } from '../../../utils/errorUtils';
+import { tryResolveVaultPath } from '../../../core/vaultPath';
+import { addRecommendations } from '../../../utils/recommendationUtils';
+import { NudgeHelpers } from '../../../utils/nudgeHelpers';
 import { generateUnifiedDiff } from '../utils/unifiedDiff';
 import type { ToolStatusTense } from '../../interfaces/ITool';
 import { labelFileOp, verbs } from '../../utils/toolStatusLabels';
@@ -27,57 +33,145 @@ function normalizeCRLF(text: string): string {
 }
 
 /**
- * Normalize line endings AND Unicode form for the equality check only.
+ * Fold typographic ("smart") quote variants down to their ASCII equivalents.
  *
- * Compatibility (NFKC) tolerance: an LLM-authored `oldContent` may arrive
- * in a different Unicode normalization form than what `vault.read()` returns.
- * This covers both canonical drift (NFC vs NFD accents) and compatibility
- * drift such as ordinal indicators (`º` -> `o`, `ª` -> `a`), ellipsis
- * (`…` -> `...`), and NBSP (`\u00A0` -> regular space).
- *
- * We normalize ONLY for the comparison, not for the rebuild — the file's
- * original normalization form is preserved in the parts the operator did
- * not touch, and the `newContent` payload is written verbatim. This keeps
- * the side-effect of the fix bounded to "the comparator stops being byte-
- * strict" without converting the whole file behind the operator's back.
+ * NFKC does NOT collapse curly quotes onto straight ones — `’` (U+2019) and
+ * `'` (U+0027) remain distinct after `.normalize('NFKC')`, as do the curly
+ * double quotes. This is a common drift in practice: an LLM routinely emits a
+ * straight apostrophe while the vault stores a typographic one (or vice versa),
+ * so an anchor copied "verbatim" from a read of a line like `Poirot’s clue`
+ * never matches. We fold both families to ASCII for the comparison only.
  */
-function normalizeForCompare(text: string): string {
-  return normalizeCRLF(text).normalize('NFKC');
+function foldSmartQuotes(text: string): string {
+  return text
+    // single-quote family: left/right/low/high-reversed, prime, modifier apostrophe
+    .replace(/[‘’‚‛′ʼ]/g, "'")
+    // double-quote family: left/right/low/high-reversed, double prime
+    .replace(/[“”„‟″]/g, '"');
 }
 
 /**
- * Search for a multi-line content block in a file's lines array.
- * Returns all 1-based line ranges where the block appears as a contiguous match.
+ * Fold the dash family down to an ASCII hyphen-minus (U+002D).
+ *
+ * NFKC folds NONE of these, yet LLMs freely swap em/en dashes for hyphens (and
+ * vice versa) when echoing a line — `co—operate` vs `co-operate`. Covers HYPHEN
+ * (U+2010), non-breaking hyphen (U+2011), figure dash (U+2012), en dash
+ * (U+2013), em dash (U+2014), horizontal bar (U+2015), and MINUS SIGN (U+2212).
  */
-function findContentInLines(
+function foldDashes(text: string): string {
+  return text.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-');
+}
+
+/**
+ * Strip invisible format characters that survive NFKC and that an LLM will
+ * never reproduce when copying a line by sight: soft hyphen (U+00AD),
+ * zero-width space (U+200B), zero-width non-joiner/joiner (U+200C/U+200D),
+ * word joiner (U+2060), and BOM / zero-width no-break space (U+FEFF). These
+ * routinely ride along in web-pasted content and silently break exact matches.
+ */
+function stripInvisibles(text: string): string {
+  // eslint-disable-next-line no-misleading-character-class -- U+200C/U+200D (ZWNJ/ZWJ) are stripped here as independent format chars, not as a grapheme cluster, so the joined-sequence heuristic is a false positive.
+  return text.replace(/[\u00ad\u200b\u200c\u200d\u2060\ufeff]/gu, '');
+}
+
+/**
+ * Normalize a single line for the equality check only — NEVER for the rebuild.
+ *
+ * Pipeline (each step targets a drift NFKC alone does not fix):
+ *  1. CRLF stripped so line endings never matter.
+ *  2. Invisible format characters removed (`stripInvisibles`).
+ *  3. Smart quotes folded to ASCII (`foldSmartQuotes`).
+ *  4. Dash family folded to `-` (`foldDashes`).
+ *  5. NFKC — canonical/compat Unicode drift: NFC vs NFD accents, ordinals
+ *     (`º`->`o`), ellipsis (`…`->`...`), and the whole Unicode space-separator
+ *     family (NBSP, narrow NBSP, thin/figure/ideographic spaces -> a plain space).
+ *  6. Trailing whitespace trimmed — markdown hard-break spaces and editor cruft
+ *     that an LLM drops when it copies the visible text of a line.
+ *
+ * Leading whitespace is deliberately preserved: indentation is significant in
+ * code blocks and nested lists, and trimming it could match the wrong line.
+ *
+ * The file's original bytes are preserved in untouched regions and the
+ * replacement `content` is written verbatim — this folding affects matching only.
+ */
+function normalizeForCompare(text: string): string {
+  return foldDashes(foldSmartQuotes(stripInvisibles(normalizeCRLF(text))))
+    .normalize('NFKC')
+    .replace(/\s+$/, '');
+}
+
+/**
+ * Find all line-block occurrences of `blockText` in `fileLines`.
+ *
+ * Returns 0-based [start, end] inclusive line offsets for each contiguous
+ * match. Uses NFKC + CRLF normalization for comparison.
+ */
+function findLineBlock(
   fileLines: string[],
-  searchLines: string[]
+  blockText: string
 ): Array<{ start: number; end: number }> {
+  const blockLines = blockText.split('\n');
   const matches: Array<{ start: number; end: number }> = [];
-  const searchLen = searchLines.length;
+  if (blockLines.length === 0 || blockLines.length > fileLines.length) return matches;
 
-  if (searchLen === 0 || searchLen > fileLines.length) return matches;
-
-  // Pre-normalize both sides once so the inner loop stays cheap. The fileLines
-  // pre-normalization buys us O(N) instead of O(N*M) calls into String.prototype
-  // .normalize, which is non-trivial for files with many accented chars.
-  const normalizedSearch = searchLines.map(normalizeForCompare);
+  // Pre-normalize both sides once so the inner loop stays cheap. Pre-normalizing
+  // fileLines buys O(N) instead of O(N*M) calls into String.prototype.normalize,
+  // which is non-trivial for files with many accented characters.
+  const normalizedBlock = blockLines.map(normalizeForCompare);
   const normalizedFile = fileLines.map(normalizeForCompare);
 
-  for (let i = 0; i <= normalizedFile.length - searchLen; i++) {
+  for (let i = 0; i <= normalizedFile.length - normalizedBlock.length; i++) {
     let found = true;
-    for (let j = 0; j < searchLen; j++) {
-      if (normalizedFile[i + j] !== normalizedSearch[j]) {
+    for (let j = 0; j < normalizedBlock.length; j++) {
+      if (normalizedFile[i + j] !== normalizedBlock[j]) {
         found = false;
         break;
       }
     }
     if (found) {
-      matches.push({ start: i + 1, end: i + searchLen }); // 1-based
+      matches.push({ start: i, end: i + normalizedBlock.length - 1 });
     }
   }
 
   return matches;
+}
+
+/**
+ * Find the single file line that most closely resembles the (first line of an)
+ * unmatched anchor, so the not-found error can show WHY it failed — typically a
+ * lone quote or whitespace character that survived normalization. Compares on
+ * the normalized form (matching the anchor matcher) and ranks by a cheap
+ * character-overlap score; returns null when nothing meaningfully overlaps.
+ */
+function findNearestLine(
+  fileLines: string[],
+  anchor: string
+): { lineNumber: number; text: string } | null {
+  const needle = normalizeForCompare(anchor.split('\n')[0]);
+  if (!needle.trim()) return null;
+
+  const needleSet = new Set(needle);
+  let best: { lineNumber: number; text: string; score: number } | null = null;
+
+  for (let i = 0; i < fileLines.length; i++) {
+    const candidate = normalizeForCompare(fileLines[i]);
+    if (!candidate.trim()) continue;
+
+    // Jaccard-ish overlap on the character sets — cheap and good enough to
+    // surface the "looks identical but one byte differs" near-miss.
+    const candSet = new Set(candidate);
+    let shared = 0;
+    for (const ch of needleSet) if (candSet.has(ch)) shared += 1;
+    const union = new Set([...needleSet, ...candSet]).size;
+    const score = union === 0 ? 0 : shared / union;
+
+    if (!best || score > best.score) {
+      best = { lineNumber: i + 1, text: fileLines[i], score };
+    }
+  }
+
+  if (!best || best.score < 0.6) return null;
+  return { lineNumber: best.lineNumber, text: best.text };
 }
 
 export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
@@ -87,7 +181,7 @@ export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
     super(
       'replace',
       'Replace',
-      'Replace or delete existing content in a note. Validates that the content at the specified lines matches oldContent before making changes. If the content has moved (e.g., due to other edits), returns the new line numbers where it can be found.',
+      'Replace or delete a range of content in a note, identified by start and end text anchors. Anchors are matched as whole lines (compared after Unicode normalization, so straight vs curly quotes/apostrophes, NBSP, ellipsis, and accent forms are treated as equal — paste the line as it reads, don\'t hand-normalize punctuation). Pass multi-line text via \\n if a single line is not unique. Line numbers are never required; if an anchor misses, re-read just the target line range (contentManager.read with a narrow startLine/endLine), not the whole file.',
       '1.0.0'
     );
 
@@ -96,6 +190,20 @@ export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
 
   getStatusLabel(params: Record<string, unknown> | undefined, tense: ToolStatusTense): string | undefined {
     return labelFileOp(verbs('Replacing in', 'Replaced in', 'Failed to replace in'), params, tense);
+  }
+
+  /**
+   * Build an anchor-not-found failure, attaching a near-miss recommendation
+   * through the shared nudge/recommender channel when a close line exists.
+   */
+  private anchorNotFound(
+    message: string,
+    fileLines: string[],
+    anchor: string
+  ): ReplaceResult {
+    const result = this.prepareResult(false, undefined, message);
+    const nudge = NudgeHelpers.checkAnchorNearMiss(findNearestLine(fileLines, anchor));
+    return nudge ? addRecommendations(result, [nudge]) : result;
   }
 
   /**
@@ -117,15 +225,24 @@ export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
 
   async execute(params: ReplaceParams): Promise<ReplaceResult> {
     try {
-      const { path, oldContent, newContent, startLine, endLine } = params;
+      const { path, start, end, content } = params;
 
-      // Normalize path (remove leading slash)
-      const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
-      const file = this.app.vault.getAbstractFileByPath(normalizedPath);
+      if (typeof start !== 'string' || !start.trim() || typeof end !== 'string' || !end.trim()) {
+        return this.prepareResult(false, undefined,
+          'start and end must contain non-whitespace text. Pick distinctive lines from your read.'
+        );
+      }
+
+      // Confine to the vault: reject traversal/absolute/home-expansion paths.
+      const resolved = tryResolveVaultPath(path);
+      if (!resolved.ok) {
+        return this.prepareResult(false, undefined, resolved.error);
+      }
+      const file = this.app.vault.getAbstractFileByPath(resolved.path);
 
       if (!file) {
         return this.prepareResult(false, undefined,
-          `File not found: "${path}". Use searchContent to find files by name, or storageManager.list to explore folders.`
+          `File not found: "${path}". Use search content to find files by name, or storageManager.list to explore folders.`
         );
       }
 
@@ -135,89 +252,59 @@ export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
         );
       }
 
-      // Validate line numbers
-      if (startLine < 1) {
-        return this.prepareResult(false, undefined,
-          `Invalid startLine: ${startLine}. Line numbers are 1-based (minimum 1).`
+      const fileText = normalizeCRLF(await this.app.vault.read(file));
+      const fileLines = fileText.split('\n');
+
+      const startMatches = findLineBlock(fileLines, start);
+      const endMatches = findLineBlock(fileLines, end);
+
+      if (startMatches.length === 0) {
+        return this.anchorNotFound(
+          'start anchor not found in file. The content may have shifted since your last read — re-read just the expected line range (contentManager.read with a narrow startLine/endLine), not the whole file, then retry.',
+          fileLines, start
         );
       }
 
-      if (endLine < startLine) {
+      if (startMatches.length > 1) {
+        const lineList = startMatches.map(m => m.start + 1).join(', ');
         return this.prepareResult(false, undefined,
-          `endLine (${endLine}) cannot be less than startLine (${startLine}).`
+          `start anchor matches ${startMatches.length} locations: lines [${lineList}]. Make it unique by extending it — include the next line (or several) using \\n so it identifies one location only.`
         );
       }
 
-      const existingContent = normalizeCRLF(await this.app.vault.read(file));
-      const fileLines = existingContent.split('\n');
-      const totalLines = fileLines.length;
-
-      if (startLine > totalLines) {
-        return this.prepareResult(false, undefined,
-          `startLine ${startLine} is beyond file length (${totalLines} lines). Use read to view the file first.`
+      if (endMatches.length === 0) {
+        return this.anchorNotFound(
+          'end anchor not found in file. The content may have shifted since your last read — re-read just the expected line range (contentManager.read with a narrow startLine/endLine), not the whole file, then retry.',
+          fileLines, end
         );
       }
 
-      if (endLine > totalLines) {
+      if (endMatches.length > 1) {
+        const lineList = endMatches.map(m => m.start + 1).join(', ');
         return this.prepareResult(false, undefined,
-          `endLine ${endLine} is beyond file length (${totalLines} lines). Use read to view the file first.`
+          `end anchor matches ${endMatches.length} locations: lines [${lineList}]. Make it unique by extending it — include the next line (or several) using \\n so it identifies one location only.`
         );
       }
 
-      // Extract content at the specified line range and compare with oldContent.
-      // Compare in NFKC form so an oldContent that decomposed somewhere in the
-      // pipeline (LLM tokenizer, JSON layer, copy-paste) still matches the file.
-      const targetContent = fileLines.slice(startLine - 1, endLine).join('\n');
-      const normalizedTarget = normalizeForCompare(targetContent);
-      const normalizedOld = normalizeForCompare(oldContent);
+      const s = startMatches[0];
+      const e = endMatches[0];
 
-      if (normalizedTarget !== normalizedOld) {
-        // Content mismatch — search the entire file for where it actually is.
-        // Use normalized search lines (CRLF + NFKC) so the fallback survives the
-        // same drift the line-range check tolerates.
-        const searchLines = normalizedOld.split('\n');
-        const matches = findContentInLines(fileLines, searchLines);
-
-        if (matches.length === 1) {
-          const m = matches[0];
-          return this.prepareResult(false, undefined,
-            `Content not found at lines ${startLine}-${endLine}. Found at lines ${m.start}-${m.end}. Retry with the correct line numbers.`
-          );
-        } else if (matches.length > 1) {
-          const locations = matches.map(m => `lines ${m.start}-${m.end}`).join(', ');
-          return this.prepareResult(false, undefined,
-            `Content not found at lines ${startLine}-${endLine}. Found at multiple locations: ${locations}. Specify which occurrence to replace using the correct startLine and endLine.`
-          );
-        } else {
-          return this.prepareResult(false, undefined,
-            `Content not found at lines ${startLine}-${endLine} or anywhere else in the note. The content may have been modified or removed.`
-          );
-        }
+      if (e.end < s.start) {
+        return this.prepareResult(false, undefined,
+          `end anchor is at line ${e.start + 1} but start anchor is at line ${s.start + 1} (${s.start + 1} > ${e.start + 1}). Check that start and end are in the right order in the file.`
+        );
       }
 
-      // Content matches — perform the replacement
-      const beforeLines = fileLines.slice(0, startLine - 1);
-      const afterLines = fileLines.slice(endLine);
-      const linesRemoved = endLine - startLine + 1;
+      const beforeLines = fileLines.slice(0, s.start);
+      const afterLines = fileLines.slice(e.end + 1);
+      const newLinesArr = content === '' ? [] : normalizeCRLF(content).split('\n');
 
-      let resultContent: string;
-      let delta: number;
-
-      if (newContent === '') {
-        // DELETE: Remove lines, don't insert anything
-        resultContent = [...beforeLines, ...afterLines].join('\n');
-        delta = -linesRemoved;
-      } else {
-        // REPLACE: Remove lines and insert new content
-        const replacementLines = normalizeCRLF(newContent).split('\n');
-        resultContent = [...beforeLines, ...replacementLines, ...afterLines].join('\n');
-        delta = replacementLines.length - linesRemoved;
-      }
-
+      const resultContent = [...beforeLines, ...newLinesArr, ...afterLines].join('\n');
       await this.app.vault.modify(file, resultContent);
 
-      const newLines = resultContent.split('\n');
-      return this.buildResult(fileLines, newLines, delta);
+      const finalLines = resultContent.split('\n');
+      const delta = finalLines.length - fileLines.length;
+      return this.buildResult(fileLines, finalLines, delta);
 
     } catch (error) {
       return this.prepareResult(false, undefined, createErrorMessage('Error replacing content: ', error));
@@ -232,24 +319,20 @@ export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
           type: 'string',
           description: 'Path to the note to modify (e.g. "folder/note.md"). Do not include a leading slash.'
         },
-        oldContent: {
+        start: {
           type: 'string',
-          description: 'The exact text currently at lines startLine through endLine that you want to replace. This is validated before any changes are made — if the content at those lines doesn\'t match, the tool will search the entire note to find where your content actually is and tell you the correct line numbers. To delete content, set newContent to an empty string.'
+          description: 'The opening line(s) of the range you want to replace, copied as-is from your read — keep the exact words but don\'t worry about quote/apostrophe style or invisible spacing; matching is normalization-tolerant. Must match exactly one location in the file. If a single line is not unique, extend `start` to multiple lines using \\n until it identifies one location only.'
         },
-        newContent: {
+        end: {
           type: 'string',
-          description: 'The text to replace oldContent with. Set to an empty string to delete the content at the specified lines.'
+          description: 'The closing line(s) of the range. Same rules as `start`. Must come after `start` in the file.'
         },
-        startLine: {
-          type: 'number',
-          description: 'The line number (1-indexed) where oldContent begins. Required — ensures the correct occurrence is targeted when identical content appears multiple times in a note.'
-        },
-        endLine: {
-          type: 'number',
-          description: 'The line number (1-indexed) where oldContent ends (inclusive). Required — defines the exact range to validate and replace.'
+        content: {
+          type: 'string',
+          description: 'What to write in place of the range from `start` through `end` (inclusive of both anchor lines). Set to an empty string to delete the range entirely.'
         }
       },
-      required: ['path', 'oldContent', 'newContent', 'startLine', 'endLine']
+      required: ['path', 'start', 'end', 'content']
     };
 
     return this.getMergedSchema(toolSchema);
@@ -277,7 +360,7 @@ export class ReplaceTool extends BaseTool<ReplaceParams, ReplaceResult> {
         },
         error: {
           type: 'string',
-          description: 'Error message if failed. If content was found at different lines, the message includes the correct line numbers to retry with.'
+          description: 'Error message if failed. For ambiguous anchors, the message lists the matching line numbers and asks you to extend the anchor to multiple lines.'
         }
       },
       required: ['success']

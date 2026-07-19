@@ -32,8 +32,11 @@ import { ContextTracker } from './services/ContextTracker';
 // Controllers
 import { UIStateController, UIStateControllerEvents } from './controllers/UIStateController';
 import { StreamingController } from './controllers/StreamingController';
+import { WorkingIndicatorController } from './controllers/WorkingIndicatorController';
 import { NexusLoadingController } from './controllers/NexusLoadingController';
 import { SubagentController } from './controllers/SubagentController';
+import { ChatLiveVoiceController } from './controllers/ChatLiveVoiceController';
+import { LiveVoiceContextBuilder } from '../../services/realtimeVoice/LiveVoiceContextBuilder';
 
 // Coordinators
 import { ToolStatusBar } from './components/ToolStatusBar';
@@ -52,6 +55,7 @@ import { ChatEventBinder } from './utils/ChatEventBinder';
 
 import { CHAT_VIEW_TYPES } from '../../constants/branding';
 import { getNexusPlugin } from '../../utils/pluginLocator';
+import { generateUUID } from '../../utils/uuid';
 
 // Nexus Lifecycle
 import { getWebLLMLifecycleManager } from '../../services/llm/adapters/webllm/WebLLMLifecycleManager';
@@ -88,7 +92,9 @@ export class ChatView extends ItemView {
   // Controllers and Coordinators
   private uiStateController!: UIStateController;
   private streamingController!: StreamingController;
+  private workingIndicatorController!: WorkingIndicatorController;
   private nexusLoadingController!: NexusLoadingController;
+  private liveVoiceController: ChatLiveVoiceController | null = null;
   private toolCallStateManager!: ToolCallStateManager;
   private toolEventCoordinator!: ToolEventCoordinator;
   private toolStatusBar!: ToolStatusBar;
@@ -101,7 +107,7 @@ export class ChatView extends ItemView {
   private isClosing = false;
 
   // Search debounce timer for conversation search input
-  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private searchDebounceTimer: number | null = null;
 
   private sessionCoordinator: ChatSessionCoordinator;
   private sendCoordinator: ChatSendCoordinator;
@@ -176,7 +182,7 @@ export class ChatView extends ItemView {
 
   private getChatContainer(): HTMLElement | null {
     const container = this.containerEl.children[1];
-    return container instanceof HTMLElement ? container : null;
+    return container?.instanceOf(HTMLElement) ? container : null;
   }
 
   getViewType(): string {
@@ -242,7 +248,7 @@ export class ChatView extends ItemView {
       const startTime = Date.now();
 
       while (Date.now() - startTime < ChatView.SERVICE_POLL_TIMEOUT_MS) {
-        await new Promise(resolve => setTimeout(resolve, ChatView.SERVICE_POLL_INTERVAL_MS));
+        await new Promise(resolve => window.setTimeout(resolve, ChatView.SERVICE_POLL_INTERVAL_MS));
 
         // Stop polling if view was closed during the wait
         if (this.isClosing) return false;
@@ -289,7 +295,7 @@ export class ChatView extends ItemView {
     );
 
     while (true) {
-      await new Promise(resolve => setTimeout(resolve, ChatView.SERVICE_POLL_INTERVAL_MS));
+      await new Promise(resolve => window.setTimeout(resolve, ChatView.SERVICE_POLL_INTERVAL_MS));
 
       if (this.isClosing) return false;
 
@@ -351,7 +357,7 @@ export class ChatView extends ItemView {
 
     const poll = async (): Promise<void> => {
       while (Date.now() - startTime < ChatView.SERVICE_POLL_TIMEOUT_MS) {
-        await new Promise(resolve => setTimeout(resolve, ChatView.SERVICE_POLL_INTERVAL_MS));
+        await new Promise(resolve => window.setTimeout(resolve, ChatView.SERVICE_POLL_INTERVAL_MS));
 
         // Stop polling if view was closed during the wait
         if (this.isClosing) return;
@@ -395,7 +401,7 @@ export class ChatView extends ItemView {
 
       // Set up tool event callback for live UI updates
       this.chatService.setToolEventCallback((messageId, event, data) => {
-        this.handleToolEvent(messageId, event, data as unknown as ChatToolEventData);
+        this.handleToolEvent(messageId, event, data);
       });
     } catch {
       // ChatService initialization failed - continue with UI setup anyway
@@ -524,12 +530,21 @@ export class ChatView extends ItemView {
       onConversationUpdated: (conversation) => this.handleConversationUpdated(conversation),
       onLoadingStateChanged: (loading) => this.handleLoadingStateChanged(loading),
       onError: (message) => this.uiStateController.showError(message),
-      onToolCallsDetected: (messageId, toolCalls) =>
+      onToolCallsDetected: (messageId, toolCalls) => {
+        this.workingIndicatorController.noteToolActivity(messageId);
         this.toolEventCoordinator.handleToolCallsDetected(
           messageId,
           toolCalls as unknown as DetectedToolCalls
-        ),
-      onToolExecutionStarted: (messageId, toolCall) => this.toolEventCoordinator.handleToolExecutionStarted(messageId, toolCall),
+        );
+      },
+      onReasoningUpdate: (messageId, reasoningText, isComplete) => {
+        this.workingIndicatorController.noteToolActivity(messageId);
+        this.messageDisplay.updateMessageReasoning(messageId, reasoningText, isComplete);
+      },
+      onToolExecutionStarted: (messageId, toolCall) => {
+        this.workingIndicatorController.noteToolActivity(messageId);
+        this.toolEventCoordinator.handleToolExecutionStarted(messageId, toolCall);
+      },
       onToolExecutionCompleted: (messageId, toolId, result, success, error) =>
         this.toolEventCoordinator.handleToolExecutionCompleted(messageId, toolId, result, success, error),
       onMessageIdUpdated: (oldId, newId, updatedMessage) => this.handleMessageIdUpdated(oldId, newId, updatedMessage),
@@ -612,6 +627,13 @@ export class ChatView extends ItemView {
       }
     );
 
+    // Drives the "still working" gap ticker during the silent parts of a
+    // streaming turn (e.g. while tools execute, which do not stream).
+    this.workingIndicatorController = new WorkingIndicatorController({
+      show: (messageId) => this.messageDisplay.showWorkingIndicator(messageId),
+      hide: (messageId) => this.messageDisplay.hideWorkingIndicator(messageId),
+    });
+
     this.toolStatusBar = new ToolStatusBar(
       this.layoutElements.toolStatusBarContainer,
       this.contextTracker,
@@ -661,8 +683,24 @@ export class ChatView extends ItemView {
         this.sendCoordinator.handleStopGeneration();
       },
       () => this.conversationManager.getCurrentConversation() !== null,
-      this // Pass Component for registerDomEvent
+      this, // Pass Component for registerDomEvent
+      () => this.liveVoiceController?.stop(),
+      () => this.getEffectiveVoiceLLMSettings()
     );
+
+    this.liveVoiceController = new ChatLiveVoiceController({
+      app: this.app,
+      chatInput: this.chatInput,
+      toolStatusBar: this.toolStatusBar,
+      liveVoiceButton: this.layoutElements.liveVoiceButton,
+      getHasConversation: () => this.conversationManager.getCurrentConversation() !== null,
+      getLLMSettings: () => this.getEffectiveVoiceLLMSettings(),
+      getConversationContext: () => new LiveVoiceContextBuilder().build(this.conversationManager.getCurrentConversation()),
+      onTranscriptMessage: (role, content) => {
+        void this.appendLiveVoiceTranscriptMessage(role, content);
+      },
+      component: this,
+    });
 
     // Update conversation list if conversations were already loaded
     const conversations = this.conversationManager.getConversations();
@@ -698,7 +736,7 @@ export class ChatView extends ItemView {
     if (this.layoutElements.searchInput) {
       this.registerDomEvent(this.layoutElements.searchInput, 'input', () => {
         if (this.searchDebounceTimer) {
-          clearTimeout(this.searchDebounceTimer);
+          window.clearTimeout(this.searchDebounceTimer);
         }
         const query = this.layoutElements.searchInput.value.trim();
         if (query.length === 0) {
@@ -706,7 +744,7 @@ export class ChatView extends ItemView {
           void this.conversationManager.clearSearch();
           return;
         }
-        this.searchDebounceTimer = setTimeout(() => {
+        this.searchDebounceTimer = window.setTimeout(() => {
           this.searchDebounceTimer = null;
           void this.conversationManager.searchConversations(query);
         }, 300);
@@ -830,6 +868,12 @@ export class ChatView extends ItemView {
     modal.open();
   }
 
+  private getEffectiveVoiceLLMSettings() {
+    const plugin = getNexusPlugin<NexusPlugin>(this.app);
+    const llmSettings = plugin?.settings?.settings?.llmProviders ?? null;
+    return this.modelAgentManager.applyChatVoiceOverrides(llmSettings);
+  }
+
   /**
    * Load initial data
    */
@@ -853,10 +897,62 @@ export class ChatView extends ItemView {
     this.messageDisplay.addAIMessage(message);
   }
 
+  private async appendLiveVoiceTranscriptMessage(role: 'user' | 'assistant', content: string): Promise<void> {
+    const normalizedContent = content.replace(/\s+/g, ' ').trim();
+    if (!normalizedContent) {
+      return;
+    }
+
+    const conversation = this.conversationManager.getCurrentConversation();
+    if (!conversation) {
+      return;
+    }
+
+    const message: ConversationMessage = {
+      id: generateUUID(),
+      role,
+      content: normalizedContent,
+      timestamp: Date.now(),
+      conversationId: conversation.id,
+      state: 'complete',
+      metadata: {
+        source: 'liveVoice',
+      },
+    };
+
+    const result = await this.chatService.addMessage({
+      conversationId: conversation.id,
+      role,
+      content: normalizedContent,
+      id: message.id,
+      metadata: message.metadata,
+    });
+
+    if (!result.success) {
+      console.error('[ChatView] Failed to append live voice transcript:', result.error);
+      this.toolStatusBar.pushLiveVoiceStatus(result.error || 'Failed to append live voice transcript.', 'failed');
+      return;
+    }
+
+    const updatedConversation: ConversationData = {
+      ...conversation,
+      messages: [...conversation.messages, message],
+      updated: Date.now(),
+    };
+    this.conversationManager.updateCurrentConversation(updatedConversation);
+    this.messageDisplay.setConversation(updatedConversation);
+    void this.updateContextProgress();
+  }
+
   private handleStreamingUpdate(messageId: string, content: string, isComplete: boolean, isIncremental?: boolean): void {
     if (isIncremental) {
+      // A streamed text token arrived: tell the gap ticker text is flowing so it
+      // hides and re-arms its debounce (it reappears in-bubble once the stream
+      // goes quiet for a tool round-trip).
+      this.workingIndicatorController.noteText(messageId);
       this.streamingController.updateStreamingChunk(messageId, content);
     } else if (isComplete) {
+      this.workingIndicatorController.end();
       this.streamingController.finalizeStreaming(messageId, content);
       this.messageDisplay.updateMessageContent(messageId, content);
       this.toolEventCoordinator.clearToolNameCache();
@@ -882,6 +978,15 @@ export class ChatView extends ItemView {
   }
 
   private handleLoadingStateChanged(loading: boolean): void {
+    // Bracket the whole generation: begin() arms the gap ticker, end() tears it
+    // down. setLoading(false) fires from MessageManager's finally block, so this
+    // covers normal completion, aborts, and errors uniformly.
+    if (loading) {
+      this.workingIndicatorController.begin();
+    } else {
+      this.workingIndicatorController.end();
+    }
+
     if (this.chatInput) {
       if (loading) {
         this.chatInput.setPreSendCompacting(false);
@@ -952,7 +1057,7 @@ export class ChatView extends ItemView {
                 const name = typeof call.name === 'string' ? call.name : '';
                 return { ...call, name: name.includes('_') ? name : `memoryManager_${name}` };
               });
-              return executor.executeToolCalls(mapped as never, context as never);
+              return executor.executeToolCalls(mapped as never, context);
             },
           });
         }
@@ -1030,15 +1135,18 @@ export class ChatView extends ItemView {
 
   private cleanup(): void {
     if (this.searchDebounceTimer) {
-      clearTimeout(this.searchDebounceTimer);
+      window.clearTimeout(this.searchDebounceTimer);
       this.searchDebounceTimer = null;
     }
     this.conversationList?.cleanup();
     this.messageDisplay?.cleanup();
+    this.liveVoiceController?.cleanup();
+    this.liveVoiceController = null;
     this.chatInput?.cleanup();
     this.toolStatusBar?.cleanup();
     this.uiStateController?.cleanup();
     this.streamingController?.cleanup();
+    this.workingIndicatorController?.cleanup();
     this.nexusLoadingController?.unload();
     this.subagentController?.cleanup();
     this.branchViewCoordinator.cleanup();

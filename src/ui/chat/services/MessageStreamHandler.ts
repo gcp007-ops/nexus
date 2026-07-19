@@ -39,6 +39,7 @@ interface StreamToolCall {
 export interface StreamHandlerEvents {
   onStreamingUpdate: (messageId: string, content: string, isComplete: boolean, isIncremental?: boolean) => void;
   onToolCallsDetected: (messageId: string, toolCalls: StreamToolCall[]) => void;
+  onReasoningUpdate?: (messageId: string, reasoningText: string, isComplete: boolean) => void;
 }
 
 export interface StreamOptions {
@@ -72,28 +73,6 @@ export interface StreamResult {
   provider?: string;   // Resolved provider from final chunk
   model?: string;      // Resolved model from final chunk
   cost?: { totalCost: number; currency: string };
-}
-
-/**
- * Create a synthetic tool call to represent reasoning/thinking in the UI.
- * This keeps reasoning visible to the status bar and inspection history.
- */
-function createReasoningToolCall(messageId: string, reasoningText: string, isComplete: boolean): StreamToolCall {
-  return {
-    id: `reasoning_${messageId}`,
-    type: 'reasoning',  // Special type for reasoning display
-    name: 'Reasoning',
-    displayName: 'Reasoning',
-    technicalName: 'extended_thinking',
-    function: {
-      name: 'reasoning',
-      arguments: ''  // Not used
-    },
-    result: reasoningText,
-    status: isComplete ? 'completed' : 'streaming',
-    success: true,
-    isVirtual: true  // Flag to indicate this is not a real tool
-  };
 }
 
 function toConversationToolCall(toolCall: StreamToolCall): ConversationToolCall {
@@ -147,7 +126,6 @@ export class MessageStreamHandler {
 
     // Reasoning accumulation
     let reasoningAccumulator = '';
-    let reasoningEmitted = false;
 
     // Stream the AI response
     for await (const chunk of this.chatService.generateResponseStreaming(
@@ -184,29 +162,18 @@ export class MessageStreamHandler {
       if (chunk.reasoning) {
         reasoningAccumulator += chunk.reasoning;
 
-        // Emit reasoning as a synthetic tool call for UI display
-        const reasoningToolCall = createReasoningToolCall(
-          aiMessageId,
-          reasoningAccumulator,
-          chunk.reasoningComplete || false
-        );
-        this.events.onToolCallsDetected(aiMessageId, [reasoningToolCall]);
-        reasoningEmitted = true;
+        // Push the accumulated reasoning to the UI for live "Thinking" rendering
+        this.events.onReasoningUpdate?.(aiMessageId, reasoningAccumulator, chunk.reasoningComplete || false);
       }
 
       // Mark reasoning as complete if signaled
-      if (chunk.reasoningComplete && reasoningEmitted) {
-        const finalReasoningToolCall = createReasoningToolCall(
-          aiMessageId,
-          reasoningAccumulator,
-          true
-        );
-        this.events.onToolCallsDetected(aiMessageId, [finalReasoningToolCall]);
+      if (chunk.reasoningComplete) {
+        this.events.onReasoningUpdate?.(aiMessageId, reasoningAccumulator, true);
       }
 
       // Extract tool calls when available
       if (chunk.toolCalls) {
-        toolCalls = chunk.toolCalls as StreamToolCall[];
+        toolCalls = chunk.toolCalls;
 
         // Emit tool calls event for final chunk
         if (chunk.complete) {
@@ -254,6 +221,12 @@ export class MessageStreamHandler {
               ...conversation.messages[placeholderMessageIndex],
             content: streamedContent,
             state: 'complete',
+            // Clear the loading spinner on completion. Without this, a
+            // complete-but-empty stream (no token ever arrived) leaves the
+            // placeholder's isLoading:true and the chat spins forever, because
+            // isLoading is otherwise only cleared on the first token
+            // (issue #271, claim b).
+            isLoading: false,
             toolCalls: toolCalls?.map(toConversationToolCall),
             // Persist reasoning for re-render from storage
             reasoning: reasoningAccumulator || undefined,
@@ -286,6 +259,11 @@ export class MessageStreamHandler {
           ...finalMsg,
           content: streamedContent,
           state: 'complete',
+          // Safety-net terminal path: clear the spinner here too, so a stream
+          // that exits without a final isFinalComplete (e.g. tool-execution
+          // error yielding complete:true) never leaves isLoading:true stuck
+          // (issue #271, claim b).
+          isLoading: false,
           toolCalls: toolCalls?.map(toConversationToolCall),
           reasoning: reasoningAccumulator || undefined,
           metadata: finalMetadata,
