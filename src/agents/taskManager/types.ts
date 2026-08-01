@@ -9,10 +9,13 @@ import { CommonParameters, CommonResult } from '../../types';
 import type { TaskStatus, TaskPriority, LinkType } from '../../database/repositories/interfaces/ITaskRepository';
 import type { TaskMetadata } from '../../database/repositories/interfaces/ITaskRepository';
 import type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
+import type { MetadataUpdateMode } from '../../database/repositories/metadataUpdate';
 
 // ────────────────────────────────────────────────────────────────
 // Re-exported Entity Types (canonical source: repository interfaces)
 // ────────────────────────────────────────────────────────────────
+
+export type { MetadataUpdateMode } from '../../database/repositories/metadataUpdate';
 
 export type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
 export type { TaskMetadata } from '../../database/repositories/interfaces/ITaskRepository';
@@ -101,6 +104,10 @@ export interface UpdateProjectData {
   description?: string;
   status?: ProjectStatus;
   metadata?: Record<string, unknown>;
+  /** Defaults to 'merge' (shallow key merge). 'replace' needs an explicit metadata object. */
+  metadataMode?: MetadataUpdateMode;
+  /** Keys to delete after applying the merge patch. Merge mode only. */
+  removeMetadataKeys?: string[];
 }
 
 export interface CreateTaskData {
@@ -125,6 +132,10 @@ export interface UpdateTaskData {
   assignee?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+  /** Defaults to 'merge' (shallow key merge). 'replace' needs an explicit metadata object. */
+  metadataMode?: MetadataUpdateMode;
+  /** Keys to delete after applying the merge patch. Merge mode only. */
+  removeMetadataKeys?: string[];
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -199,6 +210,8 @@ export interface UpdateProjectParameters extends CommonParameters {
   description?: string;
   status?: ProjectStatus;
   metadata?: Record<string, unknown>;
+  metadataMode?: MetadataUpdateMode;
+  removeMetadataKeys?: string[];
 }
 
 export interface ArchiveProjectParameters extends CommonParameters {
@@ -246,6 +259,8 @@ export interface UpdateTaskParameters extends CommonParameters {
   addNoteLinks?: Array<{ notePath: string; linkType?: LinkType }>;
   removeNoteLinks?: string[];
   metadata?: Record<string, unknown>;
+  metadataMode?: MetadataUpdateMode;
+  removeMetadataKeys?: string[];
 }
 
 export interface MoveTaskParameters extends CommonParameters {

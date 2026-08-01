@@ -32,6 +32,7 @@ import {
 } from '../interfaces/StorageEvents';
 import { PaginatedResult, PaginationParams } from '../../types/pagination/PaginationTypes';
 import { parseJsonColumn } from '../utils/jsonColumn';
+import { resolveMetadataUpdate } from './metadataUpdate';
 
 interface ProjectRow extends DatabaseRow {
   id: string;
@@ -153,13 +154,34 @@ export class ProjectRepository
         throw new Error(`Project not found: ${id}`);
       }
 
+      // Ordinary fields the caller asked to change. `updated` is stamped by this
+      // method, not supplied, so it never counts as a requested change.
+      const hasFieldUpdate = data.name !== undefined
+        || data.description !== undefined
+        || data.status !== undefined;
+
+      let wrote = false;
+
       await this.transaction(async () => {
+        // 0. Resolve metadata against the value read inside this transaction.
+        // Transactions are serialized by the coordinator, so this read cannot
+        // race a concurrent update the way a service-level or cached read can.
+        const resolvedMetadata = await this.resolveMetadataInTransaction(id, data);
+
+        if (!hasFieldUpdate && resolvedMetadata === undefined) {
+          // Nothing to persist: no timestamp-only event, no SQLite write.
+          return;
+        }
+        wrote = true;
+
         // 1. Write event to JSONL
         const eventData: Record<string, unknown> = { updated: now };
         if (data.name !== undefined) eventData.name = data.name;
         if (data.description !== undefined) eventData.description = data.description;
         if (data.status !== undefined) eventData.status = data.status;
-        if (data.metadata !== undefined) eventData.metadataJson = JSON.stringify(data.metadata);
+        // The event carries the complete resolved object, so replaying old and
+        // new histories folds identically — project replay stays untouched.
+        if (resolvedMetadata !== undefined) eventData.metadataJson = JSON.stringify(resolvedMetadata);
 
         await this.writeEvent<ProjectUpdatedEvent>(
           this.jsonlPath(existing.workspaceId),
@@ -186,9 +208,9 @@ export class ProjectRepository
           setClauses.push('status = ?');
           params.push(data.status);
         }
-        if (data.metadata !== undefined) {
+        if (resolvedMetadata !== undefined) {
           setClauses.push('metadataJson = ?');
-          params.push(JSON.stringify(data.metadata));
+          params.push(JSON.stringify(resolvedMetadata));
         }
 
         params.push(id);
@@ -198,6 +220,10 @@ export class ProjectRepository
           params
         );
       });
+
+      if (!wrote) {
+        return;
+      }
 
       // 3. Invalidate cache
       const statusChanged = data.status !== undefined && data.status !== existing.status;
@@ -306,6 +332,44 @@ export class ProjectRepository
   // ============================================================================
   // Protected Methods
   // ============================================================================
+
+  /**
+   * Resolve the metadata to persist for an update, reading the current value
+   * from SQLite inside the caller's transaction.
+   *
+   * Returns undefined when the request carries no metadata operation, or when
+   * the operation resolves to no change — callers then omit metadata from both
+   * the JSONL event and the SQLite column. Throws on an inconsistent request,
+   * before either store is written.
+   */
+  private async resolveMetadataInTransaction(
+    id: string,
+    data: UpdateProjectData
+  ): Promise<Record<string, unknown> | undefined> {
+    const hasMetadataOperation = data.metadata !== undefined
+      || data.metadataMode !== undefined
+      || data.removeMetadataKeys !== undefined;
+    if (!hasMetadataOperation) {
+      return undefined;
+    }
+
+    // Replacement discards the stored value, so it needs no read.
+    let current: Record<string, unknown> | undefined;
+    if (data.metadataMode !== 'replace') {
+      const row = await this.sqliteCache.queryOne<{ metadataJson?: string | null }>(
+        'SELECT metadataJson FROM projects WHERE id = ?',
+        [id]
+      );
+      current = parseJsonColumn<Record<string, unknown>>(row?.metadataJson, `ProjectRepository.metadata#${id}`);
+    }
+
+    return resolveMetadataUpdate({
+      current,
+      metadata: data.metadata,
+      metadataMode: data.metadataMode,
+      removeMetadataKeys: data.removeMetadataKeys
+    });
+  }
 
   protected rowToEntity(row: DatabaseRow): ProjectMetadata {
     const projectRow = row as ProjectRow;

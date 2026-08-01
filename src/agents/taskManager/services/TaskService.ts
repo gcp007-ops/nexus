@@ -25,7 +25,8 @@ import {
   TaskStatus,
   TaskWithNoteLinks,
   TaskNoteLink,
-  LinkedNoteInput
+  LinkedNoteInput,
+  MetadataUpdateMode
 } from '../types';
 import type { IProjectRepository, ProjectMetadata } from '../../../database/repositories/interfaces/IProjectRepository';
 import type { ITaskRepository, TaskMetadata, NoteLink } from '../../../database/repositories/interfaces/ITaskRepository';
@@ -40,6 +41,23 @@ import { formatTaskRef, taskRefToIdPrefix } from '../utils/taskRefs';
  * repository will actually return — minimizing the number of round-trips.
  */
 const SNAPSHOT_PAGE_SIZE = 200;
+
+/**
+ * True when the metadata half of an update request cannot change anything:
+ * merge mode (the default) with an absent or empty patch and no removals.
+ *
+ * `metadataMode: "replace"` is never a no-op — it must reach the repository so
+ * a replacement without an explicit object still fails validation there, and
+ * `replace` with `{}` still clears the stored metadata.
+ */
+function isMetadataNoOp(data: { metadata?: Record<string, unknown>; metadataMode?: MetadataUpdateMode; removeMetadataKeys?: string[] }): boolean {
+  if (data.metadataMode === 'replace') {
+    return false;
+  }
+  const hasPatch = data.metadata !== undefined && Object.keys(data.metadata).length > 0;
+  const hasRemovals = Array.isArray(data.removeMetadataKeys) && data.removeMetadataKeys.length > 0;
+  return !hasPatch && !hasRemovals;
+}
 
 export interface TaskBoardEventPayload {
   workspaceId: string;
@@ -207,6 +225,16 @@ export class TaskService {
     const project = await this.projectRepo.getById(projectId);
     if (!project) {
       throw new Error(`Project "${projectId}" not found`);
+    }
+
+    // A request whose only content is an empty merge patch changes nothing.
+    // Short-circuit before the repository so it produces no timestamp bump,
+    // no event, no cache invalidation and no task-board notification.
+    const hasOrdinaryUpdate = data.name !== undefined
+      || data.description !== undefined
+      || data.status !== undefined;
+    if (!hasOrdinaryUpdate && isMetadataNoOp(data)) {
+      return;
     }
 
     // If renaming, check for duplicate
@@ -399,7 +427,12 @@ export class TaskService {
     }
     taskId = task.id;
 
-    const updateData: Partial<Omit<TaskMetadata, 'completedAt'>> & { updated: number; completedAt?: number | null } = {
+    const updateData: Partial<Omit<TaskMetadata, 'completedAt'>> & {
+      updated: number;
+      completedAt?: number | null;
+      metadataMode?: MetadataUpdateMode;
+      removeMetadataKeys?: string[];
+    } = {
       ...data,
       updated: Date.now()
     };
@@ -414,6 +447,19 @@ export class TaskService {
     } else if (effectiveStatus !== 'done' && task.completedAt != null) {
       // Re-opened, or a non-done task carrying a stale timestamp — clear it.
       updateData.completedAt = null;
+    }
+
+    // A request whose only content is an empty merge patch changes nothing.
+    // Checked after completedAt healing so a stale timestamp still gets cleared.
+    const hasOrdinaryUpdate = data.title !== undefined
+      || data.description !== undefined
+      || data.status !== undefined
+      || data.priority !== undefined
+      || data.dueDate !== undefined
+      || data.assignee !== undefined
+      || data.tags !== undefined;
+    if (!hasOrdinaryUpdate && updateData.completedAt === undefined && isMetadataNoOp(data)) {
+      return;
     }
 
     await this.taskRepo.update(taskId, updateData);

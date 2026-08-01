@@ -31,10 +31,18 @@ export class UpdateTaskTool extends BaseTool<UpdateTaskParameters, UpdateTaskRes
         return this.prepareResult(false, undefined, 'taskId is required');
       }
 
+      // A metadata request worth forwarding: an explicit patch (including {},
+      // which the service resolves to a no-op), an explicit replacement, or at
+      // least one key to remove. An isolated `metadataMode: "merge"` asks for
+      // nothing, so it is not an update request.
+      const hasMetadataRequest = params.metadata !== undefined ||
+        params.metadataMode === 'replace' ||
+        (Array.isArray(params.removeMetadataKeys) && params.removeMetadataKeys.length > 0);
+
       // Update task fields
       const hasFieldUpdates = params.title || params.description !== undefined ||
         params.status || params.priority || params.dueDate !== undefined ||
-        params.assignee !== undefined || params.tags || params.metadata;
+        params.assignee !== undefined || params.tags || hasMetadataRequest;
 
       if (hasFieldUpdates) {
         await this.taskService.updateTask(params.taskId, {
@@ -45,7 +53,9 @@ export class UpdateTaskTool extends BaseTool<UpdateTaskParameters, UpdateTaskRes
           dueDate: params.dueDate,
           assignee: params.assignee,
           tags: params.tags,
-          metadata: params.metadata
+          metadata: params.metadata,
+          metadataMode: params.metadataMode,
+          removeMetadataKeys: params.removeMetadataKeys
         });
       }
 
@@ -110,7 +120,9 @@ export class UpdateTaskTool extends BaseTool<UpdateTaskParameters, UpdateTaskRes
           }
         },
         removeNoteLinks: { type: 'array', items: { type: 'string' }, description: 'Vault note paths to unlink from this task' },
-        metadata: { type: 'object', description: 'Custom metadata to merge (keys are merged, not replaced)', additionalProperties: true }
+        metadata: { type: 'object', description: 'Custom metadata. Merged by default: the keys you send overwrite same-named keys and every other stored key survives. The merge is shallow — a nested object is replaced whole, not merged recursively. Sending {} changes nothing; to clear metadata use metadataMode "replace" with {}.', additionalProperties: true },
+        metadataMode: { type: 'string', enum: ['merge', 'replace'], description: 'How to apply metadata. "merge" (default) is a shallow key merge. "replace" discards every stored key absent from metadata and requires an explicit metadata object — pass {} to clear all metadata. Cannot be combined with removeMetadataKeys.' },
+        removeMetadataKeys: { type: 'array', items: { type: 'string' }, description: 'Metadata keys to delete, applied after the merge patch. Merge mode only; keys that are not present are ignored.' }
       },
       required: ['taskId']
     });

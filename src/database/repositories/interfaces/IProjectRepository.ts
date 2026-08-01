@@ -13,6 +13,7 @@
 
 import { IRepository } from './IRepository';
 import { PaginatedResult, PaginationParams } from '../../../types/pagination/PaginationTypes';
+import { MetadataUpdateMode } from '../metadataUpdate';
 
 /**
  * Project metadata as stored in SQLite
@@ -46,6 +47,14 @@ export interface UpdateProjectData {
   description?: string;
   status?: 'active' | 'completed' | 'archived';
   metadata?: Record<string, unknown>;
+  /**
+   * How `metadata` is applied. Defaults to 'merge' (shallow key merge against
+   * the value read inside the update transaction). 'replace' requires an
+   * explicit `metadata` object and discards every key absent from it.
+   */
+  metadataMode?: MetadataUpdateMode;
+  /** Keys to delete after applying the merge patch. Merge mode only. */
+  removeMetadataKeys?: string[];
 }
 
 /**

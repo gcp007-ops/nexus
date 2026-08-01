@@ -265,6 +265,85 @@ describe('TaskService', () => {
 
       expect(projectRepo.getByName).not.toHaveBeenCalled();
     });
+
+    // ------------------------------------------------------------------
+    // Metadata operation forwarding
+    // ------------------------------------------------------------------
+
+    it('forwards the metadata operation without precomputing the merge', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject({ metadata: { keep: 'me' } }));
+
+      await service.updateProject('proj-1', {
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      });
+
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', expect.objectContaining({
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('forwards a replacement request', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject({ metadata: { keep: 'me' } }));
+
+      await service.updateProject('proj-1', { metadata: {}, metadataMode: 'replace' });
+
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', expect.objectContaining({
+        metadata: {},
+        metadataMode: 'replace'
+      }));
+    });
+
+    it('lets a replacement without metadata reach repository validation', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject());
+
+      await service.updateProject('proj-1', { metadataMode: 'replace' });
+
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', expect.objectContaining({
+        metadataMode: 'replace'
+      }));
+    });
+
+    it('treats an empty merge patch as a no-op', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject());
+
+      await service.updateProject('proj-1', { metadata: {} });
+
+      expect(projectRepo.update).not.toHaveBeenCalled();
+      expect(taskBoardNotifier.notify).not.toHaveBeenCalled();
+    });
+
+    it('treats an isolated merge mode with no patch as a no-op', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject());
+
+      await service.updateProject('proj-1', { metadataMode: 'merge', removeMetadataKeys: [] });
+
+      expect(projectRepo.update).not.toHaveBeenCalled();
+      expect(taskBoardNotifier.notify).not.toHaveBeenCalled();
+    });
+
+    it('does not treat a removal-only request as a no-op', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject({ metadata: { stale: 1 } }));
+
+      await service.updateProject('proj-1', { removeMetadataKeys: ['stale'] });
+
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', expect.objectContaining({
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('still updates ordinary fields when the metadata half is empty', async () => {
+      projectRepo.getById.mockResolvedValue(createMockProject());
+
+      await service.updateProject('proj-1', { description: 'Updated', metadata: {} });
+
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', expect.objectContaining({
+        description: 'Updated'
+      }));
+    });
   });
 
   describe('archiveProject', () => {
@@ -852,6 +931,96 @@ describe('TaskService', () => {
       expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
         status: 'done',
         completedAt: expect.any(Number)
+      }));
+    });
+
+    // ------------------------------------------------------------------
+    // Metadata operation forwarding
+    // ------------------------------------------------------------------
+
+    it('forwards the metadata operation without precomputing the merge', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask({ metadata: { keep: 'me' } }));
+
+      await service.updateTask('task-1', {
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      });
+
+      expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('forwards a replacement request', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask({ metadata: { keep: 'me' } }));
+
+      await service.updateTask('task-1', { metadata: {}, metadataMode: 'replace' });
+
+      expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        metadata: {},
+        metadataMode: 'replace'
+      }));
+    });
+
+    it('lets a replacement without metadata reach repository validation', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask());
+
+      await service.updateTask('task-1', { metadataMode: 'replace' });
+
+      expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        metadataMode: 'replace'
+      }));
+    });
+
+    it('treats an empty merge patch as a no-op', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask());
+
+      await service.updateTask('task-1', { metadata: {} });
+
+      expect(taskRepo.update).not.toHaveBeenCalled();
+      expect(taskBoardNotifier.notify).not.toHaveBeenCalled();
+    });
+
+    it('treats an isolated merge mode with no patch as a no-op', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask());
+
+      await service.updateTask('task-1', { metadataMode: 'merge', removeMetadataKeys: [] });
+
+      expect(taskRepo.update).not.toHaveBeenCalled();
+      expect(taskBoardNotifier.notify).not.toHaveBeenCalled();
+    });
+
+    it('does not treat a removal-only request as a no-op', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask({ metadata: { stale: 1 } }));
+
+      await service.updateTask('task-1', { removeMetadataKeys: ['stale'] });
+
+      expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('still heals a stale completedAt when the metadata half is a no-op', async () => {
+      // The derived invariant outranks the metadata no-op: a leftover timestamp
+      // on a non-done task must still be cleared.
+      taskRepo.getById.mockResolvedValue(createMockTask({ status: 'in_progress', completedAt: 5000 }));
+
+      await service.updateTask('task-1', { metadata: {} });
+
+      const updateCall = taskRepo.update.mock.calls[0][1];
+      expect(updateCall.completedAt).toBeNull();
+    });
+
+    it('still updates ordinary fields when the metadata half is empty', async () => {
+      taskRepo.getById.mockResolvedValue(createMockTask());
+
+      await service.updateTask('task-1', { title: 'Renamed', metadata: {} });
+
+      expect(taskRepo.update).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        title: 'Renamed'
       }));
     });
   });

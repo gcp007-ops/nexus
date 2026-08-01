@@ -34,7 +34,9 @@ export class UpdateProjectTool extends BaseTool<UpdateProjectParameters, UpdateP
         name: params.name,
         description: params.description,
         status: params.status,
-        metadata: params.metadata
+        metadata: params.metadata,
+        metadataMode: params.metadataMode,
+        removeMetadataKeys: params.removeMetadataKeys
       });
 
       return { success: true };
@@ -51,7 +53,9 @@ export class UpdateProjectTool extends BaseTool<UpdateProjectParameters, UpdateP
         name: { type: 'string', description: 'New project name' },
         description: { type: 'string', description: 'New project description' },
         status: { type: 'string', enum: ['active', 'completed', 'archived'], description: 'New project status' },
-        metadata: { type: 'object', description: 'Custom metadata to merge', additionalProperties: true }
+        metadata: { type: 'object', description: 'Custom metadata. Merged by default: the keys you send overwrite same-named keys and every other stored key survives. The merge is shallow — a nested object is replaced whole, not merged recursively. Sending {} changes nothing; to clear metadata use metadataMode "replace" with {}.', additionalProperties: true },
+        metadataMode: { type: 'string', enum: ['merge', 'replace'], description: 'How to apply metadata. "merge" (default) is a shallow key merge. "replace" discards every stored key absent from metadata and requires an explicit metadata object — pass {} to clear all metadata. Cannot be combined with removeMetadataKeys.' },
+        removeMetadataKeys: { type: 'array', items: { type: 'string' }, description: 'Metadata keys to delete, applied after the merge patch. Merge mode only; keys that are not present are ignored.' }
       },
       required: ['projectId']
     });

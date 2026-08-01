@@ -268,6 +268,52 @@ describe('TaskManager Tools', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('Not found');
     });
+
+    it('forwards all three metadata fields to the service', async () => {
+      mockService.updateProject.mockResolvedValue();
+
+      await tool.execute({
+        ...baseParams,
+        projectId: 'proj-1',
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      });
+
+      expect(mockService.updateProject).toHaveBeenCalledWith('proj-1', expect.objectContaining({
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('surfaces a service validation error as a failed result', async () => {
+      mockService.updateProject.mockRejectedValue(
+        new Error('removeMetadataKeys cannot be combined with metadataMode "replace"')
+      );
+
+      const result = await tool.execute({
+        ...baseParams,
+        projectId: 'proj-1',
+        metadata: { a: 1 },
+        metadataMode: 'replace',
+        removeMetadataKeys: ['b']
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('removeMetadataKeys');
+    });
+
+    it('schema exposes the mode enum and the removal array', () => {
+      const schema = tool.getParameterSchema();
+      const properties = schema.properties as Record<string, Record<string, unknown>>;
+
+      expect(properties.metadataMode.enum).toEqual(['merge', 'replace']);
+      expect(properties.removeMetadataKeys.type).toBe('array');
+      expect(properties.removeMetadataKeys.items).toEqual({ type: 'string' });
+      expect(properties.metadata.description).toMatch(/[Mm]erge/);
+      expect(properties.metadata.description).toMatch(/shallow/);
+    });
   });
 
   // ============================================================================
@@ -567,6 +613,109 @@ describe('TaskManager Tools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('cycle');
+    });
+
+    it('forwards all three metadata fields to the service', async () => {
+      mockService.updateTask.mockResolvedValue();
+
+      await tool.execute({
+        ...baseParams,
+        taskId: 'task-1',
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      });
+
+      expect(mockService.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('calls the service for a removal-only request', async () => {
+      mockService.updateTask.mockResolvedValue();
+
+      await tool.execute({
+        ...baseParams,
+        taskId: 'task-1',
+        removeMetadataKeys: ['stale']
+      });
+
+      expect(mockService.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        removeMetadataKeys: ['stale']
+      }));
+    });
+
+    it('calls the service for an explicit replacement with no other field', async () => {
+      mockService.updateTask.mockResolvedValue();
+
+      await tool.execute({
+        ...baseParams,
+        taskId: 'task-1',
+        metadataMode: 'replace',
+        metadata: {}
+      });
+
+      expect(mockService.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        metadataMode: 'replace',
+        metadata: {}
+      }));
+    });
+
+    it('calls the service for an empty metadata object so the service can no-op it', async () => {
+      mockService.updateTask.mockResolvedValue();
+
+      await tool.execute({ ...baseParams, taskId: 'task-1', metadata: {} });
+
+      expect(mockService.updateTask).toHaveBeenCalled();
+    });
+
+    it('does not call the service for an isolated merge mode', async () => {
+      mockService.updateTask.mockResolvedValue();
+
+      const result = await tool.execute({
+        ...baseParams,
+        taskId: 'task-1',
+        metadataMode: 'merge'
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockService.updateTask).not.toHaveBeenCalled();
+    });
+
+    it('does not call the service for an empty removal array alone', async () => {
+      mockService.updateTask.mockResolvedValue();
+
+      await tool.execute({ ...baseParams, taskId: 'task-1', removeMetadataKeys: [] });
+
+      expect(mockService.updateTask).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a service validation error as a failed result', async () => {
+      mockService.updateTask.mockRejectedValue(
+        new Error('metadataMode "replace" requires an explicit metadata object')
+      );
+
+      const result = await tool.execute({
+        ...baseParams,
+        taskId: 'task-1',
+        metadataMode: 'replace'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('metadata');
+    });
+
+    it('schema exposes the mode enum and the removal array', () => {
+      const schema = tool.getParameterSchema();
+      const properties = schema.properties as Record<string, Record<string, unknown>>;
+
+      expect(properties.metadataMode.enum).toEqual(['merge', 'replace']);
+      expect(properties.removeMetadataKeys.type).toBe('array');
+      expect(properties.removeMetadataKeys.items).toEqual({ type: 'string' });
+      expect(properties.metadata.description).toMatch(/[Mm]erge/);
+      expect(properties.metadata.description).toMatch(/shallow/);
     });
   });
 

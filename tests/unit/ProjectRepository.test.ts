@@ -286,6 +286,192 @@ describe('ProjectRepository', () => {
   });
 
   // ============================================================================
+  // update — metadata semantics
+  // ============================================================================
+
+  describe('update metadata', () => {
+    beforeEach(() => {
+      (deps.queryCache.cachedQuery as jest.Mock).mockImplementation(
+        (_key: string, fn: () => Promise<unknown>) => fn()
+      );
+    });
+
+    /** metadataJson as it sits in SQLite before the update under test. */
+    function withStoredMetadata(metadata: Record<string, unknown> | null): void {
+      (deps.sqliteCache.queryOne as jest.Mock).mockResolvedValue({
+        id: 'proj-1',
+        workspaceId: 'ws-1',
+        name: 'Original',
+        description: null,
+        status: 'active',
+        created: 1000,
+        updated: 1000,
+        metadataJson: metadata === null ? null : JSON.stringify(metadata)
+      });
+    }
+
+    /** The metadataJson value written to the JSONL event, parsed back. */
+    function eventMetadata(): Record<string, unknown> | undefined {
+      const call = (deps.jsonlWriter.appendEvent as jest.Mock).mock.calls[0];
+      const json = (call[1].data as Record<string, unknown>).metadataJson;
+      return typeof json === 'string' ? JSON.parse(json) : undefined;
+    }
+
+    /** The metadataJson value written to SQLite, parsed back. */
+    function sqliteMetadata(): Record<string, unknown> | undefined {
+      const [sql, params] = (deps.sqliteCache.run as jest.Mock).mock.calls[0];
+      const clauses = (sql as string).replace('UPDATE projects SET ', '').split(' WHERE ')[0].split(', ');
+      const index = clauses.indexOf('metadataJson = ?');
+      if (index === -1) {
+        return undefined;
+      }
+      return JSON.parse((params as unknown[])[index] as string);
+    }
+
+    it('merges by default, writing the complete object to both stores', async () => {
+      withStoredMetadata({ keep: 'me', hold: 'old' });
+
+      await repo.update('proj-1', { metadata: { hold: 'new' } });
+
+      expect(eventMetadata()).toEqual({ keep: 'me', hold: 'new' });
+      expect(sqliteMetadata()).toEqual({ keep: 'me', hold: 'new' });
+    });
+
+    it('reads the current value inside the transaction rather than trusting the caller', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', { metadata: { added: true } });
+
+      expect(deps.sqliteCache.queryOne).toHaveBeenCalledWith(
+        'SELECT metadataJson FROM projects WHERE id = ?',
+        ['proj-1']
+      );
+    });
+
+    it('replaces the complete object in replace mode', async () => {
+      withStoredMetadata({ keep: 'me', hold: 'old' });
+
+      await repo.update('proj-1', { metadata: { only: 'this' }, metadataMode: 'replace' });
+
+      expect(eventMetadata()).toEqual({ only: 'this' });
+      expect(sqliteMetadata()).toEqual({ only: 'this' });
+    });
+
+    it('clears metadata with replace plus an empty object', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', { metadata: {}, metadataMode: 'replace' });
+
+      expect(eventMetadata()).toEqual({});
+      expect(sqliteMetadata()).toEqual({});
+    });
+
+    it('does not read the stored value in replace mode', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', { metadata: { only: 'this' }, metadataMode: 'replace' });
+
+      expect(deps.sqliteCache.queryOne).not.toHaveBeenCalledWith(
+        'SELECT metadataJson FROM projects WHERE id = ?',
+        expect.anything()
+      );
+    });
+
+    it('writes the post-removal object', async () => {
+      withStoredMetadata({ keep: 'me', hold: 'gone', holdReason: 'gone' });
+
+      await repo.update('proj-1', { removeMetadataKeys: ['hold', 'holdReason'] });
+
+      expect(eventMetadata()).toEqual({ keep: 'me' });
+      expect(sqliteMetadata()).toEqual({ keep: 'me' });
+    });
+
+    it('merges against an absent stored value', async () => {
+      withStoredMetadata(null);
+
+      await repo.update('proj-1', { metadata: { first: true } });
+
+      expect(eventMetadata()).toEqual({ first: true });
+      expect(sqliteMetadata()).toEqual({ first: true });
+    });
+
+    it('omits metadata from both stores for a no-op patch alongside a field update', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', { name: 'Renamed', metadata: {} });
+
+      expect(eventMetadata()).toBeUndefined();
+      expect(sqliteMetadata()).toBeUndefined();
+      const [sql] = (deps.sqliteCache.run as jest.Mock).mock.calls[0];
+      expect(sql).toContain('name = ?');
+    });
+
+    it('writes nothing at all when the whole request is a no-op', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', { metadata: {} });
+
+      expect(deps.jsonlWriter.appendEvent).not.toHaveBeenCalled();
+      expect(deps.sqliteCache.run).not.toHaveBeenCalled();
+      expect(deps.queryCache.invalidateById).not.toHaveBeenCalled();
+      expect(deps.queryCache.invalidateByType).not.toHaveBeenCalled();
+    });
+
+    it('leaves SQLite metadata untouched when a removal names no existing key', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', { removeMetadataKeys: ['neverThere'] });
+
+      expect(deps.sqliteCache.run).not.toHaveBeenCalled();
+    });
+
+    it('never leaks operation-only fields into the event or the SQLite columns', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await repo.update('proj-1', {
+        metadata: { added: true },
+        metadataMode: 'merge',
+        removeMetadataKeys: ['neverThere']
+      });
+
+      const eventData = (deps.jsonlWriter.appendEvent as jest.Mock).mock.calls[0][1].data as Record<string, unknown>;
+      expect(eventData).not.toHaveProperty('metadataMode');
+      expect(eventData).not.toHaveProperty('removeMetadataKeys');
+      expect(eventData).not.toHaveProperty('metadata');
+
+      const [sql] = (deps.sqliteCache.run as jest.Mock).mock.calls[0];
+      expect(sql).not.toContain('metadataMode');
+      expect(sql).not.toContain('removeMetadataKeys');
+    });
+
+    it('rejects an invalid combination before either store is written', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await expect(
+        repo.update('proj-1', {
+          metadata: { a: 1 },
+          metadataMode: 'replace',
+          removeMetadataKeys: ['keep']
+        })
+      ).rejects.toThrow(/removeMetadataKeys/);
+
+      expect(deps.jsonlWriter.appendEvent).not.toHaveBeenCalled();
+      expect(deps.sqliteCache.run).not.toHaveBeenCalled();
+    });
+
+    it('rejects a replacement without metadata before either store is written', async () => {
+      withStoredMetadata({ keep: 'me' });
+
+      await expect(
+        repo.update('proj-1', { metadataMode: 'replace' })
+      ).rejects.toThrow(/metadata/);
+
+      expect(deps.jsonlWriter.appendEvent).not.toHaveBeenCalled();
+      expect(deps.sqliteCache.run).not.toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================================
   // delete
   // ============================================================================
 
