@@ -187,7 +187,10 @@ export class WorkspaceDataFetcher {
         }
       }) => ({
         name: state.name || 'Untitled State',
-        tags: state.tags || state.state?.state?.metadata?.tags || state.state?.metadata?.tags || []
+        // The current top-level value wins; the stored snapshot's nested tags
+        // are a legacy fallback, consulted only when it is absent. Nullish, so
+        // an empty array — how a caller clears tags — is not re-defaulted.
+        tags: state.tags ?? state.state?.state?.metadata?.tags ?? state.state?.metadata?.tags ?? []
       }));
 
       // Return with pagination metadata from the original result

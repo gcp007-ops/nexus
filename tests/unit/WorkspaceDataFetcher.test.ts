@@ -137,6 +137,58 @@ describe('WorkspaceDataFetcher', () => {
     });
   });
 
+  /**
+   * The stored snapshot's nested tags are a legacy fallback, not an override.
+   * An empty top-level array is how a caller clears tags and must survive into
+   * the workspace summary instead of resurrecting the stale nested value.
+   */
+  describe('current-tag precedence', () => {
+    function fetchWith(tags: string[] | undefined, nestedTags: string[]) {
+      const fetcher = new WorkspaceDataFetcher();
+      const memoryService = {
+        getSessions: jest.fn(),
+        getStates: jest.fn().mockResolvedValue({
+          items: [
+            {
+              id: 'state-1',
+              name: 'Checkpoint',
+              sessionId: 'session-1',
+              workspaceId: 'workspace-1',
+              created: 789,
+              tags,
+              state: { state: { metadata: { tags: nestedTags } } }
+            }
+          ],
+          page: 0,
+          pageSize: 5,
+          totalItems: 1,
+          totalPages: 1,
+          hasNextPage: false,
+          hasPreviousPage: false
+        })
+      };
+      return fetcher.fetchWorkspaceStates('workspace-1', memoryService, { page: 0, pageSize: 5 });
+    }
+
+    it('surfaces the current tags over the stale nested ones', async () => {
+      const result = await fetchWith(['current'], ['stale']);
+
+      expect(result.items[0].tags).toEqual(['current']);
+    });
+
+    it('surfaces an empty current array instead of the stale nested tags', async () => {
+      const result = await fetchWith([], ['stale']);
+
+      expect(result.items[0].tags).toEqual([]);
+    });
+
+    it('falls back to nested tags only when the current value is absent', async () => {
+      const result = await fetchWith(undefined, ['legacy']);
+
+      expect(result.items[0].tags).toEqual(['legacy']);
+    });
+  });
+
   it('hides the internal workspace-state session from workspace session summaries', async () => {
     const fetcher = new WorkspaceDataFetcher();
     const memoryService = {

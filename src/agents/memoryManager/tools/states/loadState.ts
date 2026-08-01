@@ -309,7 +309,11 @@ export class LoadStateTool extends BaseTool<LoadStateParams, StateResult> {
             activeFiles: stateContext.activeFiles || [],
             nextSteps: stateContext.nextSteps || [],
             description: loadedState.description,
-            tags: loadedState.state?.metadata?.tags || []
+            // MemoryService hands back the view WorkspaceStateService already
+            // normalized: state.metadata.tags carries the current tags, with the
+            // legacy nested value as fallback. Nullish, so an empty array — how
+            // a caller clears tags — survives instead of being re-defaulted.
+            tags: loadedState.state?.metadata?.tags ?? []
         };
 
         return this.prepareResult(

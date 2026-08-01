@@ -102,6 +102,79 @@ describe('LoadStateTool', () => {
     });
   });
 
+  /**
+   * The tool receives the view MemoryService already normalized — the current
+   * tags overlaid into state.metadata.tags by WorkspaceStateService.getState.
+   * Its only job is to surface that value as-is, including an empty array, which
+   * is how a caller clears tags. The overlay itself is covered where it lives,
+   * in the WorkspaceStateService specs.
+   */
+  describe('tag surfacing', () => {
+    function buildTool(metadataTags: string[] | undefined) {
+      const loadedState = {
+        id: 'state-1',
+        name: 'Checkpoint',
+        description: 'Checkpoint description',
+        sessionId: 'session-1',
+        workspaceId: 'workspace-uuid',
+        created: Date.now(),
+        context: {
+          conversationContext: 'Conversation context',
+          activeTask: 'Active task',
+          activeFiles: [],
+          nextSteps: []
+        },
+        state: { metadata: metadataTags === undefined ? {} : { tags: metadataTags } }
+      };
+      const memoryService = {
+        getStates: jest.fn().mockResolvedValue({
+          items: [{ id: 'state-1', name: 'Checkpoint', sessionId: 'session-1', workspaceId: 'workspace-uuid' }],
+          page: 0,
+          pageSize: 100,
+          totalItems: 1,
+          totalPages: 1,
+          hasNextPage: false,
+          hasPreviousPage: false
+        }),
+        getState: jest.fn().mockResolvedValue(loadedState),
+        getMemoryTraces: jest.fn().mockResolvedValue({ items: [] })
+      };
+      const workspaceService = {
+        getWorkspaceByNameOrId: jest.fn().mockResolvedValue({ id: 'workspace-uuid', name: 'Workspace Name' }),
+        getWorkspace: jest.fn().mockResolvedValue({ id: 'workspace-uuid', name: 'Workspace Name' })
+      };
+      return createTool(memoryService, workspaceService);
+    }
+
+    const params = {
+      context: {
+        workspaceId: 'Workspace Name',
+        sessionId: 'session-1',
+        memory: 'Testing tag surfacing.',
+        goal: 'Verify the normalized tags are returned as-is.'
+      },
+      name: 'Checkpoint'
+    };
+
+    it('returns the normalized tags it was given', async () => {
+      const result = await buildTool(['current']).execute(params);
+
+      expect((result.data as { tags: string[] }).tags).toEqual(['current']);
+    });
+
+    it('returns an empty array without re-defaulting it', async () => {
+      const result = await buildTool([]).execute(params);
+
+      expect((result.data as { tags: string[] }).tags).toEqual([]);
+    });
+
+    it('returns an empty array when the view carries no tags at all', async () => {
+      const result = await buildTool(undefined).execute(params);
+
+      expect((result.data as { tags: string[] }).tags).toEqual([]);
+    });
+  });
+
   it('returns a clear error when the scoped workspace name cannot be resolved', async () => {
     const memoryService = {
       getStates: jest.fn(),

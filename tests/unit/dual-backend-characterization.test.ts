@@ -756,3 +756,234 @@ describe('WorkspaceStateService adapter path', () => {
     }));
   });
 });
+
+// ============================================================================
+// Current-tag precedence at the canonical read boundary
+// ============================================================================
+
+/**
+ * `update-state --tags` writes the top-level StateData.tags but leaves the
+ * stored snapshot's nested `state.metadata.tags` at whatever it held when the
+ * state was saved. Readers that consult the snapshot therefore serve stale tags
+ * — and an empty top-level array, which is exactly how a caller clears tags,
+ * used to resurrect them through a `||` fallback.
+ *
+ * getState is the canonical read boundary, so it overlays the current tags into
+ * the returned view. The persisted stateJson is never rewritten.
+ */
+describe('WorkspaceStateService current-tag precedence', () => {
+  const sessionDeps = () => ({
+    getSession: jest.fn().mockResolvedValue({ id: 'session-1' }),
+    addSession: jest.fn()
+  });
+
+  function snapshotWithNestedTags(nestedTags: string[]): Record<string, unknown> {
+    return {
+      id: 'state-1',
+      name: 'Checkpoint',
+      workspaceId: 'ws1',
+      sessionId: 'session-1',
+      created: 1000,
+      context: {
+        workspaceContext: { purpose: 'Testing' },
+        conversationContext: 'Diagnostic context',
+        activeTask: 'Verify tag precedence',
+        activeFiles: [],
+        nextSteps: []
+      },
+      state: {
+        workspace: null,
+        recentTraces: [],
+        contextFiles: [],
+        metadata: { tags: nestedTags, isArchived: false }
+      }
+    };
+  }
+
+  describe('adapter path', () => {
+    function buildService(adapterState: Record<string, unknown> | null) {
+      const adapter = createMockAdapter(true);
+      adapter.getState.mockResolvedValue(adapterState);
+      const service = new WorkspaceStateService(
+        createMockFileSystem(),
+        createMockIndexManager(),
+        adapter,
+        sessionDeps()
+      );
+      return { service, adapter };
+    }
+
+    it('overlays current tags over stale nested snapshot tags', async () => {
+      const { service } = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: ['current'],
+        content: snapshotWithNestedTags(['stale'])
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.tags).toEqual(['current']);
+      expect(result?.state?.state?.metadata?.tags).toEqual(['current']);
+    });
+
+    it('treats an empty current array as authoritative', async () => {
+      const { service } = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: [],
+        content: snapshotWithNestedTags(['stale'])
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.tags).toEqual([]);
+      expect(result?.state?.state?.metadata?.tags).toEqual([]);
+    });
+
+    it('falls back to nested tags only when the current value is absent', async () => {
+      const { service } = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: undefined,
+        content: snapshotWithNestedTags(['legacy'])
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.state?.state?.metadata?.tags).toEqual(['legacy']);
+    });
+
+    it('leaves an arbitrary snapshot untouched when there is no current value', async () => {
+      // Guard against the overlay fabricating a state.metadata subtree on
+      // snapshots that never had one — states saved with free-form content.
+      const { service } = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: undefined,
+        content: { key: 'value' }
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.state).toEqual({ key: 'value' });
+    });
+
+    it('preserves unrelated snapshot metadata while overlaying tags', async () => {
+      const { service } = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: ['current'],
+        content: snapshotWithNestedTags(['stale'])
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.state?.state?.metadata?.isArchived).toBe(false);
+      expect(result?.state?.context?.activeTask).toBe('Verify tag precedence');
+    });
+
+    it('does not mutate the stored snapshot it was handed', async () => {
+      const storedContent = snapshotWithNestedTags(['stale']);
+      const { service } = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: ['current'],
+        content: storedContent
+      });
+
+      await service.getState('ws1', 'session-1', 'state-1');
+
+      const nested = (storedContent.state as { metadata: { tags: string[] } }).metadata;
+      expect(nested.tags).toEqual(['stale']);
+    });
+  });
+
+  describe('legacy path', () => {
+    function buildService(storedState: Record<string, unknown>) {
+      const fs = createMockFileSystem();
+      fs.readWorkspace.mockResolvedValue({
+        id: 'ws1',
+        sessions: {
+          'session-1': {
+            states: { 'state-1': storedState },
+            memoryTraces: {}
+          }
+        }
+      });
+      return new WorkspaceStateService(
+        fs,
+        createMockIndexManager(),
+        null,
+        sessionDeps()
+      );
+    }
+
+    it('overlays current tags over stale nested snapshot tags', async () => {
+      const service = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: ['current'],
+        state: snapshotWithNestedTags(['stale'])
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.tags).toEqual(['current']);
+      expect(result?.state?.state?.metadata?.tags).toEqual(['current']);
+    });
+
+    it('treats an empty current array as authoritative', async () => {
+      const service = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: [],
+        state: snapshotWithNestedTags(['stale'])
+      });
+
+      const result = await service.getState('ws1', 'session-1', 'state-1');
+
+      expect(result?.state?.state?.metadata?.tags).toEqual([]);
+    });
+
+    it('applies the same overlay through getStateByNameOrId', async () => {
+      const service = buildService({
+        id: 'state-1',
+        workspaceId: 'ws1',
+        sessionId: 'session-1',
+        name: 'Checkpoint',
+        created: 1000,
+        tags: [],
+        state: snapshotWithNestedTags(['stale'])
+      });
+
+      const result = await service.getStateByNameOrId('ws1', 'session-1', 'Checkpoint');
+
+      expect(result?.state?.state?.metadata?.tags).toEqual([]);
+    });
+  });
+});

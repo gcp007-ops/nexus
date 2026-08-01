@@ -104,4 +104,81 @@ describe('MemoryService.getStates (isArchived surfacing for tagged states)', () 
     expect(getStateMock).toHaveBeenCalledTimes(1);
     expect(getStateMock).toHaveBeenCalledWith('state-tagged-archived');
   });
+
+  /**
+   * getStates normalizes tags for every downstream reader (listStates, the
+   * workspace summary fetcher). The current top-level value is authoritative;
+   * the stored snapshot's nested tags are a legacy fallback. An empty current
+   * array — how a caller clears tags — must not resurrect the nested ones here,
+   * or the contamination reaches consumers before they can apply any rule.
+   */
+  describe('current-tag precedence', () => {
+    function contentWithNestedTags(nestedTags: string[]) {
+      return {
+        id: 'state-1',
+        name: 'Checkpoint',
+        workspaceId: 'workspace-1',
+        sessionId: 'session-1',
+        created: 1717000000000,
+        state: {
+          workspace: null,
+          recentTraces: [],
+          contextFiles: [],
+          metadata: { tags: nestedTags, isArchived: false }
+        }
+      };
+    }
+
+    function serviceWith(tags: string[] | undefined, nestedTags: string[]): MemoryService {
+      const adapter = {
+        isReady: () => true,
+        getStates: jest.fn().mockResolvedValue({
+          items: [{
+            id: 'state-1',
+            name: 'Checkpoint',
+            description: 'Checkpoint description',
+            sessionId: 'session-1',
+            workspaceId: 'workspace-1',
+            created: 1717000000000,
+            tags
+          }],
+          total: 1,
+          page: 0,
+          pageSize: 50,
+          hasMore: false
+        }),
+        getState: jest.fn().mockResolvedValue({ content: contentWithNestedTags(nestedTags) })
+      } as unknown as IStorageAdapter;
+
+      const workspaceService = { getWorkspace: jest.fn() } as unknown as WorkspaceService;
+      return new MemoryService({} as unknown as Plugin, workspaceService, adapter);
+    }
+
+    it('prefers the current tags over the stale nested ones', async () => {
+      const result = await serviceWith(['current'], ['stale']).getStates('workspace-1');
+
+      expect(result.items[0].tags).toEqual(['current']);
+      expect(result.items[0].state?.state?.metadata?.tags).toEqual(['current']);
+    });
+
+    it('treats an empty current array as authoritative', async () => {
+      const result = await serviceWith([], ['stale']).getStates('workspace-1');
+
+      expect(result.items[0].tags).toEqual([]);
+      expect(result.items[0].state?.state?.metadata?.tags).toEqual([]);
+    });
+
+    it('falls back to nested tags only when the current value is absent', async () => {
+      const result = await serviceWith(undefined, ['legacy']).getStates('workspace-1');
+
+      expect(result.items[0].tags).toEqual(['legacy']);
+    });
+
+    it('keeps unrelated snapshot metadata while normalizing tags', async () => {
+      const result = await serviceWith([], ['stale']).getStates('workspace-1');
+
+      const metadata = result.items[0].state?.state?.metadata as { isArchived?: boolean };
+      expect(metadata?.isArchived).toBe(false);
+    });
+  });
 });

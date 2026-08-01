@@ -229,7 +229,7 @@ export class WorkspaceStateService {
         if (!state) {
           return null;
         }
-        return {
+        return this.withCurrentTags({
           id: state.id,
           workspaceId: state.workspaceId,
           sessionId: state.sessionId,
@@ -238,14 +238,15 @@ export class WorkspaceStateService {
           created: state.created,
           tags: state.tags,
           state: this.coerceWorkspaceState(state.content)
-        };
+        });
       },
       async () => {
         const workspace = await this.fileSystem.readWorkspace(workspaceId);
         if (!workspace || !workspace.sessions[sessionId]) {
           return null;
         }
-        return workspace.sessions[sessionId].states[stateId] || null;
+        const stored = workspace.sessions[sessionId].states[stateId];
+        return stored ? this.withCurrentTags(stored) : null;
       }
     );
   }
@@ -282,9 +283,12 @@ export class WorkspaceStateService {
           return null;
         }
         const states = Object.values(workspace.sessions[sessionId].states);
-        return states.find(
+        const match = states.find(
           state => state.name?.toLowerCase() === identifier.toLowerCase()
-        ) || null;
+        );
+        // The adapter branch above reaches getState and gets the overlay for
+        // free; this branch returns the stored record directly, so apply it here.
+        return match ? this.withCurrentTags(match) : null;
       }
     );
   }
@@ -338,6 +342,51 @@ export class WorkspaceStateService {
 
   private coerceWorkspaceState(state: unknown): WorkspaceState {
     return state as WorkspaceState;
+  }
+
+  /**
+   * Overlay the current tags into the returned snapshot view.
+   *
+   * `updateState` writes the top-level `StateData.tags` but never rewrites the
+   * stored snapshot, so a state saved with one set of tags and re-tagged later
+   * carries two values: a current one at the top level and a frozen one at
+   * `state.state.metadata.tags`. Readers that reach for the snapshot — the
+   * whole `load-state` path, since MemoryService.getState returns `stateData.state`
+   * and drops the top level — would otherwise serve the frozen value forever.
+   *
+   * Precedence is nullish: the current value wins even when it is an empty
+   * array (how a caller clears tags); the nested value is a fallback only when
+   * the current one is absent. This is a read-time view — the persisted
+   * `stateJson` is left exactly as it was, and the input is never mutated.
+   *
+   * With no current value to materialize the stored view is returned untouched,
+   * nested legacy tags included. Overlaying a default there would fabricate a
+   * `state.metadata` subtree on snapshots that never had one.
+   */
+  private withCurrentTags(stateData: StateData): StateData {
+    const snapshot = stateData.state;
+    const currentTags = stateData.tags;
+    if (currentTags == null || typeof snapshot !== 'object' || snapshot === null) {
+      return stateData;
+    }
+
+    const nested = snapshot.state;
+
+    return {
+      ...stateData,
+      state: {
+        ...snapshot,
+        state: {
+          workspace: nested?.workspace ?? null,
+          recentTraces: nested?.recentTraces ?? [],
+          contextFiles: nested?.contextFiles ?? [],
+          metadata: {
+            ...nested?.metadata,
+            tags: currentTags
+          }
+        }
+      }
+    };
   }
 
   private extractTags(stateData: Partial<StateData>, stateContent: unknown): string[] | undefined {

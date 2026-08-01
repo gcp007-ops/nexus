@@ -37,6 +37,18 @@ interface StateLike {
   };
 }
 
+/**
+ * The tags a state currently carries.
+ *
+ * `update-state --tags` rewrites the top-level value but leaves the stored
+ * snapshot alone, so `state.state.metadata.tags` is a legacy fallback — used
+ * only when the current value is absent, never as an override. Precedence is
+ * nullish so an empty array, which is how a caller clears tags, stays empty.
+ */
+function currentStateTags(state: StateLike): string[] {
+  return state.tags ?? state.state?.state?.metadata?.tags ?? [];
+}
+
 interface EnhancedStateLike extends StateLike {
   workspaceName: string;
   created: number;
@@ -116,11 +128,7 @@ export class ListStatesTool extends BaseTool<ListStatesParams, StateResult> {
       const tags = params.tags ?? [];
       if (tags.length > 0) {
         processedStates = processedStates.filter(state => {
-          const stateData = state.state;
-          const nestedState = stateData?.state;
-          const metadata = nestedState?.metadata;
-          const stateTags = state.tags || (metadata?.tags) || [];
-          return tags.some(tag => stateTags.includes(tag));
+          return tags.some(tag => currentStateTags(state).includes(tag));
         });
       }
 
@@ -134,7 +142,7 @@ export class ListStatesTool extends BaseTool<ListStatesParams, StateResult> {
         sessionId: state.sessionId || state.state?.sessionId,
         workspaceId: state.workspaceId || state.state?.workspaceId,
         created: state.created ?? state.timestamp ?? 0,
-        tags: state.tags || state.state?.state?.metadata?.tags || []
+        tags: currentStateTags(state)
       }));
 
       return this.prepareResult(true, listedStates);
@@ -207,7 +215,7 @@ export class ListStatesTool extends BaseTool<ListStatesParams, StateResult> {
         enhanced.context = {
           files: state.state.context.activeFiles || [],
           traceCount: 0, // Could be enhanced to count related traces
-          tags: state.state?.state?.metadata?.tags || [],
+          tags: currentStateTags(state),
           summary: state.state.context.activeTask || 'No active task recorded'
         };
       }
