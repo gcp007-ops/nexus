@@ -22,10 +22,19 @@ interface PluginWithEmbeddings extends Plugin {
  * Internal search result with scoring
  * Used internally for ranking before returning clean results to caller
  */
+/**
+ * How a result was matched.
+ * - 'content': the query (or its words) was found in the file body
+ * - 'path': only the filename matched, fuzzily; the body does not contain the query
+ */
+export type ContentMatchType = 'content' | 'path';
+
 interface ScoredSearchResult {
   filePath: string;
   frontmatter?: Record<string, unknown>;
   content?: string;
+  matchType: ContentMatchType;
+  _tier: number; // Internal: 1 = content match, 0 = filename-only match. Sorted before _score.
   _score: number; // Internal property for sorting
 }
 
@@ -44,6 +53,7 @@ export interface ContentSearchResult {
     filePath: string;
     frontmatter?: Record<string, unknown>;
     content?: string;  // Keyword search only
+    matchType?: ContentMatchType;  // Keyword search only: how this result matched
   }>;
   error?: string;
 }
@@ -299,12 +309,17 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
       allResults.push(...results);
     }
 
-    // Sort by internal score (higher is better) and take top results
-    allResults.sort((a, b) => (b._score || 0) - (a._score || 0));
-    // Strip internal score before returning
+    // Sort by tier first, then by score. A filename-only match must never
+    // outrank a body match: fuzzy filename scores normalize close to 1.0 for
+    // weak matches, above the 0.9 ceiling of an exact phrase match in content.
+    allResults.sort((a, b) =>
+      ((b._tier || 0) - (a._tier || 0)) || ((b._score || 0) - (a._score || 0))
+    );
+    // Strip internal ranking fields before returning
     const finalResults = allResults.slice(0, limit).map(r => {
-      const { _score: score, ...rest } = r;
+      const { _score: score, _tier: tier, ...rest } = r;
       void score;
+      void tier;
       return rest;
     });
     return finalResults;
@@ -391,9 +406,13 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
         contentSnippet = `File: ${file.path}`;
       }
 
+      const matchType: ContentMatchType = keywordScore > 0 ? 'content' : 'path';
+
       const entry: ScoredSearchResult = {
         filePath: file.path,
         content: contentSnippet,
+        matchType,
+        _tier: matchType === 'content' ? 1 : 0,
         _score: maxScore
       };
       if (frontmatter && Object.keys(frontmatter).length > 0) {
@@ -545,6 +564,11 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
               content: {
                 type: 'string',
                 description: 'Content snippet (keyword search only)'
+              },
+              matchType: {
+                type: 'string',
+                enum: ['content', 'path'],
+                description: 'Keyword search only: how this result matched. "content" = the query was found in the file body. "path" = only the filename matched fuzzily; the body does NOT contain the query. Content matches always rank above path matches.'
               }
             },
             required: ['filePath']
