@@ -277,6 +277,19 @@ export class ToolBatchExecutionService {
         return null;
       }
 
+      // Accept a NAME off the live list too. The `knownWorkspaces` check above
+      // is the same boot-time snapshot the error message below deliberately
+      // avoids — empty whenever SQLite was not ready at agent registration.
+      // Checking only the id here meant a real workspace name was rejected on
+      // exactly the vaults the snapshot fails on, and the rejection then named
+      // that same workspace as its closest match.
+      const byLiveName = workspaces.find(workspace =>
+        workspace.name.toLowerCase() === workspaceId.toLowerCase()
+      );
+      if (byLiveName) {
+        return null;
+      }
+
       // Name the alternatives off the LIVE list, not `knownWorkspaces` — that
       // snapshot is taken at boot and is empty whenever SQLite was not ready
       // then, which produced "Available: (none created yet)" on vaults that
