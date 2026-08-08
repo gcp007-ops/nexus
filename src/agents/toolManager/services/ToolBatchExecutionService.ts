@@ -291,6 +291,26 @@ export class ToolBatchExecutionService {
       const closest = matchWorkspaces(active, workspaceId, { limit: 1 })[0];
       const didYouMean = closest ? ` Closest match: "${closest.workspace.name}".` : '';
 
+      // Last check before rejecting: `listWorkspaces()` omits the system guides
+      // workspace by design, so validating against the list alone rejected the
+      // one workspace the product hides — by either identifier. The canonical
+      // resolver short-circuits system identifiers ahead of any table lookup,
+      // which is exactly the case a listing cannot report.
+      //
+      // Deliberately placed after the message is built, not beside the id
+      // lookup: only a call already headed for rejection pays for it, and the
+      // suggestions above stay off the resolver — a workspace hidden from
+      // listings should not be advertised back in an error message.
+      // Optional call, not a plain one: an unguarded `workspaceService.x(...)`
+      // throws when the member is missing, and that throw lands in the catch
+      // below — which returns null. The whole guard would fail OPEN, accepting
+      // every identifier, and the only symptom would be rejections quietly
+      // ceasing. Missing member now means "cannot resolve", not "accept".
+      const resolvedBySystemAwareLookup = await workspaceService.getWorkspaceByNameOrId?.(workspaceId);
+      if (resolvedBySystemAwareLookup) {
+        return null;
+      }
+
       return `Invalid workspace "${workspaceId}".${didYouMean} Use one of these exact values — do not infer a workspace name from the user's wording. Available: "default" (global), ${availableNames}`;
     } catch {
       return null;
