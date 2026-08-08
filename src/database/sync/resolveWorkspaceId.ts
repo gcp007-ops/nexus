@@ -54,8 +54,15 @@ export async function resolveWorkspaceId(
   }
 
   // 2. Try name match (prefer non-archived workspaces)
+  //
+  // Case-insensitive, to agree with the two resolvers a caller meets before
+  // this one: the envelope guard in ToolBatchExecutionService lowercases both
+  // sides, and so does WorkspaceService.getWorkspaceByNameOrId. With `name = ?`
+  // here, a name differing only in case was ACCEPTED by the guard and then
+  // rejected by whatever this resolver backs — the taskManager reporting
+  // "Workspace not found" on an envelope that had already passed validation.
   const byName = await sqliteCache.query<{ id: string; lastAccessed: number }>(
-    'SELECT id, lastAccessed FROM workspaces WHERE name = ? AND isArchived = 0',
+    'SELECT id, lastAccessed FROM workspaces WHERE LOWER(name) = LOWER(?) AND isArchived = 0',
     [rawId]
   );
 
