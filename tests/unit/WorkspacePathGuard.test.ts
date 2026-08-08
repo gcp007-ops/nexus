@@ -36,6 +36,8 @@ function makeCache(rows = LIVE): SQLiteCacheManager {
 
 const wsPath = (identifier: string) => `workspaces/ws_${identifier}.jsonl`;
 
+const tasksPath = (identifier: string) => `tasks/tasks_${identifier}.jsonl`;
+
 describe('workspace JSONL path guard', () => {
   describe('passes through what must keep working', () => {
     it('leaves non-workspace streams alone', async () => {
@@ -108,7 +110,43 @@ describe('workspace JSONL path guard', () => {
     });
   });
 
+  describe('guards the tasks stream, which is also workspace-scoped', () => {
+    // TaskRepository.jsonlPath and ProjectRepository.jsonlPath both take a
+    // workspaceId, not the entity id their names suggest — so `tasks/` mints
+    // phantoms from the same identifiers `workspaces/` does.
+    it('refuses to mint a tasks store for an unresolvable identifier', async () => {
+      await expect(resolveWorkspaceJsonlPath(tasksPath('--workspaceId'), 'task_created', makeCache()))
+        .rejects.toBeInstanceOf(PhantomWorkspacePathError);
+    });
+
+    it('allows a live workspace id', async () => {
+      await expect(resolveWorkspaceJsonlPath(tasksPath(LIVE[0].id), 'task_created', makeCache()))
+        .resolves.toBe(tasksPath(LIVE[0].id));
+    });
+
+    it('rewrites a name back into tasks/, not into workspaces/', async () => {
+      // The prefix has to survive normalization; rewriting to `workspaces/`
+      // would file task events in the wrong stream entirely.
+      await expect(resolveWorkspaceJsonlPath(tasksPath('Desenvolvedor'), 'task_updated', makeCache()))
+        .resolves.toBe(tasksPath(LIVE[0].id));
+    });
+  });
+
   describe('fails open when there is no basis to judge', () => {
+    it('allows the write when the cache cannot be queried at all', async () => {
+      // SQLiteCacheManager throws when the database has not been opened yet.
+      // This is the earliest form of "no basis to judge" — and the one that
+      // actually happens, since repositories write during startup.
+      const unopened = {
+        async queryOne() {
+          throw new Error('Database not initialized');
+        }
+      } as unknown as SQLiteCacheManager;
+
+      await expect(resolveWorkspaceJsonlPath(wsPath('--workspaceId'), 'state_saved', unopened))
+        .resolves.toBe(wsPath('--workspaceId'));
+    });
+
     it('allows an unknown id while the workspaces table is still empty', async () => {
       // Repositories write during startup, before the table is populated.
       // Rejecting there would reject legitimate writes in the boot window —
