@@ -291,6 +291,20 @@ export class ToolBatchExecutionService {
         return null;
       }
 
+      // `listWorkspaces()` deliberately omits the system guides workspace, so
+      // the one workspace the product hides from listings was the one the
+      // guard could not accept — by either identifier. Ask the canonical
+      // resolver before rejecting: it short-circuits system identifiers ahead
+      // of any table lookup, which is exactly the case the list cannot report.
+      //
+      // Only the ACCEPT path consults it. The suggestions below stay off the
+      // live list on purpose — a workspace hidden from listings should not be
+      // advertised back to the caller in an error message.
+      const resolved = await workspaceService.getWorkspaceByNameOrId(workspaceId);
+      if (resolved) {
+        return null;
+      }
+
       // Name the alternatives off the LIVE list, not `knownWorkspaces` — that
       // snapshot is taken at boot and is empty whenever SQLite was not ready
       // then, which produced "Available: (none created yet)" on vaults that
