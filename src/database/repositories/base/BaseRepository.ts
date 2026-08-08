@@ -28,6 +28,7 @@ import { SQLiteCacheManager } from '../../storage/SQLiteCacheManager';
 import { JSONLWriter } from '../../storage/JSONLWriter';
 import { QueryCache } from '../../optimizations/QueryCache';
 import { BaseStorageEvent } from '../../interfaces/StorageEvents';
+import { resolveWorkspaceJsonlPath } from '../workspacePathGuard';
 
 /**
  * Valid entity types for type-specific cache invalidation
@@ -152,7 +153,18 @@ export abstract class BaseRepository<T> implements IRepository<T> {
     eventData: Omit<E, 'id' | 'deviceId' | 'timestamp'>
   ): Promise<E> {
     try {
-      const event = await this.jsonlWriter.appendEvent<E>(path, eventData);
+      // Resolve-or-reject at the mint. Appending to `workspaces/ws_<id>.jsonl`
+      // creates that store as a side effect, so an identifier that resolves to
+      // nothing does not fail here — it becomes a permanent phantom workspace.
+      // Guarding the single place the path is written covers every repository
+      // and every caller, including ones that never touch `useTools`.
+      const resolvedPath = await resolveWorkspaceJsonlPath(
+        path,
+        (eventData as { type?: string }).type,
+        this.sqliteCache
+      );
+
+      const event = await this.jsonlWriter.appendEvent<E>(resolvedPath, eventData);
       return event;
     } catch (error) {
       console.error(`[${this.entityType}Repository] Failed to write event:`, error);
