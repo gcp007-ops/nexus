@@ -314,21 +314,29 @@ function createService(
   service: AgentRunService;
   store: ReturnType<typeof createConversationStore>;
   backend: DeferredBackend;
-  applier: { apply: jest.Mock };
+  applier: { apply: jest.Mock; reconcile: jest.Mock; effect: jest.Mock };
 } {
   let now = 1_000;
   const hashSnapshot = jest.fn()
     .mockResolvedValueOnce(PROMPT_HASH)
     .mockResolvedValueOnce(WORKFLOW_HASH);
+  const effect = jest.fn();
   const applier = {
     apply: jest.fn(async (
       _plan: unknown,
       _request: ApprovalRequest,
-      beforeEffects?: () => Promise<void>
+      beforeEffects?: () => Promise<void>,
+      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>
     ) => {
       await beforeEffects?.();
+      for (const operation of applyResult.operations) {
+        effect(operation.operationId);
+        await afterOperation?.(operation);
+      }
       return applyResult;
-    })
+    }),
+    reconcile: jest.fn(async () => applyResult),
+    effect
   };
   return {
     service: new AgentRunService({
@@ -473,12 +481,134 @@ describe('AgentRunService', () => {
     }));
     expect(store.addMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
       content: JSON.stringify(applyResult.operations[0]),
-      metadata: { agentRunEvent: { kind: 'operation_result', operationId: 'op-1' } }
+      metadata: {
+        agentRunEvent: {
+          kind: 'operation_result',
+          operationId: 'op-1',
+          planHash: seeded.planHash
+        }
+      }
     }));
     await expect(service.get('conversation-1')).resolves.toMatchObject({
       status: 'completed',
       planHash: seeded.planHash
     });
+  });
+
+  it('reconciles an applying run after the operation event append fails without repeating effects', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'succeeded',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        readback: {
+          path: 'note.md',
+          property: 'status',
+          value: 'done',
+          contentHash: `sha256:${'d'.repeat(64)}`
+        }
+      }]
+    };
+    const append = store.addMessage.getMockImplementation();
+    if (!append) throw new Error('Expected the conversation append implementation');
+    let appendCalls = 0;
+    store.addMessage.mockImplementation(async params => {
+      appendCalls += 1;
+      if (appendCalls === 2) {
+        throw new Error('operation event append failed');
+      }
+      return append(params);
+    });
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('operation event append failed');
+
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('is not awaiting approval');
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    expect(store.conversations.get('conversation-1')?.metadata).toMatchObject({
+      unrelated: { keep: true },
+      agentRunApplyReceipt: {
+        schema: 'agent-run-apply-receipt/v1',
+        runId: 'conversation-1',
+        planHash: seeded.planHash,
+        operationIds: ['op-1'],
+        operations: [applyResult.operations[0]]
+      }
+    });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(applyResult);
+
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.reconcile).toHaveBeenCalledTimes(1);
+    const operationEvents = store.conversations.get('conversation-1')?.messages.filter(message =>
+      message.metadata?.agentRunEvent
+      && (message.metadata.agentRunEvent as { kind?: string }).kind === 'operation_result'
+    );
+    expect(operationEvents).toHaveLength(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('retries only the terminal CAS when completion loses after effects', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'succeeded',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        readback: {
+          path: 'note.md',
+          property: 'status',
+          value: 'done',
+          contentHash: `sha256:${'d'.repeat(64)}`
+        }
+      }]
+    };
+    let loseTerminalCas = true;
+    store.mutateConversationMetadata.mockImplementation(async (conversationId, mutate) => {
+      const current = store.conversations.get(conversationId);
+      if (!current) throw new Error('missing conversation');
+      const metadata = mutate(current.metadata ?? {});
+      if (metadata === null) return { applied: false };
+      const status = (metadata.agentRun as AgentRunMetadata | undefined)?.status;
+      if (loseTerminalCas && (status === 'completed' || status === 'completed_with_issues')) {
+        loseTerminalCas = false;
+        return { applied: false };
+      }
+      current.metadata = metadata;
+      return { applied: true, metadata };
+    });
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('completion transition lost');
+
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(applyResult);
+
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.reconcile).toHaveBeenCalledTimes(2);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
   });
 
   it('executes zero effects when approval event persistence fails', async () => {

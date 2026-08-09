@@ -68,6 +68,19 @@ export class VaultChangePreconditions {
     }
   }
 
+  async readContentHash(path: string): Promise<string> {
+    const resolved = this.resolveModelPath(path);
+    const item = this.vault.getAbstractFileByPath(resolved);
+    if (!(item instanceof TFile)) {
+      throw new Error(`authoritative readback requires a file: ${resolved}`);
+    }
+    return this.hashExactContent(await this.vault.read(item));
+  }
+
+  async hashExactContent(content: string): Promise<string> {
+    return this.hashContent(content);
+  }
+
   private operationPaths(operation: VaultChangeOperation): string[] {
     switch (operation.type) {
       case 'move':

@@ -1,7 +1,8 @@
 import { parseYaml, stringifyYaml, TFile, TFolder } from 'obsidian';
 import {
   VaultChangeApplier,
-  type ApprovalRequest
+  type ApprovalRequest,
+  type VaultChangeApplyReceipt
 } from '../../src/services/workflows/VaultChangeApplier';
 import { VaultChangePreconditions } from '../../src/services/workflows/VaultChangePreconditions';
 import {
@@ -338,6 +339,32 @@ describe('VaultChangeApplier', () => {
     )).rejects.toThrow('approval persistence failed');
 
     expect(vault.process).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a durable receipt by authoritative readback without another effect or rollback', async () => {
+    const { applier, vault } = createHarness({
+      'replace.md': 'Before\nSTART\nold\nEND\nAfter'
+    });
+    const value = plan([operation('replaceAnchored')]);
+    const applied = await applier.apply(value, approvalFor(value, 'op-1'));
+    const receipt: VaultChangeApplyReceipt = {
+      schema: 'agent-run-apply-receipt/v1',
+      runId: value.runId,
+      planHash: applied.planHash,
+      operationIds: ['op-1'],
+      operations: applied.operations
+    };
+    const effectCalls = vault.process.mock.calls.length;
+
+    await expect(applier.reconcile(value, receipt)).resolves.toEqual(applied);
+    expect(vault.process).toHaveBeenCalledTimes(effectCalls);
+
+    const entry = vault.files.get('replace.md');
+    if (!entry) throw new Error('Expected replace.md');
+    entry.content = 'changed after receipt';
+    await expect(applier.reconcile(value, receipt))
+      .rejects.toThrow('authoritative receipt readback failed');
+    expect(vault.process).toHaveBeenCalledTimes(effectCalls);
   });
 
   it.each(['.hidden/note.md', '_Base/Dados/note.md', '_Base/PluginsSync/note.md'])(

@@ -53,10 +53,19 @@ export interface VaultChangeApplyResult {
   operations: VaultOperationResult[];
 }
 
+export interface VaultChangeApplyReceipt {
+  schema: 'agent-run-apply-receipt/v1';
+  runId: string;
+  planHash: string;
+  operationIds: string[];
+  operations: VaultOperationResult[];
+}
+
 export interface PreparedVaultEffect {
   apply(): Promise<void>;
   readback(): Promise<Record<string, unknown>>;
   rollback(): Promise<void>;
+  currentState(): Promise<Record<string, unknown>>;
 }
 
 export interface OperationExecutor<TOperation extends VaultChangeOperation> {
@@ -96,7 +105,8 @@ export class VaultChangeApplier {
   async apply(
     plan: VaultChangePlan,
     request: ApprovalRequest,
-    beforeEffects: () => Promise<void> = () => Promise.resolve()
+    beforeEffects: () => Promise<void> = () => Promise.resolve(),
+    afterOperation: (result: VaultOperationResult) => Promise<void> = () => Promise.resolve()
   ): Promise<VaultChangeApplyResult> {
     const operations = this.validateSelection(plan, request);
     await beforeEffects();
@@ -119,12 +129,14 @@ export class VaultChangeApplier {
         };
         results.push(result);
         byId.set(operation.operationId, result);
+        await afterOperation(result);
         continue;
       }
 
       const result = await this.applyOne(plan.runId, operation);
       results.push(result);
       byId.set(operation.operationId, result);
+      await afterOperation(result);
     }
 
     return {
@@ -134,6 +146,30 @@ export class VaultChangeApplier {
         ? 'completed'
         : 'completed_with_issues',
       operations: results
+    };
+  }
+
+  async reconcile(
+    plan: VaultChangePlan,
+    receipt: VaultChangeApplyReceipt
+  ): Promise<VaultChangeApplyResult> {
+    this.validateReceipt(plan, receipt);
+    const operationById = new Map(plan.operations.map(operation => [operation.operationId, operation]));
+    for (const result of receipt.operations) {
+      const operation = operationById.get(result.operationId);
+      if (!operation) {
+        throw new Error(`receipt contains unknown operationId: ${result.operationId}`);
+      }
+      await this.assertReceiptReadback(operation, result);
+    }
+    const status = receipt.operations.every(result => result.status === 'succeeded')
+      ? 'completed'
+      : 'completed_with_issues';
+    return {
+      runId: receipt.runId,
+      planHash: receipt.planHash,
+      status,
+      operations: receipt.operations.map(result => ({ ...result }))
     };
   }
 
@@ -189,6 +225,92 @@ export class VaultChangeApplier {
     return operations;
   }
 
+  private validateReceipt(plan: VaultChangePlan, receipt: VaultChangeApplyReceipt): void {
+    if (receipt.schema !== 'agent-run-apply-receipt/v1'
+      || receipt.runId !== plan.runId
+      || receipt.planHash !== hashVaultChangePlan(plan)) {
+      throw new Error('apply receipt does not match the immutable plan');
+    }
+    if (receipt.operationIds.length !== receipt.operations.length
+      || receipt.operationIds.some((operationId, index) =>
+        operationId !== receipt.operations[index]?.operationId)) {
+      throw new Error('apply receipt is incomplete or out of order');
+    }
+    const selected = new Set<string>();
+    for (const operationId of receipt.operationIds) {
+      if (selected.has(operationId)) {
+        throw new Error(`apply receipt repeats operationId: ${operationId}`);
+      }
+      selected.add(operationId);
+    }
+    const expectedOrder = plan.operations
+      .filter(operation => selected.has(operation.operationId))
+      .map(operation => operation.operationId);
+    if (expectedOrder.length !== receipt.operationIds.length
+      || expectedOrder.some((operationId, index) => operationId !== receipt.operationIds[index])) {
+      throw new Error('apply receipt selection does not match plan order');
+    }
+    for (const operation of plan.operations) {
+      if (!selected.has(operation.operationId)) continue;
+      for (const dependency of operation.dependsOn) {
+        if (!selected.has(dependency)) {
+          throw new Error(
+            `apply receipt operation ${operation.operationId} lacks dependency ${dependency}`
+          );
+        }
+      }
+    }
+  }
+
+  private async assertReceiptReadback(
+    operation: VaultChangeOperation,
+    result: VaultOperationResult
+  ): Promise<void> {
+    if (result.type !== operation.type) {
+      throw new Error(`apply receipt type mismatch for ${operation.operationId}`);
+    }
+    if (result.status === 'failed' || result.status === 'blocked_dependency') {
+      return;
+    }
+    if (!isRecord(result.readback)) {
+      throw new Error(`apply receipt lacks authoritative readback for ${operation.operationId}`);
+    }
+
+    if (operation.type === 'move' || operation.type === 'archive') {
+      const expectedSource = this.dependencies.preconditions.resolveModelPath(
+        operation.type === 'move' ? operation.sourcePath : operation.path
+      );
+      if (result.readback.sourcePath !== expectedSource
+        || typeof result.readback.destinationPath !== 'string'
+        || typeof result.readback.sourceExists !== 'boolean'
+        || typeof result.readback.destinationExists !== 'boolean') {
+        throw new Error(`invalid rename receipt readback for ${operation.operationId}`);
+      }
+      const destination = operation.type === 'move'
+        ? this.dependencies.preconditions.resolveModelPath(operation.destinationPath)
+        : this.dependencies.preconditions.resolveGeneratedArchivePath(result.readback.destinationPath);
+      if (destination !== result.readback.destinationPath) {
+        throw new Error(`rename receipt destination mismatch for ${operation.operationId}`);
+      }
+      const sourceExists = this.dependencies.app.vault.getAbstractFileByPath(expectedSource) !== null;
+      const destinationExists = this.dependencies.app.vault.getAbstractFileByPath(destination) !== null;
+      if (sourceExists !== result.readback.sourceExists
+        || destinationExists !== result.readback.destinationExists) {
+        throw new Error(`authoritative receipt readback failed for ${operation.operationId}`);
+      }
+      return;
+    }
+
+    const expectedPath = this.dependencies.preconditions.resolveModelPath(operation.path);
+    if (result.readback.path !== expectedPath || typeof result.readback.contentHash !== 'string') {
+      throw new Error(`invalid content receipt readback for ${operation.operationId}`);
+    }
+    const currentHash = await this.dependencies.preconditions.readContentHash(expectedPath);
+    if (currentHash !== result.readback.contentHash) {
+      throw new Error(`authoritative receipt readback failed for ${operation.operationId}`);
+    }
+  }
+
   private async applyOne(
     runId: string,
     operation: VaultChangeOperation
@@ -230,15 +352,23 @@ export class VaultChangeApplier {
           status: 'rolled_back',
           startedAt,
           finishedAt: this.now(),
+          readback: await effect.currentState(),
           error: readbackError
         };
       } catch (rollbackError) {
+        let readback: Record<string, unknown> | undefined;
+        try {
+          readback = await effect.currentState();
+        } catch {
+          readback = undefined;
+        }
         return {
           operationId: operation.operationId,
           type: operation.type,
           status: 'rollback_failed',
           startedAt,
           finishedAt: this.now(),
+          ...(readback ? { readback } : {}),
           error: readbackError,
           rollbackError: errorMessage(rollbackError)
         };
@@ -288,6 +418,12 @@ export class VaultChangeApplier {
     destinationPath: string
   ): Promise<PreparedVaultEffect> {
     const { app } = this.dependencies;
+    const currentState = () => Promise.resolve({
+      sourcePath,
+      sourceExists: app.vault.getAbstractFileByPath(sourcePath) !== null,
+      destinationPath,
+      destinationExists: app.vault.getAbstractFileByPath(destinationPath) !== null
+    });
     return Promise.resolve({
       apply: async () => {
         const source = app.vault.getAbstractFileByPath(sourcePath);
@@ -300,13 +436,12 @@ export class VaultChangeApplier {
         await ensureParentFolders(app, destinationPath);
         await app.fileManager.renameFile(source, destinationPath);
       },
-      readback: () => {
-        const sourceExists = app.vault.getAbstractFileByPath(sourcePath) !== null;
-        const destinationExists = app.vault.getAbstractFileByPath(destinationPath) !== null;
-        if (sourceExists || !destinationExists) {
+      readback: async () => {
+        const state = await currentState();
+        if (state.sourceExists || !state.destinationExists) {
           throw new Error('authoritative rename readback failed');
         }
-        return Promise.resolve({ sourcePath, sourceExists, destinationPath, destinationExists });
+        return state;
       },
       rollback: async () => {
         const destination = app.vault.getAbstractFileByPath(destinationPath);
@@ -323,7 +458,8 @@ export class VaultChangeApplier {
         if (!sourceExists || destinationExists) {
           throw new Error('authoritative rollback readback failed');
         }
-      }
+      },
+      currentState
     });
   }
 
@@ -334,6 +470,18 @@ export class VaultChangeApplier {
     const path = this.dependencies.preconditions.resolveModelPath(operation.path);
     const file = requireFile(app, path);
     const original = await app.vault.read(file);
+    const currentState = async (): Promise<Record<string, unknown>> => {
+      const content = await app.vault.read(file);
+      const frontmatter = readFrontmatter(content);
+      const hasValue = Object.prototype.hasOwnProperty.call(frontmatter, operation.property);
+      return {
+        path,
+        property: operation.property,
+        valuePresent: hasValue,
+        ...(hasValue ? { value: frontmatter[operation.property] } : {}),
+        contentHash: await this.dependencies.preconditions.hashExactContent(content)
+      };
+    };
     return {
       apply: async () => {
         if (await app.vault.read(file) !== original) {
@@ -344,19 +492,19 @@ export class VaultChangeApplier {
         });
       },
       readback: async () => {
-        const frontmatter = readFrontmatter(await app.vault.read(file));
-        if (!Object.prototype.hasOwnProperty.call(frontmatter, operation.property)
-          || !jsonEqual(frontmatter[operation.property], operation.value)) {
+        const state = await currentState();
+        if (state.valuePresent !== true || !jsonEqual(state.value, operation.value)) {
           throw new Error('authoritative setProperty readback failed');
         }
-        return { path, property: operation.property, value: frontmatter[operation.property] };
+        return state;
       },
       rollback: async () => {
         await app.vault.process(file, () => original);
         if (await app.vault.read(file) !== original) {
           throw new Error('authoritative rollback readback failed');
         }
-      }
+      },
+      currentState
     };
   }
 
@@ -373,6 +521,13 @@ export class VaultChangeApplier {
       operation.endAnchor,
       operation.replacement
     );
+    const currentState = async (): Promise<Record<string, unknown>> => {
+      const content = await app.vault.read(file);
+      return {
+        path,
+        contentHash: await this.dependencies.preconditions.hashExactContent(content)
+      };
+    };
     return {
       apply: async () => {
         await app.vault.process(file, current => {
@@ -387,14 +542,15 @@ export class VaultChangeApplier {
         if (current !== expected) {
           throw new Error('authoritative replaceAnchored readback failed');
         }
-        return { path, contentMatches: true };
+        return currentState();
       },
       rollback: async () => {
         await app.vault.process(file, () => original);
         if (await app.vault.read(file) !== original) {
           throw new Error('authoritative rollback readback failed');
         }
-      }
+      },
+      currentState
     };
   }
 }

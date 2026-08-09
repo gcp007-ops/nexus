@@ -21,7 +21,9 @@ import type {
 } from './types';
 import type {
   ApprovalRequest,
+  VaultChangeApplyReceipt,
   VaultChangeApplyResult,
+  VaultOperationResult,
   VaultChangeApplier
 } from './VaultChangeApplier';
 
@@ -91,7 +93,7 @@ export interface AgentRunConversationStore {
 export interface AgentRunServiceDependencies {
   conversations: AgentRunConversationStore;
   backend: WorkflowExecutionBackend;
-  applier: Pick<VaultChangeApplier, 'apply'>;
+  applier: Pick<VaultChangeApplier, 'apply' | 'reconcile'>;
   now?: () => number;
   hashSnapshot?: (snapshot: string) => Promise<string>;
 }
@@ -347,6 +349,17 @@ export class AgentRunService {
         throw new Error('Requested plan hash does not match the persisted immutable plan hash');
       }
 
+      const applying = transitionAgentRun(current, 'applying', {});
+      const selectedIds = new Set(request.operationIds);
+      const initialReceipt: VaultChangeApplyReceipt = {
+        schema: 'agent-run-apply-receipt/v1',
+        runId: request.runId,
+        planHash: request.planHash,
+        operationIds: plan.operations
+          .filter(operation => selectedIds.has(operation.operationId))
+          .map(operation => operation.operationId),
+        operations: []
+      };
       const result = await this.dependencies.applier.apply(plan, request, async () => {
         await this.appendResultMessage(
           request.runId,
@@ -361,46 +374,61 @@ export class AgentRunService {
           }),
           'approval'
         );
-        const applying = transitionAgentRun(current, 'applying', {});
-        const applied = await this.persistTransition(
-          request.runId,
-          ['awaiting_approval'],
-          applying
-        );
+        const applied = await this.beginApplying(request.runId, current, applying, initialReceipt);
         if (!applied) {
           throw new Error(`Agent run applying transition lost: ${request.runId}`);
         }
+      }, async operation => {
+        await this.persistOperationReceipt(request.runId, initialReceipt, operation);
       });
 
-      for (const operation of result.operations) {
-        await this.appendResultMessage(
-          request.runId,
-          JSON.stringify(operation),
-          'operation_result',
-          { operationId: operation.operationId }
-        );
-      }
-
-      const applying = await this.requireRun(request.runId);
-      if (applying.status !== 'applying') {
-        throw new Error(`Agent run ${request.runId} left applying before completion`);
-      }
-      const finalStatus = result.operations.every(operation => operation.status === 'succeeded')
-        ? 'completed'
-        : 'completed_with_issues';
-      const completed = transitionAgentRun(applying, finalStatus, { finishedAt: this.now() });
-      const completedApplied = await this.persistTransition(
-        request.runId,
-        ['applying'],
-        completed
-      );
-      if (!completedApplied) {
-        throw new Error(`Agent run completion transition lost: ${request.runId}`);
-      }
-      return { ...result, status: finalStatus };
+      await this.appendMissingOperationEvents(request.runId, result);
+      return this.reconcileApplying(request.runId);
     } finally {
       this.approvals.delete(request.runId);
     }
+  }
+
+  async reconcileApplying(runId: string): Promise<VaultChangeApplyResult> {
+    const conversation = await this.dependencies.conversations.getConversation(runId);
+    if (!conversation) {
+      throw new Error(`Conversation not found: ${runId}`);
+    }
+    const currentValue = conversation.metadata?.agentRun;
+    if (!isAgentRunMetadata(currentValue)) {
+      throw new Error(`Agent run not found: ${runId}`);
+    }
+    const current = normalizeAgentRunMetadata(currentValue);
+    if (current.status !== 'applying') {
+      throw new Error(`Agent run ${runId} is not applying`);
+    }
+
+    const planMessage = this.requirePlanMessage(conversation);
+    const plan = parseVaultChangePlan(planMessage.content, {
+      runId,
+      workflowId: current.workflowId,
+      promptHash: current.promptHash,
+      workflowHash: current.workflowHash,
+      workspaceId: current.workspaceId
+    });
+    const planHash = hashVaultChangePlan(plan);
+    if (current.planHash !== planHash || this.planMessageHash(planMessage.metadata) !== planHash) {
+      throw new Error('Applying run plan hash does not match the persisted immutable plan hash');
+    }
+    const receipt = this.requireApplyReceipt(conversation.metadata?.agentRunApplyReceipt);
+    if (receipt.runId !== runId || receipt.planHash !== planHash) {
+      throw new Error('Apply receipt does not match the applying run');
+    }
+
+    const result = await this.dependencies.applier.reconcile(plan, receipt);
+    await this.appendMissingOperationEvents(runId, result);
+    const finalStatus = result.status;
+    const completed = transitionAgentRun(current, finalStatus, { finishedAt: this.now() });
+    const completedApplied = await this.persistTransition(runId, ['applying'], completed);
+    if (!completedApplied) {
+      throw new Error(`Agent run completion transition lost: ${runId}`);
+    }
+    return result;
   }
 
   async cancel(runId: string): Promise<AgentRunRecord> {
@@ -557,6 +585,153 @@ export class AgentRunService {
     if (result.stderr) {
       await this.appendResultMessage(runId, result.stderr, kind, { stream: 'stderr' });
     }
+  }
+
+  private async beginApplying(
+    runId: string,
+    expected: AgentRunMetadata,
+    applying: AgentRunMetadata,
+    receipt: VaultChangeApplyReceipt
+  ): Promise<boolean> {
+    const result = await this.dependencies.conversations.mutateConversationMetadata(
+      runId,
+      current => {
+        const currentRun = current.agentRun;
+        if (!isAgentRunMetadata(currentRun)
+          || currentRun.status !== 'awaiting_approval'
+          || currentRun.planHash !== expected.planHash
+          || current.agentRunApplyReceipt !== undefined) {
+          return null;
+        }
+        return {
+          ...current,
+          agentRun: normalizeAgentRunMetadata(applying),
+          agentRunApplyReceipt: receipt
+        };
+      }
+    );
+    return result.applied;
+  }
+
+  private async persistOperationReceipt(
+    runId: string,
+    identity: VaultChangeApplyReceipt,
+    operation: VaultOperationResult
+  ): Promise<void> {
+    const result = await this.dependencies.conversations.mutateConversationMetadata(
+      runId,
+      current => {
+        if (!isAgentRunMetadata(current.agentRun) || current.agentRun.status !== 'applying') {
+          return null;
+        }
+        const receipt = this.requireApplyReceipt(current.agentRunApplyReceipt);
+        if (receipt.runId !== identity.runId
+          || receipt.planHash !== identity.planHash
+          || !stringArraysEqual(receipt.operationIds, identity.operationIds)) {
+          return null;
+        }
+        const existing = receipt.operations.find(item => item.operationId === operation.operationId);
+        if (existing) {
+          return jsonEqual(existing, operation) ? current : null;
+        }
+        const expectedOperationId = receipt.operationIds[receipt.operations.length];
+        if (expectedOperationId !== operation.operationId) {
+          return null;
+        }
+        return {
+          ...current,
+          agentRunApplyReceipt: {
+            ...receipt,
+            operations: [...receipt.operations, operation]
+          }
+        };
+      }
+    );
+    if (!result.applied) {
+      throw new Error(`Agent run operation receipt persistence lost: ${operation.operationId}`);
+    }
+  }
+
+  private async appendMissingOperationEvents(
+    runId: string,
+    result: VaultChangeApplyResult
+  ): Promise<void> {
+    const conversation = await this.dependencies.conversations.getConversation(runId);
+    if (!conversation) {
+      throw new Error(`Conversation not found: ${runId}`);
+    }
+    for (const operation of result.operations) {
+      const matchingEvents = conversation.messages.filter(message => {
+        const event = isRecord(message.metadata?.agentRunEvent)
+          ? message.metadata.agentRunEvent
+          : undefined;
+        return event?.kind === 'operation_result' && event.operationId === operation.operationId;
+      });
+      if (matchingEvents.length > 1) {
+        throw new Error(`Duplicate operation result events for ${operation.operationId}`);
+      }
+      if (matchingEvents.length === 1) {
+        const event = matchingEvents[0].metadata?.agentRunEvent;
+        if (!isRecord(event)
+          || event.planHash !== result.planHash
+          || matchingEvents[0].content !== JSON.stringify(operation)) {
+          throw new Error(`Operation result event conflicts with receipt: ${operation.operationId}`);
+        }
+        continue;
+      }
+      await this.appendResultMessage(
+        runId,
+        JSON.stringify(operation),
+        'operation_result',
+        { operationId: operation.operationId, planHash: result.planHash }
+      );
+    }
+  }
+
+  private requireApplyReceipt(value: unknown): VaultChangeApplyReceipt {
+    if (!isRecord(value)
+      || value.schema !== 'agent-run-apply-receipt/v1'
+      || typeof value.runId !== 'string'
+      || typeof value.planHash !== 'string'
+      || !Array.isArray(value.operationIds)
+      || value.operationIds.some(operationId => typeof operationId !== 'string')
+      || !Array.isArray(value.operations)) {
+      throw new Error('Applying run lacks a valid durable receipt');
+    }
+    const operations = value.operations.map(operation => this.requireOperationResult(operation));
+    return {
+      schema: 'agent-run-apply-receipt/v1',
+      runId: value.runId,
+      planHash: value.planHash,
+      operationIds: value.operationIds.map(operationId => String(operationId)),
+      operations
+    };
+  }
+
+  private requireOperationResult(value: unknown): VaultOperationResult {
+    if (!isRecord(value)
+      || typeof value.operationId !== 'string'
+      || !isVaultOperationType(value.type)
+      || !isVaultOperationStatus(value.status)
+      || typeof value.startedAt !== 'number'
+      || !Number.isFinite(value.startedAt)
+      || typeof value.finishedAt !== 'number'
+      || !Number.isFinite(value.finishedAt)
+      || (value.readback !== undefined && !isRecord(value.readback))
+      || (value.error !== undefined && typeof value.error !== 'string')
+      || (value.rollbackError !== undefined && typeof value.rollbackError !== 'string')) {
+      throw new Error('Applying run contains an invalid operation receipt');
+    }
+    return {
+      operationId: value.operationId,
+      type: value.type,
+      status: value.status,
+      startedAt: value.startedAt,
+      finishedAt: value.finishedAt,
+      ...(value.readback === undefined ? {} : { readback: value.readback }),
+      ...(value.error === undefined ? {} : { error: value.error }),
+      ...(value.rollbackError === undefined ? {} : { rollbackError: value.rollbackError })
+    };
   }
 
   private async appendResultMessage(
@@ -834,4 +1009,28 @@ function isAgentRunMetadata(value: unknown): value is AgentRunMetadata {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isVaultOperationType(value: unknown): value is VaultOperationResult['type'] {
+  return value === 'move'
+    || value === 'archive'
+    || value === 'setProperty'
+    || value === 'replaceAnchored';
+}
+
+function isVaultOperationStatus(value: unknown): value is VaultOperationResult['status'] {
+  return value === 'succeeded'
+    || value === 'failed'
+    || value === 'blocked_dependency'
+    || value === 'readback_failed'
+    || value === 'rolled_back'
+    || value === 'rollback_failed';
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
