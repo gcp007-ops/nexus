@@ -139,6 +139,136 @@ describe('ShardedJsonlStreamStore', () => {
     );
   });
 
+  it('creates the next canonical shard above a higher conflict-only index', async () => {
+    const base = 'Assistant data/tasks/tasks_default';
+    const conflictName = `shard-000005 (Syncthing Delta sha256-${'c'.repeat(64)}).jsonl`;
+    const { app, adapter } = createMockApp({ initialFiles: {
+      [`${base}/shard-000003.jsonl`]: `${JSON.stringify(makeEvent('evt-canonical'))}\n`,
+      [`${base}/${conflictName}`]: `${JSON.stringify(makeEvent('evt-conflict'))}\n`
+    }});
+    const store = new ShardedJsonlStreamStore({
+      app,
+      rootPath: 'Assistant data',
+      maxShardBytes: 1024
+    });
+
+    const result = await store.appendEvent('tasks/tasks_default', makeEvent('evt-new'));
+
+    expect(result.shard.fileName).toBe('shard-000006.jsonl');
+    expect(adapter.write).toHaveBeenCalledWith(
+      `${base}/shard-000006.jsonl`,
+      `${JSON.stringify(makeEvent('evt-new'))}\n`
+    );
+    expect(adapter.append).not.toHaveBeenCalledWith(
+      `${base}/shard-000003.jsonl`,
+      expect.any(String)
+    );
+  });
+
+  it('creates the next canonical shard when only a conflict shard exists', async () => {
+    const base = 'Assistant data/tasks/tasks_default';
+    const conflictName = `shard-000005 (Syncthing Delta sha256-${'d'.repeat(64)}).jsonl`;
+    const { app, adapter } = createMockApp({ initialFiles: {
+      [`${base}/${conflictName}`]: `${JSON.stringify(makeEvent('evt-conflict'))}\n`
+    }});
+    const store = new ShardedJsonlStreamStore({
+      app,
+      rootPath: 'Assistant data',
+      maxShardBytes: 1024
+    });
+
+    const result = await store.appendEvent('tasks/tasks_default', makeEvent('evt-new'));
+
+    expect(result.shard.fileName).toBe('shard-000006.jsonl');
+    expect(adapter.write).toHaveBeenCalledWith(
+      `${base}/shard-000006.jsonl`,
+      `${JSON.stringify(makeEvent('evt-new'))}\n`
+    );
+    expect(adapter.write).not.toHaveBeenCalledWith(
+      `${base}/shard-000001.jsonl`,
+      expect.any(String)
+    );
+  });
+
+  it('keeps the newly created canonical shard for the rest of a batch', async () => {
+    const base = 'Assistant data/tasks/tasks_default';
+    const conflictName = `shard-000005 (Syncthing Delta sha256-${'e'.repeat(64)}).jsonl`;
+    const { app, adapter } = createMockApp({ initialFiles: {
+      [`${base}/shard-000003.jsonl`]: `${JSON.stringify(makeEvent('evt-canonical'))}\n`,
+      [`${base}/${conflictName}`]: `${JSON.stringify(makeEvent('evt-conflict'))}\n`
+    }});
+    const store = new ShardedJsonlStreamStore({
+      app,
+      rootPath: 'Assistant data',
+      maxShardBytes: 1024
+    });
+
+    await store.appendEvents('tasks/tasks_default', [
+      makeEvent('evt-new'),
+      makeEvent('evt-next')
+    ]);
+
+    expect(adapter.write).toHaveBeenCalledWith(
+      `${base}/shard-000006.jsonl`,
+      `${JSON.stringify(makeEvent('evt-new'))}\n`
+    );
+    expect(adapter.append).toHaveBeenCalledWith(
+      `${base}/shard-000006.jsonl`,
+      `${JSON.stringify(makeEvent('evt-next'))}\n`
+    );
+    expect(adapter.append).not.toHaveBeenCalledWith(
+      `${base}/shard-000003.jsonl`,
+      expect.any(String)
+    );
+  });
+
+  it('upserts a shard that appears after the batch snapshot before rotating again', async () => {
+    const base = 'Assistant data/tasks/tasks_default';
+    const targetPath = `${base}/shard-000006.jsonl`;
+    const conflictName = `shard-000005 (Syncthing Delta sha256-${'f'.repeat(64)}).jsonl`;
+    const externallyWrittenRecord = `${JSON.stringify(makeEvent('evt-external'))}\n`;
+    const firstRecord = `${JSON.stringify(makeEvent('evt-new'))}\n`;
+    const secondRecord = `${JSON.stringify(makeEvent('evt-next'))}\n`;
+    const maxShardBytes = new TextEncoder().encode(
+      `${externallyWrittenRecord}${firstRecord}`
+    ).byteLength + new TextEncoder().encode(secondRecord).byteLength - 1;
+    const { app, adapter } = createMockApp({ initialFiles: {
+      [`${base}/shard-000003.jsonl`]: `${JSON.stringify(makeEvent('evt-canonical'))}\n`,
+      [`${base}/${conflictName}`]: `${JSON.stringify(makeEvent('evt-conflict'))}\n`
+    }});
+    const originalExists = adapter.exists.getMockImplementation();
+    if (!originalExists) {
+      throw new Error('Mock adapter exists implementation is unavailable');
+    }
+    let appearedAfterSnapshot = false;
+    adapter.exists.mockImplementation(async path => {
+      if (path === targetPath && !appearedAfterSnapshot) {
+        appearedAfterSnapshot = true;
+        await adapter.write(targetPath, externallyWrittenRecord);
+        return true;
+      }
+      return originalExists(path);
+    });
+    const store = new ShardedJsonlStreamStore({
+      app,
+      rootPath: 'Assistant data',
+      maxShardBytes
+    });
+
+    await store.appendEvents('tasks/tasks_default', [
+      makeEvent('evt-new'),
+      makeEvent('evt-next')
+    ]);
+
+    expect(appearedAfterSnapshot).toBe(true);
+    expect(adapter.append).toHaveBeenCalledTimes(1);
+    expect(adapter.append).toHaveBeenCalledWith(targetPath, firstRecord);
+    expect(adapter.write).toHaveBeenCalledWith(
+      `${base}/shard-000007.jsonl`,
+      secondRecord
+    );
+  });
+
   it('rotates to a new shard when the next append would cross the byte limit', async () => {
     const initialContent = `${JSON.stringify(makeEvent('evt-1', { payload: 'x'.repeat(20) }))}\n`;
     const { app, adapter } = createMockApp({ initialFiles: {
