@@ -506,19 +506,24 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
 
     {
         name: 'agentRunService',
-        dependencies: ['chatService'],
+        dependencies: ['chatService', 'vaultOperations'],
         create: defineService(async (context) => {
             const { AgentRunService } = await import('../../services/workflows/AgentRunService');
             const { ClaudeCliWorkflowBackend } = await import('../../services/workflows/ClaudeCliWorkflowBackend');
             const { VaultChangeApplier } = await import('../../services/workflows/VaultChangeApplier');
             const { VaultChangePreconditions } = await import('../../services/workflows/VaultChangePreconditions');
             const chatService = await context.serviceManager.getService<ChatService>('chatService');
+            const vaultOperations = await context.serviceManager.getService<VaultOperations>('vaultOperations');
             const preconditions = new VaultChangePreconditions(context.app.vault);
 
             return new AgentRunService({
                 conversations: chatService,
                 backend: new ClaudeCliWorkflowBackend(context.app, context.plugin),
-                applier: new VaultChangeApplier({ app: context.app, preconditions })
+                applier: new VaultChangeApplier({
+                    app: context.app,
+                    preconditions,
+                    vaultOperations
+                })
             });
         })
     },

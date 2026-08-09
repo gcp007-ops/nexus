@@ -447,6 +447,70 @@ export class VaultOperations {
   }
 
   /**
+   * Move or rename a file or folder through the confined mutation boundary.
+   */
+  async movePath(sourcePath: VaultPath, targetPath: VaultPath): Promise<boolean> {
+    try {
+      const source = this.getFile(sourcePath) ?? this.getFolder(sourcePath);
+      if (!source) {
+        this.logger.error(`Source path not found: ${sourcePath}`);
+        return false;
+      }
+
+      await this.app.fileManager.renameFile(source, targetPath);
+      this.fileCache.delete(sourcePath);
+      this.logger.debug(`Moved path from ${sourcePath} to ${targetPath}`);
+      return true;
+    } catch (error) {
+      this.logger.error(`Failed to move path from ${sourcePath} to ${targetPath}`, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+  }
+
+  /**
+   * Atomically transform a text file through the confined mutation boundary.
+   */
+  async processFile(path: VaultPath, transform: (content: string) => string): Promise<boolean> {
+    try {
+      const file = this.getFile(path);
+      if (!file) {
+        this.logger.error(`File not found for processing: ${path}`);
+        return false;
+      }
+
+      await this.vault.process(file, transform);
+      this.fileCache.delete(path);
+      return true;
+    } catch (error) {
+      this.logger.error(`Failed to process file ${path}`, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+  }
+
+  /**
+   * Mutate frontmatter through the confined mutation boundary.
+   */
+  async processFrontMatter(
+    path: VaultPath,
+    mutate: (frontmatter: Record<string, unknown>) => void
+  ): Promise<boolean> {
+    try {
+      const file = this.getFile(path);
+      if (!file) {
+        this.logger.error(`File not found for frontmatter processing: ${path}`);
+        return false;
+      }
+
+      await this.app.fileManager.processFrontMatter(file, mutate);
+      this.fileCache.delete(path);
+      return true;
+    } catch (error) {
+      this.logger.error(`Failed to process frontmatter for ${path}`, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+  }
+
+  /**
    * Clear file cache
    */
   clearCache(): void {

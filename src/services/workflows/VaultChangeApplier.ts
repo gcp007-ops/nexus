@@ -5,6 +5,12 @@ import {
   TFolder,
   type App
 } from 'obsidian';
+import type { VaultOperations } from '../../core/VaultOperations';
+import {
+  resolveVaultPath,
+  vaultPathFromTrusted,
+  type VaultPath
+} from '../../core/vaultPath';
 import {
   hashVaultChangePlan,
   type ArchiveVaultChangeOperation,
@@ -148,6 +154,7 @@ type OperationExecutorMap = {
 export interface VaultChangeApplierDependencies {
   app: App;
   preconditions: VaultChangePreconditions;
+  vaultOperations: VaultOperations;
   now?: () => number;
 }
 
@@ -736,20 +743,28 @@ export class VaultChangeApplier {
   }
 
   private async prepareMove(operation: MoveVaultChangeOperation): Promise<PreparedVaultEffect> {
-    const sourcePath = this.dependencies.preconditions.resolveModelPath(operation.sourcePath);
-    const destinationPath = this.dependencies.preconditions.resolveModelPath(operation.destinationPath);
+    const sourcePath = resolveVaultPath(
+      this.dependencies.preconditions.resolveModelPath(operation.sourcePath)
+    );
+    const destinationPath = resolveVaultPath(
+      this.dependencies.preconditions.resolveModelPath(operation.destinationPath)
+    );
     return this.prepareRename(sourcePath, destinationPath);
   }
 
   private async prepareArchive(operation: ArchiveVaultChangeOperation): Promise<PreparedVaultEffect> {
-    const sourcePath = this.dependencies.preconditions.resolveModelPath(operation.path);
+    const sourcePath = resolveVaultPath(
+      this.dependencies.preconditions.resolveModelPath(operation.path)
+    );
     const timestamp = formatArchiveTimestamp(new Date(this.now()));
     let suffix = 0;
-    let destinationPath: string;
+    let destinationPath: VaultPath;
     do {
       const bucket = suffix === 0 ? timestamp : `${timestamp}-${suffix}`;
-      destinationPath = this.dependencies.preconditions.resolveGeneratedArchivePath(
-        `.archive/${bucket}/${sourcePath}`
+      destinationPath = vaultPathFromTrusted(
+        this.dependencies.preconditions.resolveGeneratedArchivePath(
+          `.archive/${bucket}/${sourcePath}`
+        )
       );
       suffix += 1;
     } while (this.dependencies.app.vault.getAbstractFileByPath(destinationPath) !== null);
@@ -757,10 +772,11 @@ export class VaultChangeApplier {
   }
 
   private prepareRename(
-    sourcePath: string,
-    destinationPath: string
+    sourcePath: VaultPath,
+    destinationPath: VaultPath
   ): Promise<PreparedVaultEffect> {
     const { app } = this.dependencies;
+    const { vaultOperations } = this.dependencies;
     const currentState = () => Promise.resolve({
       sourcePath,
       sourceExists: app.vault.getAbstractFileByPath(sourcePath) !== null,
@@ -777,8 +793,10 @@ export class VaultChangeApplier {
         if (app.vault.getAbstractFileByPath(destinationPath) !== null) {
           throw new Error(`rename destination already exists: ${destinationPath}`);
         }
-        await ensureParentFolders(app, destinationPath);
-        await app.fileManager.renameFile(source, destinationPath);
+        await ensureParentFolders(app, vaultOperations, destinationPath);
+        if (!await vaultOperations.movePath(sourcePath, destinationPath)) {
+          throw new Error(`rename failed: ${sourcePath} -> ${destinationPath}`);
+        }
       },
       readback: async () => {
         const state = await currentState();
@@ -795,8 +813,10 @@ export class VaultChangeApplier {
         if (app.vault.getAbstractFileByPath(sourcePath) !== null) {
           throw new Error(`rollback destination already exists: ${sourcePath}`);
         }
-        await ensureParentFolders(app, sourcePath);
-        await app.fileManager.renameFile(destination, sourcePath);
+        await ensureParentFolders(app, vaultOperations, sourcePath);
+        if (!await vaultOperations.movePath(destinationPath, sourcePath)) {
+          throw new Error(`rollback rename failed: ${destinationPath} -> ${sourcePath}`);
+        }
         const sourceExists = app.vault.getAbstractFileByPath(sourcePath) !== null;
         const destinationExists = app.vault.getAbstractFileByPath(destinationPath) !== null;
         if (!sourceExists || destinationExists) {
@@ -811,7 +831,9 @@ export class VaultChangeApplier {
     operation: SetPropertyVaultChangeOperation
   ): Promise<PreparedVaultEffect> {
     const { app } = this.dependencies;
-    const path = this.dependencies.preconditions.resolveModelPath(operation.path);
+    const path = resolveVaultPath(
+      this.dependencies.preconditions.resolveModelPath(operation.path)
+    );
     const file = requireFile(app, path);
     const original = await app.vault.read(file);
     const currentState = async (): Promise<Record<string, unknown>> => {
@@ -837,9 +859,14 @@ export class VaultChangeApplier {
         if (await app.vault.read(file) !== original) {
           throw new Error(`file changed after preparation: ${path}`);
         }
-        await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
-          frontmatter[operation.property] = operation.value;
-        });
+        if (!await this.dependencies.vaultOperations.processFrontMatter(
+          path,
+          (frontmatter: Record<string, unknown>) => {
+            frontmatter[operation.property] = operation.value;
+          }
+        )) {
+          throw new Error(`frontmatter update failed: ${path}`);
+        }
       },
       readback: async () => {
         const state = await currentState();
@@ -849,7 +876,9 @@ export class VaultChangeApplier {
         return state;
       },
       rollback: async () => {
-        await app.vault.process(file, () => original);
+        if (!await this.dependencies.vaultOperations.processFile(path, () => original)) {
+          throw new Error(`frontmatter rollback failed: ${path}`);
+        }
         if (await app.vault.read(file) !== original) {
           throw new Error('authoritative rollback readback failed');
         }
@@ -862,7 +891,9 @@ export class VaultChangeApplier {
     operation: ReplaceAnchoredVaultChangeOperation
   ): Promise<PreparedVaultEffect> {
     const { app } = this.dependencies;
-    const path = this.dependencies.preconditions.resolveModelPath(operation.path);
+    const path = resolveVaultPath(
+      this.dependencies.preconditions.resolveModelPath(operation.path)
+    );
     const file = requireFile(app, path);
     const original = await app.vault.read(file);
     const expected = replaceAnchoredText(
@@ -885,12 +916,15 @@ export class VaultChangeApplier {
         contentHash: await this.dependencies.preconditions.hashExactContent(expected)
       },
       apply: async () => {
-        await app.vault.process(file, current => {
+        const processed = await this.dependencies.vaultOperations.processFile(path, current => {
           if (current !== original) {
             throw new Error(`file changed after preparation: ${path}`);
           }
           return expected;
         });
+        if (!processed) {
+          throw new Error(`anchored replacement failed: ${path}`);
+        }
       },
       readback: async () => {
         const current = await app.vault.read(file);
@@ -900,7 +934,9 @@ export class VaultChangeApplier {
         return currentState();
       },
       rollback: async () => {
-        await app.vault.process(file, () => original);
+        if (!await this.dependencies.vaultOperations.processFile(path, () => original)) {
+          throw new Error(`anchored replacement rollback failed: ${path}`);
+        }
         if (await app.vault.read(file) !== original) {
           throw new Error('authoritative rollback readback failed');
         }
@@ -934,7 +970,11 @@ function requireFile(app: App, path: string): TFile {
   return file;
 }
 
-async function ensureParentFolders(app: App, path: string): Promise<void> {
+async function ensureParentFolders(
+  app: App,
+  vaultOperations: VaultOperations,
+  path: VaultPath
+): Promise<void> {
   const parent = normalizePath(path).split('/').slice(0, -1);
   let current = '';
   for (const segment of parent) {
@@ -946,7 +986,9 @@ async function ensureParentFolders(app: App, path: string): Promise<void> {
     if (item !== null) {
       throw new Error(`parent path is not a folder: ${current}`);
     }
-    await app.vault.createFolder(current);
+    if (!await vaultOperations.ensureDirectory(vaultPathFromTrusted(current))) {
+      throw new Error(`failed to create parent folder: ${current}`);
+    }
   }
 }
 

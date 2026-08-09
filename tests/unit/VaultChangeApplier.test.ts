@@ -5,6 +5,7 @@ import {
   type VaultChangeApplyReceipt
 } from '../../src/services/workflows/VaultChangeApplier';
 import { VaultChangePreconditions } from '../../src/services/workflows/VaultChangePreconditions';
+import { VaultOperations } from '../../src/core/VaultOperations';
 import {
   hashVaultChangePlan,
   type VaultChangeOperation,
@@ -35,6 +36,12 @@ class MemoryVault {
   readonly createFolder = jest.fn(async (path: string) => {
     this.folders.set(path, new TFolder(path));
   });
+  readonly adapter = {
+    exists: jest.fn(async (path: string) => this.files.has(path) || this.folders.has(path)),
+    mkdir: jest.fn(async (path: string) => {
+      this.folders.set(path, new TFolder(path));
+    })
+  };
 
   constructor(initial: Record<string, string> = {}) {
     for (const [path, content] of Object.entries(initial)) {
@@ -45,6 +52,14 @@ class MemoryVault {
 
   getAbstractFileByPath(path: string): TFile | TFolder | null {
     return this.files.get(path)?.file ?? this.folders.get(path) ?? null;
+  }
+
+  getFileByPath(path: string): TFile | null {
+    return this.files.get(path)?.file ?? null;
+  }
+
+  getFolderByPath(path: string): TFolder | null {
+    return this.folders.get(path) ?? null;
   }
 }
 
@@ -82,12 +97,30 @@ function createHarness(initial: Record<string, string> = {}) {
   };
   const app = { vault, fileManager };
   const preconditions = new VaultChangePreconditions(vault as never);
+  const pathManager = {
+    normalizePath: (path: string) => path,
+    getParentPath: (path: string) => path.split('/').slice(0, -1).join('/'),
+    ensureParentExists: jest.fn().mockResolvedValue(undefined)
+  };
+  const logger = {
+    debug: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    info: jest.fn()
+  };
+  const vaultOperations = new VaultOperations(
+    app as never,
+    vault as never,
+    pathManager as never,
+    logger as never
+  );
   const applier = new VaultChangeApplier({
     app: app as never,
     preconditions,
+    vaultOperations,
     now: () => 1_700_000_000_000
-  });
-  return { applier, vault, fileManager };
+  } as never);
+  return { applier, vault, fileManager, vaultOperations };
 }
 
 function operation(
@@ -176,6 +209,16 @@ function approvalFor(value: VaultChangePlan, ...operationIds: string[]): Approva
 }
 
 describe('VaultChangeApplier', () => {
+  it('routes approved mutations through the confined vault facade', async () => {
+    const { applier, vaultOperations } = createHarness({ 'from.md': 'body' });
+    const movePath = jest.spyOn(vaultOperations, 'movePath');
+    const value = plan([operation('move')]);
+
+    await applier.apply(value, approvalFor(value, 'op-1'));
+
+    expect(movePath).toHaveBeenCalledWith('from.md', 'Moved/to.md');
+  });
+
   it.each(['move', 'archive', 'setProperty', 'replaceAnchored'] as const)(
     'applies and reads back a selected %s operation', async type => {
       const { applier } = createHarness({

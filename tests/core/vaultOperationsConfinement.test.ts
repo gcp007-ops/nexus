@@ -11,6 +11,7 @@
  * See docs/plans/vault-path-confinement-plan.md (Phase 2).
  */
 
+import { TFile, TFolder } from 'obsidian';
 import { VaultOperations } from '@/core/VaultOperations';
 import {
   resolveVaultPath,
@@ -23,6 +24,7 @@ function makeVaultOperations() {
   const create = jest.fn().mockResolvedValue(undefined);
   const modify = jest.fn().mockResolvedValue(undefined);
   const createFolder = jest.fn().mockResolvedValue(undefined);
+  const process = jest.fn().mockResolvedValue(undefined);
   const getFileByPath = jest.fn().mockReturnValue(null);
   const getFolderByPath = jest.fn().mockReturnValue(null);
   const adapter = {
@@ -30,7 +32,7 @@ function makeVaultOperations() {
     write: jest.fn().mockResolvedValue(undefined),
     mkdir: jest.fn().mockResolvedValue(undefined),
   };
-  const vault = { create, modify, createFolder, getFileByPath, getFolderByPath, adapter };
+  const vault = { create, modify, createFolder, process, getFileByPath, getFolderByPath, adapter };
 
   const pathManager = {
     normalizePath: jest.fn((p: string) => (p.startsWith('/') ? p.slice(1) : p)),
@@ -43,7 +45,13 @@ function makeVaultOperations() {
     error: jest.fn(),
     info: jest.fn(),
   };
-  const app = { fileManager: { trashFile: jest.fn(), renameFile: jest.fn() } };
+  const app = {
+    fileManager: {
+      trashFile: jest.fn(),
+      renameFile: jest.fn().mockResolvedValue(undefined),
+      processFrontMatter: jest.fn().mockResolvedValue(undefined),
+    }
+  };
 
   // The mocks are structurally compatible with what the mutators exercise; the
   // facade's constructor types are widened via `unknown` for the test doubles.
@@ -53,7 +61,7 @@ function makeVaultOperations() {
     pathManager as never,
     logger as never
   );
-  return { ops, vault, create };
+  return { ops, vault, app, create };
 }
 
 describe('VaultOperations — branded-path boundary (compile-time)', () => {
@@ -75,6 +83,12 @@ describe('VaultOperations — branded-path boundary (compile-time)', () => {
     // @ts-expect-error — a raw string is not a VaultPath
     await ops.moveFile('a.md', good);
     // @ts-expect-error — a raw string is not a VaultPath
+    await ops.movePath('a.md', good);
+    // @ts-expect-error — a raw string is not a VaultPath
+    await ops.processFile('a.md', content => content);
+    // @ts-expect-error — a raw string is not a VaultPath
+    await ops.processFrontMatter('a.md', () => undefined);
+    // @ts-expect-error — a raw string is not a VaultPath
     await ops.copyFile(good, 'b.md');
     // @ts-expect-error — a raw string is not a VaultPath in BatchWriteOperation
     await ops.batchWrite([{ path: 'a.md', content: 'x' }]);
@@ -86,6 +100,57 @@ describe('VaultOperations — branded-path boundary (compile-time)', () => {
 
   it('keeps the type-only assertions referenced', () => {
     expect(typeof _typeOnlyAssertions).toBe('function');
+  });
+
+  it('moves either a file or folder through the branded facade', async () => {
+    const { ops, vault, app } = makeVaultOperations();
+    const folder = new TFolder('Folder', 'Folder');
+    vault.getFolderByPath.mockReturnValue(folder);
+
+    const ok = await ops.movePath(
+      resolveVaultPath('Folder'),
+      resolveVaultPath('Archive/Folder')
+    );
+
+    expect(ok).toBe(true);
+    expect(app.fileManager.renameFile).toHaveBeenCalledWith(folder, 'Archive/Folder');
+  });
+
+  it('processes file content through the branded facade', async () => {
+    const { ops, vault } = makeVaultOperations();
+    const file = new TFile('note.md', 'note.md');
+    vault.getFileByPath.mockReturnValue(file);
+    const transform = (content: string) => `${content}!`;
+
+    const ok = await ops.processFile(resolveVaultPath('note.md'), transform);
+
+    expect(ok).toBe(true);
+    expect(vault.process).toHaveBeenCalledWith(file, transform);
+  });
+
+  it('processes frontmatter through the branded facade', async () => {
+    const { ops, vault, app } = makeVaultOperations();
+    const file = new TFile('note.md', 'note.md');
+    vault.getFileByPath.mockReturnValue(file);
+    const mutate = (frontmatter: Record<string, unknown>) => {
+      frontmatter.status = 'done';
+    };
+
+    const result = await ops.processFrontMatter(resolveVaultPath('note.md'), mutate);
+
+    expect(result).toBe(true);
+    expect(app.fileManager.processFrontMatter).toHaveBeenCalledWith(file, mutate);
+  });
+
+  it('propagates the original file-processing failure to transactional callers', async () => {
+    const { ops, vault } = makeVaultOperations();
+    const file = new TFile('note.md', 'note.md');
+    vault.getFileByPath.mockReturnValue(file);
+    vault.process.mockRejectedValueOnce(new Error('disk failure'));
+
+    await expect(
+      ops.processFile(resolveVaultPath('note.md'), content => content)
+    ).rejects.toThrow('disk failure');
   });
 });
 
