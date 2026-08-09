@@ -456,6 +456,9 @@ export class AgentRunService {
       }
     }
     await this.appendMissingOperationEvents(runId, result);
+    if (result.operations.some(isSnapshotlessRecoveryFailure)) {
+      return result;
+    }
     const finalStatus = result.status;
     const completed = transitionAgentRun(current, finalStatus, { finishedAt: this.now() });
     const completedApplied = await this.persistTransition(runId, ['applying'], completed);
@@ -707,7 +710,24 @@ export class AgentRunService {
           return null;
         }
         if (existing.state === 'settled') {
-          return jsonEqual(existing.result, operation) ? current : null;
+          if (jsonEqual(existing.result, operation)) {
+            return current;
+          }
+          if (existing.expectedReadback === undefined
+            || !isSnapshotlessRecoveryFailure(existing.result)
+            || !hasAuthoritativeRecoveryReadback(operation)) {
+            return null;
+          }
+          return {
+            ...current,
+            agentRunApplyReceipt: {
+              ...receipt,
+              operations: receipt.operations.map((entry, entryIndex) =>
+                entryIndex === index
+                  ? { ...existing, result: cloneJson(operation) }
+                  : entry)
+            }
+          };
         }
         if (existing.type !== operation.type
           || (existing.state === 'selected'
@@ -814,6 +834,9 @@ export class AgentRunService {
       throw new Error(`Conversation not found: ${runId}`);
     }
     for (const operation of result.operations) {
+      if (isSnapshotlessRecoveryFailure(operation)) {
+        continue;
+      }
       const matchingEvents = conversation.messages.filter(message => {
         const event = isRecord(message.metadata?.agentRunEvent)
           ? message.metadata.agentRunEvent
@@ -1284,6 +1307,15 @@ function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function isSnapshotlessRecoveryFailure(result: VaultOperationResult): boolean {
+  return result.status === 'readback_failed' && result.readback === undefined;
+}
+
+function hasAuthoritativeRecoveryReadback(result: VaultOperationResult): boolean {
+  return (result.status === 'succeeded' || result.status === 'readback_failed')
+    && isRecord(result.readback);
 }
 
 function isVaultOperationType(value: unknown): value is VaultOperationResult['type'] {

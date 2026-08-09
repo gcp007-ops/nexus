@@ -516,6 +516,102 @@ describe('VaultChangeApplier', () => {
     expect(vault.process).not.toHaveBeenCalled();
   });
 
+  it('retries only readback for a settled snapshotless recovery result until state is available', async () => {
+    const { applier, vault, fileManager } = createHarness({
+      'property.md': '---\nstatus: todo\n---\nBody\n'
+    });
+    const value = plan([operation('setProperty')]);
+    const pendingReceipt: VaultChangeApplyReceipt = {
+      schema: 'agent-run-apply-receipt/v2',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-1'],
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'pending',
+        startedAt: 901,
+        expectedReadback: {
+          kind: 'setProperty', path: 'property.md', property: 'status', value: 'done'
+        }
+      }]
+    };
+    vault.files.delete('property.md');
+
+    const unavailable = await applier.reconcile(value, pendingReceipt);
+    const settledReceipt: VaultChangeApplyReceipt = {
+      ...pendingReceipt,
+      schema: 'agent-run-apply-receipt/v2',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'settled',
+        startedAt: 901,
+        expectedReadback: {
+          kind: 'setProperty', path: 'property.md', property: 'status', value: 'done'
+        },
+        result: unavailable.operations[0]
+      }]
+    };
+
+    await expect(applier.reconcile(value, settledReceipt)).resolves.toEqual(unavailable);
+    vault.files.set('property.md', {
+      file: new TFile('property.md', 'property.md'),
+      content: '---\nstatus: done\n---\nBody\n'
+    });
+    await expect(applier.reconcile(value, settledReceipt)).resolves.toMatchObject({
+      status: 'completed',
+      operations: [expect.objectContaining({
+        operationId: 'op-1',
+        status: 'succeeded',
+        readback: expect.objectContaining({ value: 'done' })
+      })]
+    });
+
+    expect(vault.process).not.toHaveBeenCalled();
+    expect(fileManager.renameFile).not.toHaveBeenCalled();
+    expect(fileManager.processFrontMatter).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a snapshotless readback_failed result without the recovery-unavailable marker', async () => {
+    const { applier, vault } = createHarness({
+      'replace.md': 'Before\nSTART\nold\nEND\nAfter'
+    });
+    const value = plan([operation('replaceAnchored')]);
+    const malformed: VaultChangeApplyReceipt = {
+      schema: 'agent-run-apply-receipt/v2',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-1'],
+      operations: [{
+        operationId: 'op-1',
+        type: 'replaceAnchored',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'settled',
+        startedAt: 901,
+        expectedReadback: {
+          kind: 'contentHash', path: 'replace.md', contentHash: `sha256:${'f'.repeat(64)}`
+        },
+        result: {
+          operationId: 'op-1',
+          type: 'replaceAnchored',
+          status: 'readback_failed',
+          startedAt: 901,
+          finishedAt: 901
+        }
+      }]
+    };
+
+    await expect(applier.reconcile(value, malformed))
+      .rejects.toThrow('lacks authoritative readback');
+    expect(vault.process).not.toHaveBeenCalled();
+  });
+
   it('fails closed for old incomplete and non-closed durable receipts', async () => {
     const { applier, vault } = createHarness({
       'replace.md': 'Before\nSTART\nold\nEND\nAfter'

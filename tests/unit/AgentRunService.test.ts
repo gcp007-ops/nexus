@@ -579,6 +579,176 @@ describe('AgentRunService', () => {
     await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
   });
 
+  it('keeps a snapshotless recovery failure applying and retries only authoritative readback', async () => {
+    const seeded = approvableConversation();
+    const unavailableOperation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'readback_failed' as const,
+      startedAt: 1_001,
+      finishedAt: 1_001,
+      error: 'Authoritative recovery readback is unavailable: storage offline'
+    };
+    const unavailableResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed_with_issues',
+      operations: [unavailableOperation]
+    };
+    seeded.value.metadata = {
+      ...seeded.value.metadata,
+      agentRun: { ...runMetadata('applying'), planHash: seeded.planHash },
+      agentRunApplyReceipt: {
+        schema: 'agent-run-apply-receipt/v2',
+        runId: 'conversation-1',
+        planHash: seeded.planHash,
+        operationIds: ['op-1'],
+        operations: [{
+          operationId: 'op-1',
+          type: 'setProperty',
+          dependsOn: [],
+          selectedAt: 1_000,
+          state: 'pending',
+          startedAt: 1_001,
+          expectedReadback: {
+            kind: 'setProperty', path: 'note.md', property: 'status', value: 'done'
+          }
+        }]
+      }
+    };
+    const store = createConversationStore([seeded.value]);
+    const append = store.addMessage.getMockImplementation();
+    if (!append) throw new Error('Expected conversation append implementation');
+    store.addMessage.mockImplementation(async params => {
+      const event = params.metadata?.agentRunEvent as { kind?: string } | undefined;
+      if (event?.kind === 'operation_result') {
+        throw new Error('operation event append failed');
+      }
+      return append(params);
+    });
+    const { service, applier } = createService(
+      store,
+      createDeferredBackend(),
+      unavailableResult
+    );
+    applier.reconcile.mockResolvedValue(unavailableResult);
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(unavailableResult);
+    expect(store.conversations.get('conversation-1')?.metadata?.agentRunApplyReceipt)
+      .toMatchObject({
+        operations: [expect.objectContaining({
+          state: 'settled',
+          result: unavailableOperation
+        })]
+      });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(unavailableResult);
+
+    expect(applier.reconcile).toHaveBeenCalledTimes(2);
+    expect(applier.effect).not.toHaveBeenCalled();
+    expect(applier.rollback).not.toHaveBeenCalled();
+    expect(store.addMessage).not.toHaveBeenCalled();
+    expect(store.conversations.get('conversation-1')?.metadata?.agentRunApplyReceipt)
+      .toMatchObject({ operations: [expect.objectContaining({ result: unavailableOperation })] });
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+  });
+
+  it('replaces a snapshotless recovery failure after readback returns and emits one terminal event', async () => {
+    const seeded = approvableConversation();
+    const unavailableOperation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'readback_failed' as const,
+      startedAt: 1_001,
+      finishedAt: 1_001,
+      error: 'Authoritative recovery readback is unavailable: storage offline'
+    };
+    const recoveredOperation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'succeeded' as const,
+      startedAt: 1_001,
+      finishedAt: 1_001,
+      readback: {
+        path: 'note.md',
+        property: 'status',
+        valuePresent: true,
+        value: 'done',
+        contentHash: `sha256:${'d'.repeat(64)}`
+      }
+    };
+    const unavailableResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed_with_issues',
+      operations: [unavailableOperation]
+    };
+    const recoveredResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [recoveredOperation]
+    };
+    seeded.value.metadata = {
+      ...seeded.value.metadata,
+      agentRun: { ...runMetadata('applying'), planHash: seeded.planHash },
+      agentRunApplyReceipt: {
+        schema: 'agent-run-apply-receipt/v2',
+        runId: 'conversation-1',
+        planHash: seeded.planHash,
+        operationIds: ['op-1'],
+        operations: [{
+          operationId: 'op-1',
+          type: 'setProperty',
+          dependsOn: [],
+          selectedAt: 1_000,
+          state: 'pending',
+          startedAt: 1_001,
+          expectedReadback: {
+            kind: 'setProperty', path: 'note.md', property: 'status', value: 'done'
+          }
+        }]
+      }
+    };
+    const store = createConversationStore([seeded.value]);
+    const append = store.addMessage.getMockImplementation();
+    if (!append) throw new Error('Expected conversation append implementation');
+    store.addMessage.mockImplementation(async params => {
+      const event = params.metadata?.agentRunEvent as { kind?: string } | undefined;
+      const operation = JSON.parse(params.content) as { status?: string };
+      if (event?.kind === 'operation_result'
+        && operation.status === 'readback_failed') {
+        throw new Error('operation event append failed');
+      }
+      return append(params);
+    });
+    const { service, applier } = createService(store, createDeferredBackend());
+    applier.reconcile
+      .mockResolvedValueOnce(unavailableResult)
+      .mockResolvedValueOnce(recoveredResult);
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(unavailableResult);
+    expect(store.conversations.get('conversation-1')?.metadata?.agentRunApplyReceipt)
+      .toMatchObject({
+        operations: [expect.objectContaining({
+          state: 'settled',
+          result: unavailableOperation
+        })]
+      });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(recoveredResult);
+
+    expect(applier.reconcile).toHaveBeenCalledTimes(2);
+    expect(applier.effect).not.toHaveBeenCalled();
+    expect(applier.rollback).not.toHaveBeenCalled();
+    const operationEvents = store.conversations.get('conversation-1')?.messages.filter(message =>
+      (message.metadata?.agentRunEvent as { kind?: string } | undefined)?.kind === 'operation_result'
+    );
+    expect(operationEvents).toHaveLength(1);
+    expect(operationEvents?.[0].content).toBe(JSON.stringify(recoveredOperation));
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
+  });
+
   it('retries only the terminal CAS when completion loses after effects', async () => {
     const seeded = approvableConversation();
     const store = createConversationStore([seeded.value]);

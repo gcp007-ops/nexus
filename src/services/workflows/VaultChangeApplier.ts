@@ -16,6 +16,9 @@ import {
 } from './VaultChangePlan';
 import { VaultChangePreconditions } from './VaultChangePreconditions';
 
+const AUTHORITATIVE_READBACK_UNAVAILABLE_PREFIX =
+  'Authoritative recovery readback is unavailable:';
+
 export interface ApprovalRequest {
   runId: string;
   planHash: string;
@@ -399,32 +402,29 @@ export class VaultChangeApplier {
       }
       let result: VaultOperationResult;
       if (entry.state === 'settled') {
-        result = cloneJson(entry.result);
-        await this.assertReceiptReadback(operation, result);
-      } else if (entry.state === 'pending') {
-        try {
-          const recovery = await this.readExpectedState(entry.expectedReadback);
-          result = {
-            operationId: entry.operationId,
-            type: entry.type,
-            status: recovery.matches ? 'succeeded' : 'readback_failed',
-            startedAt: entry.startedAt,
-            finishedAt: entry.startedAt,
-            readback: recovery.readback,
-            ...(recovery.matches ? {} : {
-              error: 'Authoritative recovery readback found unresolved or drifted state.'
-            })
-          };
-        } catch (error) {
-          result = {
-            operationId: entry.operationId,
-            type: entry.type,
-            status: 'readback_failed',
-            startedAt: entry.startedAt,
-            finishedAt: entry.startedAt,
-            error: `Authoritative recovery readback is unavailable: ${errorMessage(error)}`
-          };
+        if (isSnapshotlessReadbackFailure(entry.result)
+          && entry.startedAt !== undefined
+          && entry.expectedReadback !== undefined) {
+          const recovered = await this.recoverExpectedReadback(
+            entry.operationId,
+            entry.type,
+            entry.startedAt,
+            entry.expectedReadback
+          );
+          result = isSnapshotlessReadbackFailure(recovered)
+            ? cloneJson(entry.result)
+            : recovered;
+        } else {
+          result = cloneJson(entry.result);
+          await this.assertReceiptReadback(operation, result);
         }
+      } else if (entry.state === 'pending') {
+        result = await this.recoverExpectedReadback(
+          entry.operationId,
+          entry.type,
+          entry.startedAt,
+          entry.expectedReadback
+        );
       } else {
         const blocked = entry.dependsOn.some(dependency => byId.get(dependency)?.status !== 'succeeded');
         result = {
@@ -449,6 +449,37 @@ export class VaultChangeApplier {
         : 'completed_with_issues',
       operations: results
     };
+  }
+
+  private async recoverExpectedReadback(
+    operationId: string,
+    type: VaultChangeOperation['type'],
+    startedAt: number,
+    expected: VaultOperationExpectedReadback
+  ): Promise<VaultOperationResult> {
+    try {
+      const recovery = await this.readExpectedState(expected);
+      return {
+        operationId,
+        type,
+        status: recovery.matches ? 'succeeded' : 'readback_failed',
+        startedAt,
+        finishedAt: startedAt,
+        readback: recovery.readback,
+        ...(recovery.matches ? {} : {
+          error: 'Authoritative recovery readback found unresolved or drifted state.'
+        })
+      };
+    } catch (error) {
+      return {
+        operationId,
+        type,
+        status: 'readback_failed',
+        startedAt,
+        finishedAt: startedAt,
+        error: `${AUTHORITATIVE_READBACK_UNAVAILABLE_PREFIX} ${errorMessage(error)}`
+      };
+    }
   }
 
   private async readExpectedState(expected: VaultOperationExpectedReadback): Promise<{
@@ -1009,6 +1040,13 @@ function isVaultOperationResult(value: unknown): value is VaultOperationResult {
     && (value.readback === undefined || isRecord(value.readback))
     && (value.error === undefined || typeof value.error === 'string')
     && (value.rollbackError === undefined || typeof value.rollbackError === 'string');
+}
+
+function isSnapshotlessReadbackFailure(result: VaultOperationResult): boolean {
+  return result.status === 'readback_failed'
+    && result.readback === undefined
+    && typeof result.error === 'string'
+    && result.error.startsWith(AUTHORITATIVE_READBACK_UNAVAILABLE_PREFIX);
 }
 
 function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
