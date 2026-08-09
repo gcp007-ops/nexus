@@ -10,6 +10,14 @@ import {
   type AgentRunConversationStore,
   type AgentRunStartRequest
 } from '../../src/services/workflows/AgentRunService';
+import type {
+  ApprovalRequest,
+  VaultChangeApplyResult
+} from '../../src/services/workflows/VaultChangeApplier';
+import {
+  hashVaultChangePlan,
+  parseVaultChangePlan
+} from '../../src/services/workflows/VaultChangePlan';
 import type { AgentRunMetadata, AgentRunRecord } from '../../src/services/workflows/types';
 import { ConversationManager as PersistentConversationManager } from '../../src/services/chat/ConversationManager';
 
@@ -227,23 +235,112 @@ function validPlanText(runId = 'conversation-1'): string {
   });
 }
 
+function approvalPlanText(): string {
+  return JSON.stringify({
+    schema: 'vault-change-plan/v1',
+    planId: 'plan-approval',
+    runId: 'conversation-1',
+    workflowId: 'workflow-1',
+    promptHash: PROMPT_HASH,
+    workflowHash: WORKFLOW_HASH,
+    workspaceId: 'workspace-1',
+    summary: 'Apply one approved property change.',
+    findings: [{ findingId: 'finding-1', summary: 'Status is stale.', evidence: ['evidence-1'] }],
+    evidenceReferences: [{ evidenceId: 'evidence-1', path: 'note.md', excerpt: 'status: todo' }],
+    operations: [{
+      operationId: 'op-1',
+      findingId: 'finding-1',
+      type: 'setProperty',
+      evidence: ['evidence-1'],
+      preconditions: [{ path: 'note.md', exists: true }],
+      expectedEffect: 'Set status to done.',
+      risk: { level: 'low', explanation: 'Single property replacement.' },
+      dependsOn: [],
+      rollback: 'Restore the original file bytes.',
+      path: 'note.md',
+      property: 'status',
+      value: 'done'
+    }],
+    recommendations: [],
+    preservationNotes: []
+  });
+}
+
+function approvableConversation(): { value: ConversationData; planHash: string } {
+  const content = approvalPlanText();
+  const parsed = parseVaultChangePlan(content, {
+    runId: 'conversation-1',
+    workflowId: 'workflow-1',
+    promptHash: PROMPT_HASH,
+    workflowHash: WORKFLOW_HASH,
+    workspaceId: 'workspace-1'
+  });
+  const planHash = hashVaultChangePlan(parsed);
+  const metadata: AgentRunMetadata = {
+    ...runMetadata('awaiting_approval'),
+    planHash
+  };
+  const value = conversation('conversation-1', metadata);
+  value.messages.push({
+    id: 'message-plan',
+    conversationId: value.id,
+    role: 'assistant',
+    content,
+    timestamp: 100,
+    metadata: { agentRunEvent: { kind: 'plan', planHash } }
+  });
+  return { value, planHash };
+}
+
+function approvalRequest(planHash: string): ApprovalRequest {
+  return {
+    runId: 'conversation-1',
+    planHash,
+    operationIds: ['op-1'],
+    approval: { kind: 'human', source: 'nexus-ui', confirmedAt: 1_700_000_000_000 }
+  };
+}
+
 function createService(
   store = createConversationStore(),
-  backend = createDeferredBackend()
-): { service: AgentRunService; store: ReturnType<typeof createConversationStore>; backend: DeferredBackend } {
+  backend = createDeferredBackend(),
+  applyResult: VaultChangeApplyResult = {
+    runId: 'conversation-1',
+    planHash: `sha256:${'c'.repeat(64)}`,
+    status: 'completed',
+    operations: []
+  }
+): {
+  service: AgentRunService;
+  store: ReturnType<typeof createConversationStore>;
+  backend: DeferredBackend;
+  applier: { apply: jest.Mock };
+} {
   let now = 1_000;
   const hashSnapshot = jest.fn()
     .mockResolvedValueOnce(PROMPT_HASH)
     .mockResolvedValueOnce(WORKFLOW_HASH);
+  const applier = {
+    apply: jest.fn(async (
+      _plan: unknown,
+      _request: ApprovalRequest,
+      beforeEffects?: () => Promise<void>
+    ) => {
+      await beforeEffects?.();
+      return applyResult;
+    })
+  };
   return {
     service: new AgentRunService({
       conversations: store,
       backend,
+      applier,
       now: () => ++now,
       hashSnapshot
     }),
     store,
-    backend
+    backend,
+    applier
   };
 }
 
@@ -311,6 +408,132 @@ describe('AgentRunService', () => {
 
     await expect(service.start(startRequest())).resolves.toMatchObject({ status: 'running' });
     await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'running' });
+  });
+
+  it('rejects a requested plan hash that is not bound to the persisted immutable plan', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const { service, applier } = createService(store);
+
+    await expect(service.approveAndApply({
+      ...approvalRequest(seeded.planHash),
+      planHash: `sha256:${'f'.repeat(64)}`
+    })).rejects.toThrow('plan hash');
+
+    expect(applier.apply).not.toHaveBeenCalled();
+    expect(store.addMessage).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit typed human approval context', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const { service, applier } = createService(store);
+    const missingApproval = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      operationIds: ['op-1']
+    } as unknown as ApprovalRequest;
+
+    await expect(service.approveAndApply(missingApproval))
+      .rejects.toThrow('explicit human approval context');
+
+    expect(applier.apply).not.toHaveBeenCalled();
+    expect(store.addMessage).not.toHaveBeenCalled();
+  });
+
+  it('appends typed approval and operation results around the applying CAS', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'succeeded',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        readback: { path: 'note.md', property: 'status', value: 'done' }
+      }]
+    };
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+
+    const result = await service.approveAndApply(approvalRequest(seeded.planHash));
+
+    expect(result).toEqual(applyResult);
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    expect(store.addMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      content: JSON.stringify({
+        planHash: seeded.planHash,
+        operationIds: ['op-1'],
+        approval: { kind: 'human', source: 'nexus-ui', confirmedAt: 1_700_000_000_000 }
+      }),
+      metadata: { agentRunEvent: { kind: 'approval' } }
+    }));
+    expect(store.addMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      content: JSON.stringify(applyResult.operations[0]),
+      metadata: { agentRunEvent: { kind: 'operation_result', operationId: 'op-1' } }
+    }));
+    await expect(service.get('conversation-1')).resolves.toMatchObject({
+      status: 'completed',
+      planHash: seeded.planHash
+    });
+  });
+
+  it('executes zero effects when approval event persistence fails', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    store.addMessage.mockRejectedValue(new Error('approval append failed'));
+    const { service, applier } = createService(store);
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('approval append failed');
+
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({
+      status: 'awaiting_approval'
+    });
+  });
+
+  it('executes zero effects when the applying CAS loses', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    store.mutateConversationMetadata.mockResolvedValue({ applied: false });
+    const { service, applier } = createService(store);
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('applying transition lost');
+
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({
+      status: 'awaiting_approval'
+    });
+  });
+
+  it('completes with issues when any selected operation is not succeeded', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed_with_issues',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'rolled_back',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        error: 'authoritative readback failed'
+      }]
+    };
+    const { service } = createService(store, createDeferredBackend(), applyResult);
+
+    await service.approveAndApply(approvalRequest(seeded.planHash));
+
+    await expect(service.get('conversation-1')).resolves.toMatchObject({
+      status: 'completed_with_issues'
+    });
   });
 
   it('does not relaunch a persisted run before restart reconciliation', async () => {

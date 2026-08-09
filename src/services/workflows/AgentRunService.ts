@@ -19,6 +19,11 @@ import type {
   AgentRunStatus,
   WorkflowRunMetadata
 } from './types';
+import type {
+  ApprovalRequest,
+  VaultChangeApplyResult,
+  VaultChangeApplier
+} from './VaultChangeApplier';
 
 const CLAUDE_MD_INSTRUCTION = 'Read CLAUDE.md before doing anything else and follow every applicable rule.';
 const NO_WRITE_CONTRACT = [
@@ -86,6 +91,7 @@ export interface AgentRunConversationStore {
 export interface AgentRunServiceDependencies {
   conversations: AgentRunConversationStore;
   backend: WorkflowExecutionBackend;
+  applier: Pick<VaultChangeApplier, 'apply'>;
   now?: () => number;
   hashSnapshot?: (snapshot: string) => Promise<string>;
 }
@@ -150,6 +156,7 @@ export class AgentRunService {
   private readonly starts = new Map<string, StartEntry>();
   private readonly handles = new Map<string, WorkflowExecutionHandle>();
   private readonly completions = new Map<string, Promise<void>>();
+  private readonly approvals = new Set<string>();
 
   constructor(private readonly dependencies: AgentRunServiceDependencies) {
     this.now = dependencies.now ?? (() => Date.now());
@@ -300,6 +307,100 @@ export class AgentRunService {
       .map(conversation => this.readRecord(conversation))
       .filter((run): run is AgentRunRecord => run !== null)
       .sort((left, right) => right.queuedAt - left.queuedAt);
+  }
+
+  async approveAndApply(request: ApprovalRequest): Promise<VaultChangeApplyResult> {
+    this.assertHumanApproval(request);
+    if (this.approvals.has(request.runId)) {
+      throw new Error(`Agent run approval is already active: ${request.runId}`);
+    }
+    this.approvals.add(request.runId);
+    try {
+      const conversation = await this.dependencies.conversations.getConversation(request.runId);
+      if (!conversation) {
+        throw new Error(`Conversation not found: ${request.runId}`);
+      }
+      const currentValue = conversation.metadata?.agentRun;
+      if (!isAgentRunMetadata(currentValue)) {
+        throw new Error(`Agent run not found: ${request.runId}`);
+      }
+      const current = normalizeAgentRunMetadata(currentValue);
+      if (current.status !== 'awaiting_approval') {
+        throw new Error(`Agent run ${request.runId} is not awaiting approval`);
+      }
+
+      const planMessage = this.requirePlanMessage(conversation);
+      const plan = parseVaultChangePlan(planMessage.content, {
+        runId: request.runId,
+        workflowId: current.workflowId,
+        promptHash: current.promptHash,
+        workflowHash: current.workflowHash,
+        workspaceId: current.workspaceId
+      });
+      const recomputedHash = hashVaultChangePlan(plan);
+      const persistedEventHash = this.planMessageHash(planMessage.metadata);
+      if (
+        current.planHash !== recomputedHash
+        || persistedEventHash !== recomputedHash
+        || request.planHash !== recomputedHash
+      ) {
+        throw new Error('Requested plan hash does not match the persisted immutable plan hash');
+      }
+
+      const result = await this.dependencies.applier.apply(plan, request, async () => {
+        await this.appendResultMessage(
+          request.runId,
+          JSON.stringify({
+            planHash: request.planHash,
+            operationIds: [...request.operationIds],
+            approval: {
+              kind: request.approval.kind,
+              source: request.approval.source,
+              confirmedAt: request.approval.confirmedAt
+            }
+          }),
+          'approval'
+        );
+        const applying = transitionAgentRun(current, 'applying', {});
+        const applied = await this.persistTransition(
+          request.runId,
+          ['awaiting_approval'],
+          applying
+        );
+        if (!applied) {
+          throw new Error(`Agent run applying transition lost: ${request.runId}`);
+        }
+      });
+
+      for (const operation of result.operations) {
+        await this.appendResultMessage(
+          request.runId,
+          JSON.stringify(operation),
+          'operation_result',
+          { operationId: operation.operationId }
+        );
+      }
+
+      const applying = await this.requireRun(request.runId);
+      if (applying.status !== 'applying') {
+        throw new Error(`Agent run ${request.runId} left applying before completion`);
+      }
+      const finalStatus = result.operations.every(operation => operation.status === 'succeeded')
+        ? 'completed'
+        : 'completed_with_issues';
+      const completed = transitionAgentRun(applying, finalStatus, { finishedAt: this.now() });
+      const completedApplied = await this.persistTransition(
+        request.runId,
+        ['applying'],
+        completed
+      );
+      if (!completedApplied) {
+        throw new Error(`Agent run completion transition lost: ${request.runId}`);
+      }
+      return { ...result, status: finalStatus };
+    } finally {
+      this.approvals.delete(request.runId);
+    }
   }
 
   async cancel(runId: string): Promise<AgentRunRecord> {
@@ -479,6 +580,36 @@ export class AgentRunService {
       }
     });
     this.assertSuccessfulStoreResult(result, 'append agent run message');
+  }
+
+  private assertHumanApproval(request: ApprovalRequest): void {
+    if (!request || typeof request !== 'object'
+      || !request.approval
+      || request.approval.kind !== 'human'
+      || (request.approval.source !== 'nexus-ui' && request.approval.source !== 'thinkbox')
+      || !Number.isFinite(request.approval.confirmedAt)) {
+      throw new Error('explicit human approval context is required');
+    }
+  }
+
+  private requirePlanMessage(conversation: ConversationData): ConversationData['messages'][number] {
+    const plans = conversation.messages.filter(message => {
+      const event = isRecord(message.metadata?.agentRunEvent)
+        ? message.metadata?.agentRunEvent
+        : undefined;
+      return message.role === 'assistant' && event?.kind === 'plan';
+    });
+    if (plans.length !== 1) {
+      throw new Error(`Agent run ${conversation.id} must contain exactly one immutable plan message`);
+    }
+    return plans[0];
+  }
+
+  private planMessageHash(metadata: Record<string, unknown> | undefined): string | undefined {
+    const event = metadata && isRecord(metadata.agentRunEvent)
+      ? metadata.agentRunEvent
+      : undefined;
+    return typeof event?.planHash === 'string' ? event.planHash : undefined;
   }
 
   private async persistTransition(
