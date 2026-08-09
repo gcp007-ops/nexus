@@ -331,4 +331,14 @@ describe('SupervisedWorkflowService', () => {
     expect(dependencies.openRun).toHaveBeenCalledWith('run-1');
     expect(dependencies.openWorkflow).toHaveBeenCalledWith('ws-1', 'wf-supervised');
   });
+
+  it('fails closed before navigating to an incompatible workflow', async () => {
+    const dependencies = makeDependencies();
+    const service = new SupervisedWorkflowService(dependencies);
+
+    await expect(service.openWorkflow('ws-1', 'wf-chat')).rejects.toThrow(
+      'Workflow is not a compatible supervised Claude workflow: wf-chat'
+    );
+    expect(dependencies.openWorkflow).not.toHaveBeenCalled();
+  });
 });

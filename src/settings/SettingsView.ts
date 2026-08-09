@@ -122,6 +122,22 @@ export class SettingsView extends PluginSettingTab {
         this.display();
     }
 
+    /** Navigate settings to the editor for one exact persisted workflow. */
+    async openWorkflow(workspaceId: string, workflowId: string): Promise<void> {
+        if (!this.tabs) {
+            this.display();
+        }
+        if (!this.tabs) {
+            throw new Error('Settings tabs are not available');
+        }
+
+        this.tabs.activateTab('workspaces');
+        if (!this.workspacesTab) {
+            throw new Error('Workspaces settings are not available');
+        }
+        await this.workspacesTab.openWorkflow(workspaceId, workflowId);
+    }
+
     /**
      * Cleanup resources
      */

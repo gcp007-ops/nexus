@@ -159,6 +159,11 @@ export class PluginLifecycleManager {
         });
     }
 
+    /** Navigate the registered settings surface to one exact workflow editor. */
+    async openWorkflowSettings(workspaceId: string, workflowId: string): Promise<void> {
+        await this.settingsTabManager.openWorkflow(workspaceId, workflowId);
+    }
+
     /**
      * Initialize plugin - called from onload()
      */

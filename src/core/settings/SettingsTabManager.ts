@@ -96,6 +96,14 @@ export class SettingsTabManager {
         return this.settingsTab;
     }
 
+    /** Open the settings editor for one exact workflow target. */
+    async openWorkflow(workspaceId: string, workflowId: string): Promise<void> {
+        if (!this.settingsTab) {
+            throw new Error('Settings tab is not initialized');
+        }
+        await this.settingsTab.openWorkflow(workspaceId, workflowId);
+    }
+
     /**
      * Check if settings tab is initialized
      */

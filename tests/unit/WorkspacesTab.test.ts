@@ -3,6 +3,7 @@ import { WorkspacesTab } from '../../src/settings/tabs/WorkspacesTab';
 import { SettingsRouter } from '../../src/settings/SettingsRouter';
 import { TaskService } from '../../src/agents/taskManager/services/TaskService';
 import { ProjectWorkspace } from '../../src/database/workspace-types';
+import { WorkflowEditorRenderer } from '../../src/components/workspace/WorkflowEditorRenderer';
 
 /**
  * Test-only interface exposing private WorkspacesTab members needed for testing.
@@ -22,11 +23,13 @@ interface TestableWorkspacesTab {
   };
   render: jest.Mock;
   workspaces: ProjectWorkspace[];
+  currentWorkflowIndex: number;
   createNewWorkspace(): void;
   deleteCurrentWorkspace(): Promise<void>;
   confirmDeleteWorkspace(workspaceName?: string): Promise<boolean>;
   openProjectsPage(): Promise<void>;
   openProjectDetailAndRender(project: Record<string, unknown>): Promise<void>;
+  openWorkflow(workspaceId: string, workflowId: string): Promise<void>;
 }
 
 function createMockTaskService(): jest.Mocked<TaskService> {
@@ -249,5 +252,56 @@ describe('WorkspacesTab task management', () => {
 
     const currentTask = tab.projectsManager.getCurrentTask();
     expect(currentTask.title).toBe('Draft timeline');
+  });
+
+  it('opens the exact workflow editor selected by workspace and workflow id', async () => {
+    const container = createMockElement('div');
+    const router = new SettingsRouter();
+    const workspaces: ProjectWorkspace[] = [{
+      id: 'ws-other',
+      name: 'Other workspace',
+      rootFolder: '/',
+      created: 1,
+      lastAccessed: 1,
+      isActive: true,
+      sessions: {},
+      context: {
+        workflows: [{ id: 'wf-other', name: 'Other workflow', when: 'Later', steps: 'Wait.' }]
+      }
+    }, {
+      id: 'ws-target',
+      name: 'Target workspace',
+      rootFolder: '/',
+      created: 1,
+      lastAccessed: 1,
+      isActive: true,
+      sessions: {},
+      context: {
+        workflows: [
+          { id: 'wf-first', name: 'First workflow', when: 'First', steps: 'First.' },
+          { id: 'wf-target', name: 'Target workflow', when: 'Now', steps: 'Inspect.' }
+        ]
+      }
+    }];
+    const renderSpy = jest.spyOn(WorkflowEditorRenderer.prototype, 'render');
+    const app = new App();
+    Object.assign(app, { loadLocalStorage: jest.fn().mockReturnValue(null) });
+    const tab = new WorkspacesTab(container, router, {
+      app,
+      component: new Component(),
+      prefetchedWorkspaces: workspaces
+    }) as unknown as TestableWorkspacesTab;
+
+    await tab.openWorkflow('ws-target', 'wf-target');
+
+    expect(tab.currentWorkspace?.id).toBe('ws-target');
+    expect(tab.currentWorkflowIndex).toBe(1);
+    expect(tab.currentView).toBe('workflow');
+    expect(renderSpy).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'wf-target', name: 'Target workflow' }),
+      false,
+      { showBackButton: false }
+    );
   });
 });

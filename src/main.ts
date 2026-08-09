@@ -39,6 +39,14 @@ export default class NexusPlugin extends Plugin {
         return this.serviceManager.getServiceIfReady<T>(name);
     }
 
+    /** Open the production settings editor for one supervised workflow. */
+    public async openWorkflowSettings(workspaceId: string, workflowId: string): Promise<void> {
+        if (!this.lifecycleManager) {
+            throw new Error('Plugin lifecycle is not initialized');
+        }
+        await this.lifecycleManager.openWorkflowSettings(workspaceId, workflowId);
+    }
+
     // Service registry - for backward compatibility
     public get services(): PluginServices {
         const services: PluginServices = {};

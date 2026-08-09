@@ -478,6 +478,29 @@ export class WorkspacesTab {
         }
     }
 
+    /** Open the editor for one exact persisted workflow target. */
+    async openWorkflow(workspaceId: string, workflowId: string): Promise<void> {
+        await this.loadWorkspaces();
+
+        const workspace = this.workspaces.find(item => item.id === workspaceId);
+        if (!workspace) {
+            throw new Error(`Workspace not found: ${workspaceId}`);
+        }
+
+        const workflowIndex = (workspace.context?.workflows ?? [])
+            .findIndex(workflow => workflow.id === workflowId);
+        if (workflowIndex < 0) {
+            throw new Error(`Workflow not found: ${workflowId}`);
+        }
+
+        this.currentWorkspace = { ...workspace };
+        this.isDraftWorkspace = false;
+        this.currentWorkflowIndex = workflowIndex;
+        this.currentView = 'workflow';
+        this.isLoading = false;
+        this.renderWorkflowEditor();
+    }
+
     // --- Navigation ---
 
     private showWorkspaceList(): void {

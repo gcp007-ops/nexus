@@ -233,6 +233,7 @@ export class SupervisedWorkflowService {
     if (!workspace || !workflow) {
       throw new Error(`Workflow not found: ${workflowId}`);
     }
+    this.assertCompatible(workflow);
     await this.dependencies.openWorkflow(workspaceId, workflowId);
   }
 

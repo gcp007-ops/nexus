@@ -589,13 +589,19 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
                     const { openAgentRunsView } = await import('../../ui/workflows/AgentRunsView');
                     await openAgentRunsView(context.app, runId);
                 },
-                openWorkflow: () => {
+                openWorkflow: async (workspaceId, workflowId) => {
                     const app = context.app as App & {
                         setting: { open(): void; openTabById(id: string): void };
                     };
+                    const plugin = context.plugin as typeof context.plugin & {
+                        openWorkflowSettings?: (targetWorkspaceId: string, targetWorkflowId: string) => Promise<void>;
+                    };
+                    if (typeof plugin.openWorkflowSettings !== 'function') {
+                        throw new Error('Workflow settings navigation is not available');
+                    }
                     app.setting.open();
                     app.setting.openTabById(context.manifest.id);
-                    return Promise.resolve();
+                    await plugin.openWorkflowSettings(workspaceId, workflowId);
                 }
             });
         })
