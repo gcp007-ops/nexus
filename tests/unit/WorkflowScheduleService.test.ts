@@ -236,4 +236,61 @@ describe('BackgroundProcessor workflow startup', () => {
     expect(workflowScheduleService.start).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(['reconcile', 'schedule']);
   });
+
+  it('finishes startup and queues one run after service readiness when the backend never settles', async () => {
+    const never = new Promise<never>(() => undefined);
+    const backendStartReadiness: boolean[] = [];
+    let servicesReady = false;
+    let backgroundStartupCompleted = false;
+    const claudeCliWorkflowBackend = {
+      start: jest.fn(() => {
+        backendStartReadiness.push(servicesReady);
+        return never;
+      })
+    };
+    const { service, plugin, settings, workflowRunService } = createHarness(
+      () => claudeCliWorkflowBackend.start()
+    );
+    settings.settings.workflowScheduler.lastCheckAt = new Date(2026, 7, 9, 0, 0, 0, 0).getTime();
+    const agentRunService = {
+      reconcileInterrupted: jest.fn(async () => undefined)
+    };
+    const workflowScheduleService = {
+      start: jest.fn(async () => {
+        await service.start();
+        backgroundStartupCompleted = true;
+      })
+    };
+    const getService = jest.fn(async (name: string) => {
+      if (name === 'agentRunService') {
+        return agentRunService;
+      }
+      if (name === 'workflowScheduleService') {
+        servicesReady = true;
+        return workflowScheduleService;
+      }
+      return null;
+    });
+    const processor = new BackgroundProcessor({
+      plugin: {} as Plugin,
+      settings: {} as never,
+      serviceManager: {} as never,
+      getService: getService as never,
+      waitForService: jest.fn() as never,
+      isInitialized: () => true
+    });
+
+    processor.startBackgroundStartupProcessing();
+    expect(claudeCliWorkflowBackend.start).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(2_000);
+    await flushMicrotasks();
+
+    expect(backgroundStartupCompleted).toBe(true);
+    expect(processor.hasRunBackgroundStartupProcessing()).toBe(true);
+    expect(plugin.registerInterval).toHaveBeenCalledTimes(1);
+    expect(workflowRunService.start).toHaveBeenCalledTimes(1);
+    expect(claudeCliWorkflowBackend.start).toHaveBeenCalledTimes(1);
+    expect(backendStartReadiness).toEqual([true]);
+  });
 });
