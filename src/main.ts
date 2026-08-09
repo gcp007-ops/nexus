@@ -74,6 +74,7 @@ export default class NexusPlugin extends Plugin {
             // Create service manager and settings
             this.settings = new Settings(this);
             this.serviceManager = new ServiceManager(this.app, this);
+            await this.registerAgentRunsUI();
 
             // MCP server and connector only work on desktop (requires Node.js)
             // Use dynamic imports to avoid bundling Node.js dependencies on mobile
@@ -149,6 +150,22 @@ export default class NexusPlugin extends Plugin {
         this.register(() => {
             cancelled = true;
             window.clearTimeout(timeoutId);
+        });
+    }
+
+    private async registerAgentRunsUI(): Promise<void> {
+        const {
+            AGENT_RUNS_VIEW_TYPE,
+            AgentRunsView,
+            openAgentRunsView
+        } = await import('./ui/workflows/AgentRunsView');
+        this.registerView(AGENT_RUNS_VIEW_TYPE, leaf => new AgentRunsView(leaf, this));
+        this.addCommand({
+            id: 'open-agent-runs',
+            name: 'Open agent runs',
+            callback: () => {
+                void openAgentRunsView(this.app);
+            }
         });
     }
 

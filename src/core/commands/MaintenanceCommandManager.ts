@@ -3,7 +3,7 @@
  * Handles maintenance and troubleshooting commands
  */
 
-import { Modal, Notice, Platform, type App, type Plugin } from 'obsidian';
+import { Modal, Notice, type App, type Plugin } from 'obsidian';
 import { CommandContext } from './CommandDefinitions';
 import type NexusPlugin from '../../main';
 type SyncableStorageAdapter = {
@@ -93,7 +93,6 @@ export class MaintenanceCommandManager {
     this.registerDiagnosticsCommand();
     this.registerRefreshSyncedDataCommand();
     this.registerRebuildCacheCommand();
-    this.registerClaudeHeadlessExperimentCommand();
   }
 
   /**
@@ -189,27 +188,6 @@ export class MaintenanceCommandManager {
       console.error('[MaintenanceCommandManager] Failed to rebuild Nexus cache:', error);
       new Notice(`Failed to rebuild Nexus cache: ${message}`);
     }
-  }
-
-  /**
-   * Register an experimental command that launches the user's local Claude CLI
-   * in print mode against this vault's Nexus MCP connector.
-   */
-  private registerClaudeHeadlessExperimentCommand(): void {
-    (this.context.plugin as unknown as MaintenancePlugin).addCommand({
-      id: 'experimental-run-claude-headless-session',
-      name: 'Launch a headless session',
-      callback: async () => {
-        if (!Platform.isDesktop) {
-          new Notice('This experiment is only available on desktop.');
-          return;
-        }
-
-        const { ClaudeHeadlessModal } = await import('../../ui/experimental/ClaudeHeadlessModal');
-        const plugin = this.context.plugin as unknown as MaintenancePlugin & NexusPlugin;
-        new ClaudeHeadlessModal(plugin.app, plugin).open();
-      }
-    });
   }
 
   /**

@@ -559,6 +559,49 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
     },
 
     {
+        name: 'supervisedWorkflowService',
+        dependencies: [
+            'workspaceService',
+            'workflowRunService',
+            'agentRunService',
+            'conversationService',
+            'workflowAuthorityService'
+        ],
+        create: defineService(async (context) => {
+            const { SupervisedWorkflowService } = await import('../../services/workflows/SupervisedWorkflowService');
+            const { ClaudeHeadlessService } = await import('../../services/external/ClaudeHeadlessService');
+            const workspaceService = await context.serviceManager.getService<WorkspaceService>('workspaceService');
+            const workflowRunService = await context.serviceManager.getService<WorkflowRunService>('workflowRunService');
+            const agentRunService = await context.serviceManager.getService<AgentRunService>('agentRunService');
+            const conversationService = await context.serviceManager.getService<ConversationService>('conversationService');
+            const authorityService = await context.serviceManager.getService<WorkflowAuthorityService>('workflowAuthorityService');
+            const headlessService = new ClaudeHeadlessService(context.app, context.plugin);
+
+            return new SupervisedWorkflowService({
+                workspaceService,
+                workflowRunService,
+                agentRunService,
+                conversationService,
+                authorityService,
+                getBackendPreflight: () => headlessService.getPreflight(),
+                isDesktop: () => Platform.isDesktop,
+                openRun: async (runId) => {
+                    const { openAgentRunsView } = await import('../../ui/workflows/AgentRunsView');
+                    await openAgentRunsView(context.app, runId);
+                },
+                openWorkflow: () => {
+                    const app = context.app as App & {
+                        setting: { open(): void; openTabById(id: string): void };
+                    };
+                    app.setting.open();
+                    app.setting.openTabById(context.manifest.id);
+                    return Promise.resolve();
+                }
+            });
+        })
+    },
+
+    {
         name: 'workflowScheduleService',
         dependencies: ['workspaceService', 'workflowRunService', 'workflowAuthorityService'],
         create: defineService(async (context) => {

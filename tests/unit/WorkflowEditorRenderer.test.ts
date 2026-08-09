@@ -287,6 +287,22 @@ describe('WorkflowEditorRenderer (PR4 BoxedSection port)', () => {
     });
   });
 
+  it('labels the compatible CLI action as the supervised production run', () => {
+    const labels: string[] = [];
+    const setButtonText = jest.spyOn(ButtonComponent.prototype, 'setButtonText')
+      .mockImplementation(function (this: ButtonComponent, text: string): ButtonComponent {
+        labels.push(text);
+        return this;
+      });
+    try {
+      renderEditor(makeWorkflow({ execution: claudeExecution() }));
+      expect(labels).toContain('Run supervised');
+      expect(labels).not.toContain('Run now');
+    } finally {
+      setButtonText.mockRestore();
+    }
+  });
+
   describe('Schedule section — Enabled toggle in the header toolbar', () => {
     it('renders the Enabled toggle in the toolbar (not the body)', () => {
       renderEditor(makeWorkflow());

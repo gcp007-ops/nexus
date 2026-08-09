@@ -199,10 +199,14 @@ export class WorkflowEditorRenderer {
 
     const actions = container.createDiv('nexus-form-actions');
 
+    const isSupervised = this.workflow.execution?.backend === 'claude-cli';
     const runNowButton = new ButtonComponent(actions)
-      .setButtonText('Run now')
+      .setButtonText(isSupervised ? 'Run supervised' : 'Run now')
       .setIcon('play');
-    runNowButton.buttonEl.setAttribute('aria-label', 'Run workflow now');
+    runNowButton.buttonEl.setAttribute(
+      'aria-label',
+      isSupervised ? 'Run supervised workflow' : 'Run workflow now'
+    );
     runNowButton.onClick(() => {
       const nextWorkflow = this.validateAndBuildWorkflow();
       if (!nextWorkflow) {
