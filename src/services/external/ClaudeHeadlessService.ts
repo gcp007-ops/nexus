@@ -4,6 +4,8 @@ import { resolveDesktopBinaryPath } from '../../utils/binaryDiscovery';
 import { spawnDesktopProcess, type DesktopChildProcess } from '../../utils/desktopProcess';
 
 const MAX_SAFE_WINDOWS_ARGV_CHARS = 24_000;
+const DEFAULT_MAX_OUTPUT_CHARS = 1024 * 1024;
+const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 
 type ClaudeHeadlessDesktopModuleMap = {
     'fs/promises': typeof import('fs/promises');
@@ -25,6 +27,7 @@ export interface ClaudeHeadlessRunOptions {
     prompt: string;
     model?: string;
     maxTurns?: number;
+    /** @deprecated Retained for legacy callers. Permission bypass is ignored. */
     bypassPermissions?: boolean;
 }
 
@@ -38,18 +41,69 @@ export interface ClaudeHeadlessRunResult {
     preflight: ClaudeHeadlessPreflightResult;
 }
 
-interface ProcessResult {
+export interface ClaudeHeadlessWorkflowRuntime {
+    claudePath: string | null;
+    nodePath: string | null;
+    vaultPath: string | null;
+}
+
+export interface ClaudeHeadlessProcessOptions {
+    command: string;
+    args: string[];
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    stdinText?: string;
+    maxOutputChars?: number;
+    terminationGraceMs?: number;
+}
+
+export interface ClaudeHeadlessProcessResult {
     stdout: string;
     stderr: string;
+    stdoutTruncated: boolean;
+    stderrTruncated: boolean;
     exitCode: number | null;
     errorCode?: string;
+}
+
+export interface ClaudeHeadlessProcessHandle {
+    result: Promise<ClaudeHeadlessProcessResult>;
+    terminateTree(): Promise<void>;
+}
+
+export interface ClaudeHeadlessServiceDependencies {
+    signalProcessTree?: (
+        child: DesktopChildProcess,
+        signal: NodeJS.Signals
+    ) => Promise<void>;
 }
 
 export class ClaudeHeadlessService {
     constructor(
         private app: App,
-        private plugin: Plugin
+        private plugin: Plugin,
+        private dependencies: ClaudeHeadlessServiceDependencies = {}
     ) {}
+
+    getWorkflowRuntime(): ClaudeHeadlessWorkflowRuntime {
+        return {
+            claudePath: resolveDesktopBinaryPath('claude'),
+            nodePath: resolveDesktopBinaryPath('node'),
+            vaultPath: this.getVaultBasePath()
+        };
+    }
+
+    startAuthStatusProcess(
+        claudePath: string,
+        cwd?: string
+    ): ClaudeHeadlessProcessHandle {
+        return this.startProcess({
+            command: claudePath,
+            args: ['auth', 'status', '--text'],
+            cwd,
+            env: this.buildClaudeEnv()
+        });
+    }
 
     async getPreflight(): Promise<ClaudeHeadlessPreflightResult> {
         const claudePath = resolveDesktopBinaryPath('claude');
@@ -68,7 +122,10 @@ export class ClaudeHeadlessService {
             };
         }
 
-        const authResult = await this.runProcess(claudePath, ['auth', 'status', '--text'], vaultPath ?? undefined, this.buildClaudeEnv());
+        const authResult = await this.startAuthStatusProcess(
+            claudePath,
+            vaultPath ?? undefined
+        ).result;
         const authStatusText = [authResult.stdout.trim(), authResult.stderr.trim()]
             .filter(Boolean)
             .join('\n')
@@ -141,10 +198,6 @@ export class ClaudeHeadlessService {
                 String(Math.max(1, options.maxTurns ?? 8))
             ];
 
-            if (options.bypassPermissions !== false) {
-                args.push('--dangerously-skip-permissions');
-            }
-
             const model = options.model?.trim();
             if (model) {
                 args.push('--model', model);
@@ -206,7 +259,7 @@ export class ClaudeHeadlessService {
         };
     }
 
-    private buildClaudeEnv(): NodeJS.ProcessEnv {
+    buildClaudeEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
         const env = { ...process.env };
 
         // Favor the user's local Claude subscription login instead of any API key
@@ -214,7 +267,224 @@ export class ClaudeHeadlessService {
         delete env.ANTHROPIC_API_KEY;
         delete env.ANTHROPIC_AUTH_TOKEN;
 
+        // A retained Electron process can outlive a prior workflow child. Never
+        // let one run inherit another run's ephemeral capability by accident.
+        delete env.NEXUS_AGENT_RUN_TOKEN;
+        delete env.NEXUS_MCP_SOCKET_PATH;
+
+        Object.assign(env, extra);
+
+        // Workflow callers may add the explicit Nexus capability variables, but
+        // the Claude CLI must always use its local subscription authentication.
+        delete env.ANTHROPIC_API_KEY;
+        delete env.ANTHROPIC_AUTH_TOKEN;
+
         return env;
+    }
+
+    startProcess(options: ClaudeHeadlessProcessOptions): ClaudeHeadlessProcessHandle {
+        const childProcess = this.loadDesktopModule('child_process');
+        const maxOutputChars = Number.isFinite(options.maxOutputChars) && (options.maxOutputChars ?? 0) > 0
+            ? Math.floor(options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS)
+            : DEFAULT_MAX_OUTPUT_CHARS;
+        const terminationGraceMs = Number.isFinite(options.terminationGraceMs) && (options.terminationGraceMs ?? -1) >= 0
+            ? Math.floor(options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS)
+            : DEFAULT_TERMINATION_GRACE_MS;
+        const stdio: ['pipe', 'pipe', 'pipe'] | ['ignore', 'pipe', 'pipe'] = options.stdinText !== undefined
+            ? ['pipe', 'pipe', 'pipe']
+            : ['ignore', 'pipe', 'pipe'];
+
+        let child: DesktopChildProcess;
+        try {
+            child = spawnDesktopProcess(childProcess, options.command, options.args, {
+                cwd: options.cwd,
+                env: options.env,
+                stdio,
+                detached: !Platform.isWin
+            });
+        } catch (error) {
+            const processError = error as NodeJS.ErrnoException;
+            return {
+                result: Promise.resolve({
+                    stdout: '',
+                    stderr: processError.message,
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                    exitCode: null,
+                    errorCode: processError.code
+                }),
+                terminateTree: () => Promise.resolve()
+            };
+        }
+
+        let stdout = '';
+        let stderr = '';
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
+        let chosenResult: ClaudeHeadlessProcessResult | null = null;
+        let resultSettled = false;
+        let processClosed = false;
+        let resolveResult!: (value: ClaudeHeadlessProcessResult) => void;
+        let resolveClosed!: () => void;
+        let stdinErrorHandler: ((error: NodeJS.ErrnoException) => void) | null = null;
+        let terminationPromise: Promise<void> | null = null;
+
+        const result = new Promise<ClaudeHeadlessProcessResult>((resolve) => {
+            resolveResult = resolve;
+        });
+        const closed = new Promise<void>((resolve) => {
+            resolveClosed = resolve;
+        });
+
+        const appendBounded = (current: string, chunk: Buffer | string): { value: string; truncated: boolean } => {
+            const text = chunk.toString();
+            const remaining = Math.max(0, maxOutputChars - current.length);
+            if (text.length <= remaining) {
+                return { value: current + text, truncated: false };
+            }
+            return {
+                value: current + text.slice(0, remaining),
+                truncated: true
+            };
+        };
+
+        const cleanupListeners = () => {
+            child.off('error', handleProcessError);
+            child.off('close', handleProcessClose);
+            child.stdout?.off('data', handleStdout);
+            child.stderr?.off('data', handleStderr);
+            if (stdinErrorHandler) {
+                child.stdin?.off('error', stdinErrorHandler);
+                stdinErrorHandler = null;
+            }
+        };
+
+        const finalize = () => {
+            if (resultSettled || !chosenResult) {
+                return;
+            }
+            resultSettled = true;
+            cleanupListeners();
+            resolveResult(chosenResult);
+        };
+
+        const chooseResult = (value: ClaudeHeadlessProcessResult) => {
+            chosenResult ??= value;
+        };
+
+        const markClosed = () => {
+            if (processClosed) {
+                return;
+            }
+            processClosed = true;
+            resolveClosed();
+        };
+
+        const terminateTree = (): Promise<void> => {
+            if (terminationPromise) {
+                return terminationPromise;
+            }
+            if (processClosed) {
+                return Promise.resolve();
+            }
+
+            terminationPromise = (async () => {
+                await this.signalProcessTree(child, 'SIGTERM');
+                const closedDuringGrace = await this.waitForClose(closed, terminationGraceMs);
+                if (!closedDuringGrace) {
+                    await this.signalProcessTree(child, 'SIGKILL');
+                    await closed;
+                }
+            })();
+            return terminationPromise;
+        };
+
+        const terminateAfterLocalFailure = () => {
+            if (child.pid === undefined || child.pid === null) {
+                markClosed();
+                finalize();
+                return;
+            }
+            void terminateTree().catch(() => {
+                // Keep the result pending rather than claim termination while the process may live.
+            });
+        };
+
+        function handleStdout(chunk: Buffer | string): void {
+            const appended = appendBounded(stdout, chunk);
+            stdout = appended.value;
+            stdoutTruncated ||= appended.truncated;
+        }
+
+        function handleStderr(chunk: Buffer | string): void {
+            const appended = appendBounded(stderr, chunk);
+            stderr = appended.value;
+            stderrTruncated ||= appended.truncated;
+        }
+
+        function handleProcessError(error: NodeJS.ErrnoException): void {
+            chooseResult({
+                stdout,
+                stderr: stderr ? `${stderr}\n${error.message}` : error.message,
+                stdoutTruncated,
+                stderrTruncated,
+                exitCode: null,
+                errorCode: error.code
+            });
+            terminateAfterLocalFailure();
+        }
+
+        function handleProcessClose(exitCode: number | null): void {
+            markClosed();
+            chooseResult({
+                stdout,
+                stderr,
+                stdoutTruncated,
+                stderrTruncated,
+                exitCode
+            });
+            finalize();
+        }
+
+        child.on('error', handleProcessError);
+        child.on('close', handleProcessClose);
+
+        if (!child.stdout || !child.stderr || (options.stdinText !== undefined && !child.stdin)) {
+            chooseResult({
+                stdout,
+                stderr: 'Failed to capture Claude Code process output.',
+                stdoutTruncated,
+                stderrTruncated,
+                exitCode: null
+            });
+            terminateAfterLocalFailure();
+        } else {
+            child.stdout.on('data', handleStdout);
+            child.stderr.on('data', handleStderr);
+
+            if (options.stdinText !== undefined && child.stdin) {
+                stdinErrorHandler = (error: NodeJS.ErrnoException) => {
+                    chooseResult({
+                        stdout,
+                        stderr: stderr ? `${stderr}\n${error.message}` : error.message,
+                        stdoutTruncated,
+                        stderrTruncated,
+                        exitCode: null,
+                        errorCode: error.code
+                    });
+                    terminateAfterLocalFailure();
+                };
+                child.stdin.once('error', stdinErrorHandler);
+                child.stdin.end(options.stdinText, 'utf8', () => {
+                    if (stdinErrorHandler) {
+                        child.stdin?.off('error', stdinErrorHandler);
+                        stdinErrorHandler = null;
+                    }
+                });
+            }
+        }
+
+        return { result, terminateTree };
     }
 
     private async runProcess(
@@ -223,80 +493,71 @@ export class ClaudeHeadlessService {
         cwd?: string,
         env?: NodeJS.ProcessEnv,
         stdinText?: string
-    ): Promise<ProcessResult> {
-        const childProcess = this.loadDesktopModule('child_process');
+    ): Promise<ClaudeHeadlessProcessResult> {
+        return await this.startProcess({ command, args, cwd, env, stdinText }).result;
+    }
 
-        return await new Promise<ProcessResult>((resolve) => {
-            const stdio: ['pipe', 'pipe', 'pipe'] | ['ignore', 'pipe', 'pipe'] = stdinText !== undefined
-                ? ['pipe', 'pipe', 'pipe']
-                : ['ignore', 'pipe', 'pipe'];
-            const child: DesktopChildProcess = spawnDesktopProcess(childProcess, command, args, {
-                cwd,
-                env,
-                stdio
-            });
-
-            let stdout = '';
-            let stderr = '';
-
-            if (!child.stdout || !child.stderr) {
-                resolve({
-                    stdout,
-                    stderr: 'Failed to capture Claude Code process output.',
-                    exitCode: null
-                });
-                return;
-            }
-
-            if (stdinText !== undefined) {
-                if (!child.stdin) {
-                    resolve({
-                        stdout,
-                        stderr: 'Failed to open Claude Code stdin for prompt input.',
-                        exitCode: null
-                    });
+    private async waitForClose(closed: Promise<void>, graceMs: number): Promise<boolean> {
+        return await new Promise<boolean>((resolve) => {
+            let settled = false;
+            const finish = (didClose: boolean) => {
+                if (settled) {
                     return;
                 }
+                settled = true;
+                window.clearTimeout(timer);
+                resolve(didClose);
+            };
+            const timer = window.setTimeout(() => finish(false), graceMs);
+            void closed.then(() => finish(true));
+        });
+    }
 
-                const handleStdinError = (error: NodeJS.ErrnoException) => {
-                    resolve({
-                        stdout,
-                        stderr: stderr ? `${stderr}\n${error.message}` : error.message,
-                        exitCode: null,
-                        errorCode: error.code
-                    });
-                };
+    private async signalProcessTree(
+        child: DesktopChildProcess,
+        signal: NodeJS.Signals
+    ): Promise<void> {
+        if (this.dependencies.signalProcessTree) {
+            await this.dependencies.signalProcessTree(child, signal);
+            return;
+        }
 
-                child.stdin.once('error', handleStdinError);
-                child.stdin.end(stdinText, 'utf8', () => {
-                    child.stdin?.off('error', handleStdinError);
-                });
+        const pid = child.pid;
+        if (pid === undefined || pid === null) {
+            child.kill(signal);
+            return;
+        }
+
+        if (!Platform.isWin) {
+            try {
+                process.kill(-pid, signal);
+            } catch {
+                child.kill(signal);
             }
+            return;
+        }
 
-            child.stdout.on('data', (chunk: Buffer | string) => {
-                stdout += chunk.toString();
-            });
+        const childProcess = this.loadDesktopModule('child_process');
+        const args = ['/PID', String(pid), '/T'];
+        if (signal === 'SIGKILL') {
+            args.push('/F');
+        }
 
-            child.stderr.on('data', (chunk: Buffer | string) => {
-                stderr += chunk.toString();
+        await new Promise<void>((resolve) => {
+            const taskkill = childProcess.spawn('taskkill', args, {
+                stdio: 'ignore',
+                windowsHide: true
             });
-
-            child.on('error', (error: Error) => {
-                resolve({
-                    stdout,
-                    stderr: stderr ? `${stderr}\n${error.message}` : error.message,
-                    exitCode: null,
-                    errorCode: (error as NodeJS.ErrnoException).code
-                });
-            });
-
-            child.on('close', (exitCode: number | null) => {
-                resolve({
-                    stdout,
-                    stderr,
-                    exitCode
-                });
-            });
+            let settled = false;
+            const finish = () => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                resolve();
+            };
+            taskkill.once('error', finish);
+            taskkill.once('close', finish);
         });
     }
 
@@ -366,7 +627,7 @@ export class ClaudeHeadlessService {
         }
     }
 
-    private mapTransportError(result: ProcessResult): string | null {
+    private mapTransportError(result: ClaudeHeadlessProcessResult): string | null {
         if (result.errorCode === 'E2BIG' || result.errorCode === 'ENAMETOOLONG') {
             return 'Claude headless command is too large for local CLI transport. Shorten the prompt or attached context and try again.';
         }
