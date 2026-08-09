@@ -6,6 +6,14 @@ import { spawnDesktopProcess, type DesktopChildProcess } from '../../utils/deskt
 const MAX_SAFE_WINDOWS_ARGV_CHARS = 24_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 1024 * 1024;
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
+const CLAUDE_AUTH_ENV_KEYS = new Set([
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN'
+]);
+const AGENT_CAPABILITY_ENV_KEYS = new Set([
+    'NEXUS_AGENT_RUN_TOKEN',
+    'NEXUS_MCP_SOCKET_PATH'
+]);
 
 type ClaudeHeadlessDesktopModuleMap = {
     'fs/promises': typeof import('fs/promises');
@@ -50,6 +58,7 @@ export interface ClaudeHeadlessWorkflowRuntime {
 export interface ClaudeHeadlessProcessOptions {
     command: string;
     args: string[];
+    shell?: boolean;
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     stdinText?: string;
@@ -76,6 +85,7 @@ export interface ClaudeHeadlessServiceDependencies {
         child: DesktopChildProcess,
         signal: NodeJS.Signals
     ) => Promise<void>;
+    isProcessTreeAlive?: (child: DesktopChildProcess) => Promise<boolean>;
 }
 
 export class ClaudeHeadlessService {
@@ -264,22 +274,32 @@ export class ClaudeHeadlessService {
 
         // Favor the user's local Claude subscription login instead of any API key
         // accidentally inherited from the Obsidian/Electron environment.
-        delete env.ANTHROPIC_API_KEY;
-        delete env.ANTHROPIC_AUTH_TOKEN;
+        this.deleteEnvironmentKeysCaseInsensitive(env, CLAUDE_AUTH_ENV_KEYS);
 
-        // A retained Electron process can outlive a prior workflow child. Never
-        // let one run inherit another run's ephemeral capability by accident.
-        delete env.NEXUS_AGENT_RUN_TOKEN;
-        delete env.NEXUS_MCP_SOCKET_PATH;
-
-        Object.assign(env, extra);
-
-        // Workflow callers may add the explicit Nexus capability variables, but
-        // the Claude CLI must always use its local subscription authentication.
-        delete env.ANTHROPIC_API_KEY;
-        delete env.ANTHROPIC_AUTH_TOKEN;
+        // Windows treats environment names case-insensitively, while retained
+        // Electron processes can outlive earlier workflow children. Normalize
+        // explicitly supplied capability keys and discard every inherited form.
+        this.deleteEnvironmentKeysCaseInsensitive(env, AGENT_CAPABILITY_ENV_KEYS);
+        for (const [key, value] of Object.entries(extra)) {
+            const normalizedKey = key.toUpperCase();
+            if (CLAUDE_AUTH_ENV_KEYS.has(normalizedKey)) {
+                continue;
+            }
+            env[AGENT_CAPABILITY_ENV_KEYS.has(normalizedKey) ? normalizedKey : key] = value;
+        }
 
         return env;
+    }
+
+    private deleteEnvironmentKeysCaseInsensitive(
+        env: NodeJS.ProcessEnv,
+        keys: ReadonlySet<string>
+    ): void {
+        for (const key of Object.keys(env)) {
+            if (keys.has(key.toUpperCase())) {
+                delete env[key];
+            }
+        }
     }
 
     startProcess(options: ClaudeHeadlessProcessOptions): ClaudeHeadlessProcessHandle {
@@ -297,6 +317,7 @@ export class ClaudeHeadlessService {
         let child: DesktopChildProcess;
         try {
             child = spawnDesktopProcess(childProcess, options.command, options.args, {
+                shell: options.shell,
                 cwd: options.cwd,
                 env: options.env,
                 stdio,
@@ -328,6 +349,7 @@ export class ClaudeHeadlessService {
         let resolveClosed!: () => void;
         let stdinErrorHandler: ((error: NodeJS.ErrnoException) => void) | null = null;
         let terminationPromise: Promise<void> | null = null;
+        let resultBlockedOnTermination = false;
 
         const result = new Promise<ClaudeHeadlessProcessResult>((resolve) => {
             resolveResult = resolve;
@@ -360,7 +382,7 @@ export class ClaudeHeadlessService {
         };
 
         const finalize = () => {
-            if (resultSettled || !chosenResult) {
+            if (resultSettled || !chosenResult || resultBlockedOnTermination) {
                 return;
             }
             resultSettled = true;
@@ -384,17 +406,23 @@ export class ClaudeHeadlessService {
             if (terminationPromise) {
                 return terminationPromise;
             }
-            if (processClosed) {
-                return Promise.resolve();
-            }
 
             terminationPromise = (async () => {
                 await this.signalProcessTree(child, 'SIGTERM');
-                const closedDuringGrace = await this.waitForClose(closed, terminationGraceMs);
-                if (!closedDuringGrace) {
-                    await this.signalProcessTree(child, 'SIGKILL');
-                    await closed;
+                if (Platform.isWin) {
+                    const closedDuringGrace = await this.waitForClose(closed, terminationGraceMs);
+                    if (!closedDuringGrace) {
+                        await this.signalProcessTree(child, 'SIGKILL');
+                    }
+                    return;
                 }
+
+                // A detached POSIX group can outlive its root process. Keep the
+                // full grace period, signal the original group with KILL even if
+                // the root closed, then confirm that no group member remains.
+                await this.waitForDelay(terminationGraceMs);
+                await this.signalProcessTree(child, 'SIGKILL');
+                await this.confirmProcessTreeTerminated(child, terminationGraceMs);
             })();
             return terminationPromise;
         };
@@ -405,7 +433,11 @@ export class ClaudeHeadlessService {
                 finalize();
                 return;
             }
-            void terminateTree().catch(() => {
+            resultBlockedOnTermination = true;
+            void terminateTree().then(() => {
+                resultBlockedOnTermination = false;
+                finalize();
+            }).catch(() => {
                 // Keep the result pending rather than claim termination while the process may live.
             });
         };
@@ -513,6 +545,47 @@ export class ClaudeHeadlessService {
         });
     }
 
+    private async waitForDelay(delayMs: number): Promise<void> {
+        await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, delayMs);
+        });
+    }
+
+    private async confirmProcessTreeTerminated(
+        child: DesktopChildProcess,
+        timeoutMs: number
+    ): Promise<void> {
+        const deadline = Date.now() + Math.max(1, timeoutMs);
+        while (await this.isProcessTreeAlive(child)) {
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) {
+                throw new Error('Claude process group remained alive after SIGKILL.');
+            }
+            await this.waitForDelay(Math.min(25, remainingMs));
+        }
+    }
+
+    private async isProcessTreeAlive(child: DesktopChildProcess): Promise<boolean> {
+        if (this.dependencies.isProcessTreeAlive) {
+            return await this.dependencies.isProcessTreeAlive(child);
+        }
+
+        const pid = child.pid;
+        if (pid === undefined || pid === null) {
+            throw new Error('Cannot confirm Claude process tree termination without a PID.');
+        }
+
+        try {
+            process.kill(-pid, 0);
+            return true;
+        } catch (error) {
+            if (this.isNoSuchProcessError(error)) {
+                return false;
+            }
+            throw error;
+        }
+    }
+
     private async signalProcessTree(
         child: DesktopChildProcess,
         signal: NodeJS.Signals
@@ -524,15 +597,16 @@ export class ClaudeHeadlessService {
 
         const pid = child.pid;
         if (pid === undefined || pid === null) {
-            child.kill(signal);
-            return;
+            throw new Error('Cannot signal Claude process tree without a PID.');
         }
 
         if (!Platform.isWin) {
             try {
                 process.kill(-pid, signal);
-            } catch {
-                child.kill(signal);
+            } catch (error) {
+                if (!this.isNoSuchProcessError(error)) {
+                    throw error;
+                }
             }
             return;
         }
@@ -543,22 +617,38 @@ export class ClaudeHeadlessService {
             args.push('/F');
         }
 
-        await new Promise<void>((resolve) => {
+        const taskkillError = await new Promise<Error | null>((resolve) => {
             const taskkill = childProcess.spawn('taskkill', args, {
                 stdio: 'ignore',
                 windowsHide: true
             });
             let settled = false;
-            const finish = () => {
+            const finish = (error?: Error) => {
                 if (settled) {
                     return;
                 }
                 settled = true;
-                resolve();
+                resolve(error ?? null);
             };
-            taskkill.once('error', finish);
-            taskkill.once('close', finish);
+            taskkill.once('error', (error) => {
+                finish(new Error(`taskkill failed: ${error.message}`));
+            });
+            taskkill.once('close', (exitCode) => {
+                finish(exitCode === 0
+                    ? undefined
+                    : new Error(`taskkill exited with code ${String(exitCode)}.`));
+            });
         });
+        if (taskkillError) {
+            throw taskkillError;
+        }
+    }
+
+    private isNoSuchProcessError(error: unknown): boolean {
+        return typeof error === 'object'
+            && error !== null
+            && 'code' in error
+            && (error as NodeJS.ErrnoException).code === 'ESRCH';
     }
 
     private getConnectorPath(): string | null {

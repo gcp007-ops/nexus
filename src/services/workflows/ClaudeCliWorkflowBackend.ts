@@ -103,6 +103,9 @@ export class NodeWorkflowTempArtifactFactory implements WorkflowTempArtifactFact
         cleanupPromise ??= fsPromises.rm(directory, {
           recursive: true,
           force: true
+        }).catch((error) => {
+          cleanupPromise = null;
+          throw error;
         });
         await cleanupPromise;
       }
@@ -294,9 +297,7 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     state.terminalLocked = true;
     if (state.terminationError) {
       stderr = this.appendDiagnostic(stderr, state.terminationError);
-      if (status === 'completed') {
-        status = 'failed';
-      }
+      status = 'failed';
     }
 
     if (token) {
@@ -311,16 +312,22 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     }
 
     if (artifacts) {
-      try {
-        await artifacts.cleanup();
-      } catch (error) {
+      let cleanupError: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await artifacts.cleanup();
+          cleanupError = null;
+          break;
+        } catch (error) {
+          cleanupError = error;
+        }
+      }
+      if (cleanupError) {
         stderr = this.appendDiagnostic(
           stderr,
-          `Failed to remove temporary workflow files: ${this.errorMessage(error)}`
+          `Failed to remove temporary workflow files: ${this.errorMessage(cleanupError)}`
         );
-        if (status === 'completed') {
-          status = 'failed';
-        }
+        status = 'failed';
       }
     }
 
@@ -361,13 +368,18 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     artifacts: WorkflowTempArtifacts,
     token: string
   ): ClaudeHeadlessProcessOptions {
+    const allowedMcpTools = this.buildAllowedMcpTools();
     return {
       command: runtime.claudePath,
+      shell: false,
       args: [
         '-p',
+        '--safe-mode',
         '--strict-mcp-config',
         '--mcp-config',
         artifacts.mcpConfigPath,
+        '--allowedTools',
+        ...allowedMcpTools,
         '--tools',
         '',
         '--disable-slash-commands',
@@ -389,6 +401,14 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
       stdinText: request.prompt.trim(),
       maxOutputChars: WORKFLOW_OUTPUT_LIMIT_CHARS
     };
+  }
+
+  private buildAllowedMcpTools(): [string, string] {
+    const serverKey = getPrimaryServerKey(this.app.vault.getName());
+    return [
+      `mcp__${serverKey}__toolManager_getTools`,
+      `mcp__${serverKey}__toolManager_useTools`
+    ];
   }
 
   private buildMcpConfig(
@@ -416,6 +436,9 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     if (request.model.trim().length === 0) {
       return 'Model is required for Claude workflow execution.';
     }
+    if (request.model.trim() !== 'sonnet') {
+      return 'Only the sonnet model alias is supported for Claude workflow execution.';
+    }
     if (!Number.isInteger(request.maxTurns) || request.maxTurns < 1) {
       return 'maxTurns must be a positive integer.';
     }
@@ -431,9 +454,16 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
   private validateRuntime(
     runtime: ClaudeHeadlessWorkflowRuntime
   ): runtime is ResolvedWorkflowRuntime {
-    return Platform.isDesktop && Boolean(
-      runtime.claudePath && runtime.nodePath && runtime.vaultPath
-    );
+    if (
+      !Platform.isDesktop
+      || !runtime.claudePath
+      || !runtime.nodePath
+      || !runtime.vaultPath
+    ) {
+      return false;
+    }
+    return !this.isWindowsCommandWrapper(runtime.claudePath)
+      && !this.isWindowsCommandWrapper(runtime.nodePath);
   }
 
   private validateRuntimeMessage(runtime: ClaudeHeadlessWorkflowRuntime): string {
@@ -446,7 +476,17 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     if (!runtime.nodePath) {
       return 'Node.js was not found on PATH.';
     }
+    if (runtime.claudePath && this.isWindowsCommandWrapper(runtime.claudePath)) {
+      return 'Supervised execution requires a native Claude executable on Windows; .cmd and .bat wrappers are not allowed.';
+    }
+    if (runtime.nodePath && this.isWindowsCommandWrapper(runtime.nodePath)) {
+      return 'Supervised execution requires a native Node.js executable on Windows; .cmd and .bat wrappers are not allowed.';
+    }
     return 'Vault base path is unavailable.';
+  }
+
+  private isWindowsCommandWrapper(command: string): boolean {
+    return Platform.isWin && /\.(cmd|bat)$/iu.test(command);
   }
 
   private capabilityTtlMs(timeoutMs: number): number {

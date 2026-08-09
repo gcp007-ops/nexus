@@ -31,6 +31,7 @@ class InMemoryTempArtifacts implements WorkflowTempArtifacts {
   readonly mcpConfigPath = `${this.directory}/mcp.json`;
   readonly writes = new Map<string, string>();
   cleanupCount = 0;
+  cleanupFailuresRemaining = 0;
   failWriteAt: string | null = null;
 
   async writeFile(path: string, content: string): Promise<void> {
@@ -42,6 +43,10 @@ class InMemoryTempArtifacts implements WorkflowTempArtifacts {
 
   async cleanup(): Promise<void> {
     this.cleanupCount += 1;
+    if (this.cleanupFailuresRemaining > 0) {
+      this.cleanupFailuresRemaining -= 1;
+      throw new Error('temporary cleanup failed');
+    }
   }
 }
 
@@ -94,12 +99,14 @@ function createHarness(
     exitCode: 0,
     stdoutTruncated: false,
     stderrTruncated: false
-  })
+  }),
+  runtimeOverrides: Partial<ClaudeHeadlessWorkflowRuntime> = {}
 ): {
   backend: ClaudeCliWorkflowBackend;
   artifacts: InMemoryTempArtifacts;
   policy: AgentCapabilityPolicyService;
   started: Promise<ClaudeHeadlessProcessOptions>;
+  startAuthStatusProcess: jest.Mock<ClaudeHeadlessProcessHandle, [string, string?]>;
   startProcess: jest.Mock<ClaudeHeadlessProcessHandle, [ClaudeHeadlessProcessOptions]>;
 } {
   const artifacts = new InMemoryTempArtifacts();
@@ -111,16 +118,18 @@ function createHarness(
   const runtime: ClaudeHeadlessWorkflowRuntime = {
     claudePath: '/mock/bin/claude',
     nodePath: '/mock/bin/node',
-    vaultPath: '/mock/vault'
+    vaultPath: '/mock/vault',
+    ...runtimeOverrides
   };
   const startProcess = jest.fn((options: ClaudeHeadlessProcessOptions) => {
     resolveStarted(options);
     return processHandle;
   });
+  const startAuthStatusProcess = jest.fn(() => authProcessHandle);
   const headlessService: ClaudeCliWorkflowBackendDependencies['headlessService'] = {
     getWorkflowRuntime: () => runtime,
     buildClaudeEnv: (extra) => ({ SAFE_PARENT: 'yes', ...extra }),
-    startAuthStatusProcess: () => authProcessHandle,
+    startAuthStatusProcess,
     startProcess
   };
   const app = {
@@ -140,7 +149,14 @@ function createHarness(
     tempArtifactFactory: new InMemoryTempArtifactFactory(artifacts)
   });
 
-  return { backend, artifacts, policy, started, startProcess };
+  return {
+    backend,
+    artifacts,
+    policy,
+    started,
+    startAuthStatusProcess,
+    startProcess
+  };
 }
 
 function createCompletedProcess(result: ClaudeHeadlessProcessResult): DeferredProcess {
@@ -192,11 +208,16 @@ describe('ClaudeCliWorkflowBackend', () => {
     expect(artifacts.cleanupCount).toBe(1);
 
     expect(processOptions.command).toBe('/mock/bin/claude');
+    expect((processOptions as ClaudeHeadlessProcessOptions & { shell?: boolean }).shell).toBe(false);
     expect(processOptions.args).toEqual([
       '-p',
+      '--safe-mode',
       '--strict-mcp-config',
       '--mcp-config',
       artifacts.mcpConfigPath,
+      '--allowedTools',
+      'mcp__nexus-test-vault__toolManager_getTools',
+      'mcp__nexus-test-vault__toolManager_useTools',
       '--tools',
       '',
       '--disable-slash-commands',
@@ -206,6 +227,13 @@ describe('ClaudeCliWorkflowBackend', () => {
       '12',
       '--model',
       'sonnet'
+    ]);
+    expect(processOptions.args.filter((arg) => arg.startsWith('mcp__'))).toEqual([
+      'mcp__nexus-test-vault__toolManager_getTools',
+      'mcp__nexus-test-vault__toolManager_useTools'
+    ]);
+    expect(processOptions.args.filter((arg) => arg === '--safe-mode')).toEqual([
+      '--safe-mode'
     ]);
     expect(processOptions.args).not.toContain('--dangerously-skip-permissions');
     expect(processOptions.stdinText).toBe('Inspect the vault and return a proposal.');
@@ -224,6 +252,75 @@ describe('ClaudeCliWorkflowBackend', () => {
     });
     expect(artifacts.writes.get(artifacts.proxyPath)).toContain('NEXUS_AGENT_RUN_TOKEN');
     expect(JSON.stringify(Array.from(artifacts.writes.entries()))).not.toContain('secret-agent-token');
+  });
+
+  it('rejects model metacharacters before any child receives the capability environment', async () => {
+    const processHandle = createCompletedProcess({
+      stdout: 'unexpected',
+      stderr: '',
+      exitCode: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const { backend, startAuthStatusProcess, startProcess } = createHarness(processHandle);
+
+    const result = await backend.start(makeRequest({
+      model: 'sonnet & calc.exe'
+    })).result;
+
+    expect(result.status).toBe('preflight_failed');
+    expect(result.stderr).toContain('sonnet');
+    expect(startAuthStatusProcess).not.toHaveBeenCalled();
+    expect(startProcess).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on Windows command wrappers before authentication starts', async () => {
+    Platform.isWin = true;
+    const processHandle = createCompletedProcess({
+      stdout: 'unexpected',
+      stderr: '',
+      exitCode: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const { backend, startAuthStatusProcess, startProcess } = createHarness(
+      processHandle,
+      undefined,
+      { claudePath: 'C:\\Users\\test\\claude.cmd' }
+    );
+
+    const result = await backend.start(makeRequest()).result;
+
+    expect(result.status).toBe('preflight_failed');
+    expect(result.stderr).toContain('native Claude executable');
+    expect(startAuthStatusProcess).not.toHaveBeenCalled();
+    expect(startProcess).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the Windows MCP runtime is a command wrapper', async () => {
+    Platform.isWin = true;
+    const processHandle = createCompletedProcess({
+      stdout: 'unexpected',
+      stderr: '',
+      exitCode: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const { backend, startAuthStatusProcess, startProcess } = createHarness(
+      processHandle,
+      undefined,
+      {
+        claudePath: 'C:\\Program Files\\Claude\\claude.exe',
+        nodePath: 'C:\\Users\\test\\node.cmd'
+      }
+    );
+
+    const result = await backend.start(makeRequest()).result;
+
+    expect(result.status).toBe('preflight_failed');
+    expect(result.stderr).toContain('native Node.js executable');
+    expect(startAuthStatusProcess).not.toHaveBeenCalled();
+    expect(startProcess).not.toHaveBeenCalled();
   });
 
   it('terminates the process tree on timeout and preserves partial output', async () => {
@@ -286,6 +383,99 @@ describe('ClaudeCliWorkflowBackend', () => {
     expect(processHandle.terminateTree).toHaveBeenCalledTimes(1);
     expect(policy.resolve('secret-agent-token')).toBeUndefined();
     expect(artifacts.cleanupCount).toBe(1);
+  });
+
+  it('reports failed rather than cancelled when tree termination is unconfirmed', async () => {
+    const processHandle = createDeferredProcess();
+    processHandle.terminateTree.mockRejectedValue(
+      new Error('process tree termination was not confirmed')
+    );
+    const { backend, artifacts, policy, started } = createHarness(processHandle);
+    const handle = backend.start(makeRequest());
+    await started;
+
+    const cancellation = handle.cancel();
+    processHandle.finish({
+      stdout: 'partial',
+      stderr: '',
+      exitCode: null,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const result = await handle.result;
+    await cancellation;
+
+    expect(result.status).toBe('failed');
+    expect(result.stderr).toContain('process tree termination was not confirmed');
+    expect(policy.resolve('secret-agent-token')).toBeUndefined();
+    expect(artifacts.cleanupCount).toBe(1);
+  });
+
+  it('reports failed rather than cancelled when temporary cleanup fails', async () => {
+    const processHandle = createDeferredProcess({
+      stdout: 'partial',
+      stderr: '',
+      exitCode: null,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const { backend, artifacts, policy, started } = createHarness(processHandle);
+    artifacts.cleanupFailuresRemaining = 2;
+    const handle = backend.start(makeRequest());
+    await started;
+
+    await handle.cancel();
+    const result = await handle.result;
+
+    expect(result.status).toBe('failed');
+    expect(result.stderr).toContain('temporary cleanup failed');
+    expect(policy.resolve('secret-agent-token')).toBeUndefined();
+    expect(artifacts.cleanupCount).toBe(2);
+  });
+
+  it('reports failed rather than timed out when temporary cleanup fails', async () => {
+    jest.useFakeTimers();
+    const processHandle = createDeferredProcess({
+      stdout: 'partial',
+      stderr: '',
+      exitCode: null,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const { backend, artifacts, policy, started } = createHarness(processHandle);
+    artifacts.cleanupFailuresRemaining = 2;
+    const handle = backend.start(makeRequest({ timeoutMs: 10 }));
+    await started;
+
+    await jest.advanceTimersByTimeAsync(10);
+    const result = await handle.result;
+
+    expect(result.status).toBe('failed');
+    expect(result.stderr).toContain('temporary cleanup failed');
+    expect(policy.resolve('secret-agent-token')).toBeUndefined();
+    expect(artifacts.cleanupCount).toBe(2);
+  });
+
+  it('retries a transient cleanup rejection before returning cancelled', async () => {
+    const processHandle = createDeferredProcess({
+      stdout: 'partial',
+      stderr: '',
+      exitCode: null,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    const { backend, artifacts, policy, started } = createHarness(processHandle);
+    artifacts.cleanupFailuresRemaining = 1;
+    const handle = backend.start(makeRequest());
+    await started;
+
+    await handle.cancel();
+    const result = await handle.result;
+
+    expect(result.status).toBe('cancelled');
+    expect(result.stderr).not.toContain('temporary cleanup failed');
+    expect(policy.resolve('secret-agent-token')).toBeUndefined();
+    expect(artifacts.cleanupCount).toBe(2);
   });
 
   it('cancels a retained authentication preflight without starting the workflow process', async () => {
@@ -372,6 +562,35 @@ describe('ClaudeCliWorkflowBackend', () => {
       });
     } finally {
       await artifacts.cleanup();
+    }
+  });
+
+  it('retries temporary directory removal after a rejected cleanup', async () => {
+    const activeWindow = window.activeWindow as Window & {
+      require: (moduleId: string) => unknown;
+    };
+    const originalRequire = activeWindow.require;
+    const rm = jest.fn<Promise<void>, [string, { recursive: boolean; force: boolean }]>()
+      .mockRejectedValueOnce(new Error('directory is busy'))
+      .mockResolvedValueOnce(undefined);
+    const fsPromises = {
+      mkdtemp: jest.fn(async () => '/tmp/nexus-agent-run-retry'),
+      writeFile: jest.fn(async () => undefined),
+      rm
+    };
+    const requireSpy = jest.spyOn(activeWindow, 'require').mockImplementation((moduleId) => {
+      return moduleId === 'fs/promises' ? fsPromises : originalRequire(moduleId);
+    });
+
+    try {
+      const artifacts = await new NodeWorkflowTempArtifactFactory().create();
+
+      await expect(artifacts.cleanup()).rejects.toThrow('directory is busy');
+      await expect(artifacts.cleanup()).resolves.toBeUndefined();
+
+      expect(rm).toHaveBeenCalledTimes(2);
+    } finally {
+      requireSpy.mockRestore();
     }
   });
 });
