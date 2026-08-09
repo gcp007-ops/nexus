@@ -18,6 +18,12 @@
 - Manual and scheduled starts enqueue and return without awaiting the CLI.
 - Scheduled runs never apply automatically; a later explicit human approval may
   apply their proposal. Initial `VaultHygiene-Agentico` scheduling is disabled.
+- `VaultHygiene-Agentico` uses `authorityScope: vault-synced`; when scheduling
+  is later enabled, only the configured `authorityDeviceId` may dispatch it.
+- Cross-host exactly-once and automatic scheduler failover are out of scope.
+  The supported leader is one open Nexus instance on this machine.
+- `MachineHygiene` is a separate future report-only workflow; machine-local
+  findings never become vault-global operations in this delivery.
 - Conversation ID is the run ID; no second durable run ledger is introduced.
 - Initial apply registry contains only `move`, `archive`, `setProperty`, and `replaceAnchored`.
 - Approval binds exact `planHash` and selected operation IDs.
@@ -32,6 +38,7 @@
 **Files:**
 - Modify: `src/database/types/workspace/WorkspaceTypes.ts`
 - Modify: `src/services/helpers/WorkspaceNormalizer.ts`
+- Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
 - Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
 - Modify: `tests/unit/WorkflowEditorRenderer.test.ts`
 - Create: `tests/unit/WorkspaceWorkflowExecution.test.ts`
@@ -451,6 +458,8 @@ git commit -m "feat: validate vault change plans"
 - Modify: `src/services/workflows/WorkflowRunService.ts`
 - Modify: `src/services/workflows/WorkflowScheduleService.ts`
 - Modify: `src/services/workflows/types.ts`
+- Modify: `src/database/types/workspace/WorkspaceTypes.ts`
+- Modify: `src/services/helpers/WorkspaceNormalizer.ts`
 - Modify: `src/services/chat/ChatService.ts`
 - Modify: `src/services/chat/ConversationManager.ts`
 - Modify: `src/types/storage/HybridStorageTypes.ts`
@@ -459,11 +468,34 @@ git commit -m "feat: validate vault change plans"
 - Create: `tests/unit/AgentRunService.test.ts`
 - Create: `tests/unit/WorkflowRunService.test.ts`
 - Create: `tests/unit/WorkflowScheduleService.test.ts`
+- Modify: `tests/unit/WorkspaceWorkflowExecution.test.ts`
+- Modify: `tests/unit/WorkflowEditorRenderer.test.ts`
 
 **Interfaces:**
 - Consumes: Tasks 1, 3, and 4.
 - Produces: `AgentRunService.start/get/list/cancel/reconcileInterrupted` and backend dispatch from `WorkflowRunService`.
 - Consumed by: Tasks 6 and 7 and the ThinkBox plan.
+
+The Task 5 correction also closes the scheduling authority boundary:
+
+```ts
+type WorkflowAuthorityScope = 'vault-synced' | 'machine-local';
+
+interface WorkflowExecutionConfig {
+  // existing fields
+  authorityScope: WorkflowAuthorityScope;
+  authorityDeviceId?: string;
+}
+```
+
+Normalize existing supervised executions to `vault-synced`. A scheduled
+`vault-synced` workflow requires a non-empty `authorityDeviceId`; manual and
+scheduled starts compare it with the existing local `claudesidian-device-id`
+before conversation creation or reservation. A future
+`machine-local` run key is namespaced by device ID and remains report-only.
+The existing Execution editor persists the scope and authority ID, offers the
+current device ID as an explicit user action, and does not expose
+`machine-local` execution until its local-read capability exists.
 
 - [ ] **Step 1: Write failing run-state tests**
 
@@ -522,6 +554,11 @@ output schema, and explicit no-write contract.
 absent or `backend === 'chat'`. For `claude-cli`, it creates the conversation,
 queues through `AgentRunService`, and returns before `handle.result` settles.
 
+Add a failing authority test before production changes: a manual
+`vault-synced` start whose `authorityDeviceId` differs from the local device ID
+must fail preflight before conversation creation or backend dispatch. The
+matching device remains allowed.
+
 - [ ] **Step 6: Write failing scheduler non-blocking tests**
 
 ```ts
@@ -538,6 +575,13 @@ it('never advances a scheduled proposal to applying', async () => {
     trigger: 'schedule', status: 'awaiting_approval'
   });
 });
+
+it('dispatches a synchronized schedule only on its configured leader', async () => {
+  await nonLeader.dispatchDueRun('run-1');
+  expect(workflowRunService.start).not.toHaveBeenCalled();
+  await leader.dispatchDueRun('run-1');
+  expect(workflowRunService.start).toHaveBeenCalledTimes(1);
+});
 ```
 
 - [ ] **Step 7: Separate schedule calculation from queued dispatch**
@@ -545,7 +589,20 @@ it('never advances a scheduled proposal to applying', async () => {
 `WorkflowScheduleService.start()` registers its interval and schedules the
 initial scan in a detached microtask. Each due slot awaits only conversation/job
 creation, not CLI completion. Preserve `runKey` checks and force proposal-only
-behavior.
+behavior. Reserve the key atomically for concurrent scheduler services inside
+the supported authority instance. Do not claim cross-host exclusion: the
+`authorityDeviceId` gate is the authority boundary. Record `authorityScope` and
+the local `deviceId` in run metadata.
+
+As part of the reviewed Task 5 correction, also:
+
+- serialize/CAS agent-run metadata transitions while preserving sibling
+  metadata;
+- make cancellation before `queued` and storage failure after backend start
+  settle fail-closed without orphaning a handle;
+- reject truncated completed output and propagate policy denial structurally;
+- omit the resolved prompt text from Claude conversation metadata;
+- replace mutable OFFSET restart reconciliation with a stable snapshot/cursor.
 
 - [ ] **Step 8: Run Task 5 tests**
 
@@ -556,7 +613,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit Task 5**
 
 ```bash
-git add src/services/workflows/AgentRunService.ts src/services/workflows/WorkflowRunService.ts src/services/workflows/WorkflowScheduleService.ts src/services/workflows/types.ts src/services/chat/ChatService.ts src/services/chat/ConversationManager.ts src/types/storage/HybridStorageTypes.ts src/core/services/ServiceDefinitions.ts src/core/background/BackgroundProcessor.ts tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts
+git add src/services/workflows/AgentRunService.ts src/services/workflows/WorkflowRunService.ts src/services/workflows/WorkflowScheduleService.ts src/services/workflows/types.ts src/database/types/workspace/WorkspaceTypes.ts src/services/helpers/WorkspaceNormalizer.ts src/components/workspace/WorkflowEditorRenderer.ts src/services/chat/ChatService.ts src/services/chat/ConversationManager.ts src/types/storage/HybridStorageTypes.ts src/core/services/ServiceDefinitions.ts src/core/background/BackgroundProcessor.ts tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/WorkspaceWorkflowExecution.test.ts tests/unit/WorkflowEditorRenderer.test.ts
 git commit -m "feat: persist supervised workflow runs"
 ```
 

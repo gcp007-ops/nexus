@@ -68,7 +68,7 @@ The design extends existing components instead of creating another registry:
 - `WorkflowRunService` remains the single entry point for manual and scheduled
   workflow runs.
 - `WorkflowScheduleService` retains schedule calculation, catch-up policy and
-  `runKey` deduplication.
+  `runKey` deduplication within the designated scheduler authority.
 - Conversations remain the durable execution record.
 - `ClaudeHeadlessService` is promoted from an isolated experiment into one
   execution backend behind the workflow runtime.
@@ -83,6 +83,8 @@ interfaces. It is not a second production path.
 ```yaml
 execution:
   backend: claude-cli
+  authorityScope: vault-synced
+  authorityDeviceId: string
   model: sonnet
   mode: proposal
   capabilityProfile: vault-readonly
@@ -103,6 +105,16 @@ Codex CLI and other runners are out of scope.
 The editor validates backend-specific fields. Existing workflows without an
 `execution` block preserve current behavior.
 
+`authorityScope` separates synchronized and host-local facts:
+
+- `vault-synced`: content and rules whose mutation propagates through vault
+  synchronization;
+- `machine-local`: installed skills, CLI paths, credentials, providers, caches
+  and host-specific configuration.
+
+This delivery implements applicable operations only for `vault-synced` runs.
+Machine-local findings are recommendations, never global operations.
+
 ## 5. Initial workflow
 
 Create a new saved prompt named `Guardiao da Vault` and a new workspace workflow
@@ -114,6 +126,17 @@ but they do not decide changes.
 
 `VaultHygiene-Agentico` starts with scheduling disabled. Its default catch-up
 policy, if scheduling is later enabled, is `skip`.
+
+This machine is the operational authority for `VaultHygiene-Agentico`. Nexus
+already assigns it a stable local `claudesidian-device-id`. When scheduling is
+later enabled, the workflow keeps that identifier as `authorityDeviceId`. Only
+the matching device may manually start, calculate or dispatch its runs.
+
+`MachineHygiene` is a separate, initially report-only workflow. Each machine
+runs it under its own `deviceId`; its future `runKey` includes that device ID.
+It may report drift in installed skills and local configuration, but it cannot
+turn those findings into vault-global operations. Building the local-read
+capability required by `MachineHygiene` is a follow-on delivery.
 
 The agent must:
 
@@ -142,7 +165,12 @@ Rules:
 - Manual and scheduled starts enqueue and return immediately.
 - A CLI process is never awaited from Nexus or ThinkBox startup.
 - The worker starts only after Nexus services are ready.
-- `runKey` and single-flight prevent duplicate execution for one schedule slot.
+- For `vault-synced` workflows, `runKey` and single-flight prevent duplicate
+  execution within the one open Nexus instance on the configured authority
+  device. Other devices fail the authority gate before reserving or dispatching.
+- The design does not claim distributed exactly-once execution across two
+  simultaneously active instances using the same device identity. Operating
+  the authority vault in more than one Obsidian process is unsupported.
 - Closing a modal does not cancel a run.
 - Cancellation is explicit and terminates the process tree.
 - Timeout terminates the process tree and preserves partial output and trace.
@@ -161,6 +189,7 @@ Existing workflow metadata is retained:
 - `runTrigger`;
 - `scheduledFor`;
 - `runKey`.
+- `authorityScope` and originating `deviceId`.
 
 The conversation gains typed `metadata.agentRun` data:
 
@@ -380,6 +409,8 @@ and zero reproducible Critical or Important defect.
 - process success, error, timeout, cancellation and tree termination;
 - scheduler enqueue without startup blocking;
 - `runKey` deduplication;
+- leader-device gating for synchronized workflows and device-namespaced keys
+  for machine-local reports;
 - conversation persistence and interrupted-run reconciliation;
 - approval hash binding;
 - operation success, stale state, dependency blocking, readback and rollback;
@@ -412,4 +443,7 @@ and zero reproducible Critical or Important defect.
 - Immediate migration of CorrectionPlan.
 - Removal of deterministic factual scanners merely because an agent exists.
 - Changing `CicloManutencao-Nexus` from report-only behavior.
+- Implementing local filesystem/config reads for `MachineHygiene` in this
+  delivery.
+- Distributed scheduling or automatic failover across multiple devices.
 - Deploying either plugin as part of design or implementation planning.

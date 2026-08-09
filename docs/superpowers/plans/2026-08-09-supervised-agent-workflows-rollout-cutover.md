@@ -15,6 +15,9 @@
 - Nexus deploy/reload and ThinkBox deploy/reload require separate explicit authorization.
 - Live prompt/workflow creation is a vault mutation and requires explicit authorization.
 - Scheduled execution remains disabled through initial acceptance.
+- This machine is the designated authority for synchronized vault hygiene.
+- Machine-local skill/config drift is outside `VaultHygiene-Agentico`; the
+  separate future `MachineHygiene` workflow is report-only.
 - The first live Claude run is proposal-only.
 - The first apply uses reversible fixtures, not production notes.
 - No ambiguous external/process/apply result is retried.
@@ -113,6 +116,8 @@ Bind the prompt in workspace `Desenvolvedor` and set:
 ```yaml
 execution:
   backend: claude-cli
+  authorityScope: vault-synced
+  authorityDeviceId: exact ID read from this Nexus installation
   model: sonnet
   mode: proposal
   capabilityProfile: vault-readonly
@@ -123,6 +128,11 @@ execution:
 ```
 
 Omit the optional `schedule` field so scheduling remains disabled.
+
+Read this machine's existing `claudesidian-device-id` during preflight and write
+that exact value as `authorityDeviceId`. Do not enable the schedule in this
+rollout. Enabling it is a later supervised configuration gate and assumes one
+open Nexus instance for the authority vault.
 
 - [ ] **Step 5: Read back prompt and workspace**
 
