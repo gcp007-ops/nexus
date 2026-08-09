@@ -1,0 +1,827 @@
+# Nexus Supervised Agent Runtime Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Extend Nexus workflows with a non-blocking, read-only Claude CLI backend that persists structured plans in conversations and applies only explicitly approved operations.
+
+**Architecture:** `WorkflowRunService` dispatches to backend implementations while conversations remain the authoritative run. A token-bound MCP proxy and server-side capability policy restrict proposal runs to read-only tools; a closed operation registry handles approved writes with precondition checks and readback.
+
+**Tech Stack:** TypeScript, Obsidian Plugin API, Node child processes, MCP SDK, Jest, JSONL conversation storage, SQLite projections.
+
+## Global Constraints
+
+- Initial executor: local Claude CLI with model alias `sonnet`.
+- Existing workflows without `execution` retain current chat behavior.
+- Proposal runs use `capabilityProfile: vault-readonly` and cannot mutate through MCP.
+- Native Claude filesystem and shell tools remain disabled.
+- Manual and scheduled starts enqueue and return without awaiting the CLI.
+- Scheduled runs never apply automatically; a later explicit human approval may
+  apply their proposal. Initial `VaultHygiene-Agentico` scheduling is disabled.
+- Conversation ID is the run ID; no second durable run ledger is introduced.
+- Initial apply registry contains only `move`, `archive`, `setProperty`, and `replaceAnchored`.
+- Approval binds exact `planHash` and selected operation IDs.
+- No automatic mutation retry.
+- All Obsidian DOM events use registered event handlers and all styles remain in CSS.
+- No commit, push, release, deploy, reload, or live-vault configuration outside its explicit task/gate.
+
+---
+
+### Task 1: Workflow execution contract and normalization
+
+**Files:**
+- Modify: `src/database/types/workspace/WorkspaceTypes.ts`
+- Modify: `src/services/helpers/WorkspaceNormalizer.ts`
+- Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
+- Modify: `tests/unit/WorkflowEditorRenderer.test.ts`
+- Create: `tests/unit/WorkspaceWorkflowExecution.test.ts`
+
+**Interfaces:**
+- Produces: `WorkflowExecutionConfig`, `WorkflowExecutionBackend`, `WorkflowCapabilityProfile`, and `normalizeWorkflowExecution()`.
+- Consumed by: Tasks 4, 5, and 7.
+
+- [ ] **Step 1: Add failing normalization and backwards-compatibility tests**
+
+```ts
+import { normalizeWorkspace } from '../../src/services/helpers/WorkspaceNormalizer';
+
+it('preserves chat behavior when execution is absent', () => {
+  const workspace = normalizeWorkspace(makeWorkspace({ execution: undefined }));
+  expect(workspace.context?.workflows?.[0].execution).toBeUndefined();
+});
+
+it('normalizes a claude-cli proposal backend', () => {
+  const workflow = firstWorkflow(normalizeWorkspace(makeWorkspace({
+    execution: {
+      backend: 'claude-cli', model: ' sonnet ', mode: 'proposal',
+      capabilityProfile: 'vault-readonly', outputSchema: 'vault-change-plan/v1',
+      maxTurns: 99, timeoutMinutes: 0, approvalRequired: true
+    }
+  })));
+  expect(workflow.execution).toEqual({
+    backend: 'claude-cli', model: 'sonnet', mode: 'proposal',
+    capabilityProfile: 'vault-readonly', outputSchema: 'vault-change-plan/v1',
+    maxTurns: 40, timeoutMinutes: 1, approvalRequired: true
+  });
+});
+```
+
+- [ ] **Step 2: Run the focused test and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/WorkspaceWorkflowExecution.test.ts`
+
+Expected: FAIL because `execution` types and normalization do not exist.
+
+- [ ] **Step 3: Add the typed contract and normalizer**
+
+```ts
+export type WorkflowExecutionBackend = 'chat' | 'claude-cli';
+export type WorkflowCapabilityProfile = 'vault-readonly';
+
+export interface WorkflowExecutionConfig {
+  backend: WorkflowExecutionBackend;
+  model?: string;
+  mode: 'proposal';
+  capabilityProfile: WorkflowCapabilityProfile;
+  outputSchema: 'vault-change-plan/v1';
+  maxTurns: number;
+  timeoutMinutes: number;
+  approvalRequired: true;
+}
+
+export interface WorkspaceWorkflow {
+  // existing fields stay unchanged
+  execution?: WorkflowExecutionConfig;
+}
+```
+
+Normalize `maxTurns` to `1..40`, `timeoutMinutes` to `1..60`, trim `model`, and
+drop invalid execution blocks rather than converting legacy workflows.
+
+- [ ] **Step 4: Add failing workflow-editor tests for the fifth section**
+
+```ts
+it('renders Execution between Steps and Schedule', () => {
+  renderEditor(makeWorkflow({ execution: claudeExecution() }));
+  expect(recordedSections.map(section => section.config.title)).toEqual([
+    'Identity', 'Prompt', 'Steps', 'Execution', 'Schedule'
+  ]);
+});
+
+it('does not enable a write-capable profile', () => {
+  const saved = saveRenderedWorkflow({ backend: 'claude-cli' });
+  expect(saved.execution?.capabilityProfile).toBe('vault-readonly');
+  expect(saved.execution?.approvalRequired).toBe(true);
+});
+```
+
+- [ ] **Step 5: Render and persist the execution fields**
+
+Add one `BoxedSection` with backend, model, max turns, timeout, capability
+profile, output schema, and approval copy. Do not add a bypass-permissions
+control. Preserve `execution` in `cloneWorkflow()` and
+`validateAndBuildWorkflow()`.
+
+- [ ] **Step 6: Run focused tests**
+
+Run: `npm test -- --runInBand tests/unit/WorkspaceWorkflowExecution.test.ts tests/unit/WorkflowEditorRenderer.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit Task 1**
+
+```bash
+git add src/database/types/workspace/WorkspaceTypes.ts src/services/helpers/WorkspaceNormalizer.ts src/components/workspace/WorkflowEditorRenderer.ts tests/unit/WorkspaceWorkflowExecution.test.ts tests/unit/WorkflowEditorRenderer.test.ts
+git commit -m "feat: define supervised workflow execution"
+```
+
+---
+
+### Task 2: Token-bound read-only MCP capability policy
+
+**Files:**
+- Create: `src/services/workflows/AgentCapabilityPolicyService.ts`
+- Create: `src/services/workflows/AgentRunProxySource.ts`
+- Modify: `src/connector.ts`
+- Modify: `src/agents/toolManager/types.ts`
+- Modify: `src/agents/toolManager/tools/getTools.ts`
+- Modify: `src/agents/toolManager/services/ToolBatchExecutionService.ts`
+- Modify: `src/core/services/ServiceDefinitions.ts`
+- Create: `tests/unit/AgentCapabilityPolicyService.test.ts`
+- Create: `tests/unit/AgentRunProxySource.test.ts`
+- Modify: `tests/unit/ToolManagerContextContract.test.ts`
+
+**Interfaces:**
+- Produces: `AgentCapabilityPolicyService.issue(runId, profile)`, `.resolve(token)`, `.revoke(token)`, `.allows(grant, agent, tool)`, and `buildAgentRunProxySource()`.
+- Consumed by: Task 3 Claude backend.
+
+- [ ] **Step 1: Write failing policy tests using an explicit allowlist**
+
+```ts
+const policy = new AgentCapabilityPolicyService(() => 'token-1');
+const issued = policy.issue('run-1', 'vault-readonly');
+
+expect(policy.resolve(issued.token)).toMatchObject({ runId: 'run-1', profile: 'vault-readonly' });
+expect(policy.allows(issued.grant, 'contentManager', 'read')).toBe(true);
+expect(policy.allows(issued.grant, 'searchManager', 'content')).toBe(true);
+expect(policy.allows(issued.grant, 'memoryManager', 'loadWorkspace')).toBe(true);
+expect(policy.allows(issued.grant, 'contentManager', 'write')).toBe(false);
+expect(policy.allows(issued.grant, 'storageManager', 'move')).toBe(false);
+expect(policy.allows(issued.grant, 'taskManager', 'update')).toBe(false);
+```
+
+The allowlist must be literal and reviewed. Include only discovery/read/list/get,
+search, workspace/state load/list, task/project list/query/open, and canvas read/list.
+
+- [ ] **Step 2: Run the policy test and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/AgentCapabilityPolicyService.test.ts`
+
+Expected: FAIL because the service is absent.
+
+- [ ] **Step 3: Implement issuance, constant-time lookup, expiry, and revocation**
+
+```ts
+export interface AgentCapabilityGrant {
+  runId: string;
+  profile: 'vault-readonly';
+  expiresAt: number;
+}
+
+issue(runId: string, profile: 'vault-readonly', ttlMs = 60 * 60_000): {
+  token: string;
+  grant: AgentCapabilityGrant;
+};
+```
+
+Tokens are random, live only in memory, expire, and are never logged or stored in
+conversation metadata.
+
+- [ ] **Step 4: Write failing dispatcher tests for discovery and forged writes**
+
+```ts
+it('filters getTools and blocks a forged useTools mutation', async () => {
+  const grant = issueGrant('vault-readonly');
+  const discovered = await getTools.execute(withInternalGrant(grant, { tool: '--help' }));
+  expect(commands(discovered)).toContain('content read');
+  expect(commands(discovered)).not.toContain('content write');
+
+  const result = await useTools.execute(withInternalGrant(grant, {
+    tool: 'content write --path x.md --content blocked'
+  }));
+  expect(result).toMatchObject({ success: false });
+  expect(result.error).toContain('capability profile vault-readonly');
+});
+```
+
+- [ ] **Step 5: Enforce grants inside discovery and per normalized call**
+
+Add an internal-only `_agentCapabilityGrant` field that is not present in public
+schemas. `connector.ts` must discard caller-provided grant data, resolve the
+proxy-injected token through `AgentCapabilityPolicyService`, and attach the
+trusted grant. `GetToolsTool` filters schemas; `ToolBatchExecutionService`
+checks every normalized call immediately before execution.
+
+- [ ] **Step 6: Write failing proxy tests**
+
+```ts
+it('injects the token into tools/call params without exposing it in stdout', () => {
+  const source = buildAgentRunProxySource();
+  const forwarded = exerciseProxy(source, rpcToolCall(), { NEXUS_AGENT_RUN_TOKEN: 'secret' });
+  expect(forwarded.params.arguments._agentCapabilityToken).toBe('secret');
+  expect(forwarded.stdout).not.toContain('secret');
+});
+```
+
+- [ ] **Step 7: Implement the temporary proxy source**
+
+The generated Node program connects to the configured Nexus socket, parses
+newline-delimited JSON-RPC from stdin, injects `_agentCapabilityToken` only into
+`tools/call` arguments, forwards responses unchanged, and never prints the
+token. Invalid JSON terminates with a non-zero exit rather than bypassing the
+filter.
+
+- [ ] **Step 8: Run Task 2 tests**
+
+Run: `npm test -- --runInBand tests/unit/AgentCapabilityPolicyService.test.ts tests/unit/AgentRunProxySource.test.ts tests/unit/ToolManagerContextContract.test.ts tests/unit/ToolManagerCliSyntax.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 9: Commit Task 2**
+
+```bash
+git add src/services/workflows/AgentCapabilityPolicyService.ts src/services/workflows/AgentRunProxySource.ts src/connector.ts src/agents/toolManager/types.ts src/agents/toolManager/tools/getTools.ts src/agents/toolManager/services/ToolBatchExecutionService.ts src/core/services/ServiceDefinitions.ts tests/unit/AgentCapabilityPolicyService.test.ts tests/unit/AgentRunProxySource.test.ts tests/unit/ToolManagerContextContract.test.ts
+git commit -m "feat: enforce read-only agent capabilities"
+```
+
+---
+
+### Task 3: Cancellable Claude CLI backend
+
+**Files:**
+- Create: `src/services/workflows/WorkflowExecutionBackend.ts`
+- Create: `src/services/workflows/ClaudeCliWorkflowBackend.ts`
+- Modify: `src/services/external/ClaudeHeadlessService.ts`
+- Modify: `tests/unit/ClaudeHeadlessService.test.ts`
+- Create: `tests/unit/ClaudeCliWorkflowBackend.test.ts`
+
+**Interfaces:**
+- Consumes: Task 2 capability issuance and proxy source.
+- Produces: `WorkflowExecutionBackend.start(request): WorkflowExecutionHandle` and a Claude implementation with `result` plus `cancel()`.
+- Consumed by: Task 5 run service.
+
+- [ ] **Step 1: Write failing process-lifecycle tests**
+
+```ts
+it('returns immediately with a cancellable handle', async () => {
+  const handle = backend.start(makeRequest());
+  expect(handle.runId).toBe('run-1');
+  expect(typeof handle.cancel).toBe('function');
+  await handle.cancel();
+  await expect(handle.result).resolves.toMatchObject({ status: 'cancelled' });
+  expect(fakeProcess.killTree).toHaveBeenCalledTimes(1);
+});
+
+it('kills the process tree on timeout and preserves partial output', async () => {
+  const result = await backend.start(makeRequest({ timeoutMs: 10 })).result;
+  expect(result).toMatchObject({ status: 'timed_out', stdout: 'partial' });
+  expect(fakeProcess.killTree).toHaveBeenCalledTimes(1);
+});
+```
+
+- [ ] **Step 2: Run the backend test and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/ClaudeCliWorkflowBackend.test.ts`
+
+Expected: FAIL because the backend interface does not exist.
+
+- [ ] **Step 3: Define exact backend types**
+
+```ts
+export interface WorkflowExecutionRequest {
+  runId: string;
+  prompt: string;
+  model: string;
+  maxTurns: number;
+  timeoutMs: number;
+  capabilityProfile: 'vault-readonly';
+}
+
+export interface WorkflowExecutionHandle {
+  runId: string;
+  result: Promise<WorkflowExecutionResult>;
+  cancel(): Promise<void>;
+}
+```
+
+- [ ] **Step 4: Refactor headless execution around a retained child handle**
+
+Replace the promise-only private `runProcess()` path with a small process runner
+that captures stdout/stderr, exposes `terminateTree()`, settles once, removes
+listeners, and cleans the temp directory after completion. Keep prompt transport
+on stdin. The MCP config must invoke the temporary token-injecting proxy, not the
+unfiltered installed connector.
+
+- [ ] **Step 5: Make bypass non-configurable for workflow runs**
+
+`ClaudeCliWorkflowBackend` constructs fixed CLI arguments:
+
+```ts
+[
+  '-p', '--strict-mcp-config', '--mcp-config', mcpConfigPath,
+  '--tools', '', '--disable-slash-commands', '--output-format', 'text',
+  '--max-turns', String(request.maxTurns), '--model', request.model,
+  '--dangerously-skip-permissions'
+]
+```
+
+The flag is an execution detail only after Task 2 server enforcement. It is not
+accepted from workflow input or UI.
+
+- [ ] **Step 6: Cover late close/error, double cancel, and temp cleanup**
+
+Add tests proving only the first terminal event wins, double cancel is
+idempotent, the capability token is revoked, and the temporary proxy/config
+directory is removed on every terminal path.
+
+- [ ] **Step 7: Run Task 3 tests**
+
+Run: `npm test -- --runInBand tests/unit/ClaudeHeadlessService.test.ts tests/unit/ClaudeCliWorkflowBackend.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 8: Commit Task 3**
+
+```bash
+git add src/services/workflows/WorkflowExecutionBackend.ts src/services/workflows/ClaudeCliWorkflowBackend.ts src/services/external/ClaudeHeadlessService.ts tests/unit/ClaudeHeadlessService.test.ts tests/unit/ClaudeCliWorkflowBackend.test.ts
+git commit -m "feat: add cancellable Claude workflow backend"
+```
+
+---
+
+### Task 4: Versioned vault-change plan contract
+
+**Files:**
+- Create: `src/services/workflows/VaultChangePlan.ts`
+- Create: `tests/unit/VaultChangePlan.test.ts`
+
+**Interfaces:**
+- Produces: `parseVaultChangePlan(raw, expected)`, `canonicalPlanJson(plan)`, `hashVaultChangePlan(plan)`, and operation union types.
+- Consumed by: Tasks 5, 6, and the ThinkBox plan.
+
+- [ ] **Step 1: Write failing contract tests**
+
+```ts
+it('accepts only the four closed operation types', () => {
+  const parsed = parseVaultChangePlan(validPlan(), expectedIdentity());
+  expect(parsed.operations.map(item => item.type)).toEqual([
+    'move', 'archive', 'setProperty', 'replaceAnchored'
+  ]);
+});
+
+it.each(['contentWrite', 'taskUpdate', 'shell'])('rejects %s', type => {
+  expect(() => parseVaultChangePlan(planWithOperation(type), expectedIdentity()))
+    .toThrow('unsupported operation type');
+});
+
+it('produces the same hash for different object key order', () => {
+  expect(hashVaultChangePlan(validPlan())).toBe(hashVaultChangePlan(reorderedPlan()));
+});
+```
+
+- [ ] **Step 2: Run and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/VaultChangePlan.test.ts`
+
+Expected: FAIL because the module is absent.
+
+- [ ] **Step 3: Implement strict parsing and limits**
+
+Define discriminated operation interfaces with shared fields
+`operationId`, `findingId`, `evidence`, `preconditions`, `expectedEffect`,
+`risk`, `dependsOn`, and `rollback`. Reject duplicate IDs, missing dependencies,
+cycles, absolute/out-of-vault paths, unknown keys at security-sensitive levels,
+more than 100 operations, and raw output over 1 MiB.
+
+- [ ] **Step 4: Bind run/workflow/prompt/workspace identity**
+
+```ts
+export interface ExpectedPlanIdentity {
+  runId: string;
+  workflowId: string;
+  promptHash: string;
+  workflowHash: string;
+  workspaceId: string;
+}
+```
+
+Reject any mismatch before hashing.
+
+- [ ] **Step 5: Run contract tests**
+
+Run: `npm test -- --runInBand tests/unit/VaultChangePlan.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit Task 4**
+
+```bash
+git add src/services/workflows/VaultChangePlan.ts tests/unit/VaultChangePlan.test.ts
+git commit -m "feat: validate vault change plans"
+```
+
+---
+
+### Task 5: Conversation-backed run lifecycle and non-blocking scheduling
+
+**Files:**
+- Create: `src/services/workflows/AgentRunService.ts`
+- Modify: `src/services/workflows/WorkflowRunService.ts`
+- Modify: `src/services/workflows/WorkflowScheduleService.ts`
+- Modify: `src/services/workflows/types.ts`
+- Modify: `src/services/chat/ChatService.ts`
+- Modify: `src/services/chat/ConversationManager.ts`
+- Modify: `src/types/storage/HybridStorageTypes.ts`
+- Modify: `src/core/services/ServiceDefinitions.ts`
+- Modify: `src/core/background/BackgroundProcessor.ts`
+- Create: `tests/unit/AgentRunService.test.ts`
+- Create: `tests/unit/WorkflowRunService.test.ts`
+- Create: `tests/unit/WorkflowScheduleService.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1, 3, and 4.
+- Produces: `AgentRunService.start/get/list/cancel/reconcileInterrupted` and backend dispatch from `WorkflowRunService`.
+- Consumed by: Tasks 6 and 7 and the ThinkBox plan.
+
+- [ ] **Step 1: Write failing run-state tests**
+
+```ts
+it('uses conversationId as runId and appends immutable plan output', async () => {
+  const started = await service.start(makeStartRequest());
+  expect(started.runId).toBe('conversation-1');
+  await backend.resolve(validPlanText());
+  expect(await service.get('conversation-1')).toMatchObject({
+    status: 'awaiting_approval', planHash: expect.stringMatching(/^sha256:/)
+  });
+  expect(conversations.addMessage).toHaveBeenCalledWith(expect.objectContaining({
+    conversationId: 'conversation-1', role: 'assistant', content: validPlanText()
+  }));
+});
+
+it('marks persisted running conversations interrupted on restart', async () => {
+  await service.reconcileInterrupted();
+  expect(conversations.updateConversationMetadata).toHaveBeenCalledWith(
+    'run-old', expect.objectContaining({ agentRun: expect.objectContaining({ status: 'interrupted' }) })
+  );
+});
+```
+
+- [ ] **Step 2: Run lifecycle tests and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts`
+
+Expected: FAIL because the lifecycle service and dispatch do not exist.
+
+- [ ] **Step 3: Implement typed state transitions**
+
+```ts
+export type AgentRunStatus =
+  | 'queued' | 'running' | 'awaiting_approval' | 'applying' | 'completed'
+  | 'completed_with_issues' | 'rejected' | 'preflight_failed'
+  | 'security_blocked' | 'invalid_output' | 'timed_out' | 'cancelled'
+  | 'interrupted' | 'failed';
+```
+
+Store `metadata.agentRun` through a merge-preserving helper that reads current
+metadata, replaces only the `agentRun` object, and appends plan/result messages.
+Reject invalid transitions in one pure transition function.
+
+- [ ] **Step 4: Snapshot prompt/workflow identity before queueing**
+
+Hash canonical snapshots and persist only hashes plus the non-secret resolved
+configuration. Do not persist the capability token. Construct the exact agent
+prompt from `CLAUDE.md` instruction, workspace, saved prompt, workflow steps,
+output schema, and explicit no-write contract.
+
+- [ ] **Step 5: Dispatch chat and Claude backends without changing legacy runs**
+
+`WorkflowRunService.start()` keeps the current chat path when `execution` is
+absent or `backend === 'chat'`. For `claude-cli`, it creates the conversation,
+queues through `AgentRunService`, and returns before `handle.result` settles.
+
+- [ ] **Step 6: Write failing scheduler non-blocking tests**
+
+```ts
+it('enqueues due workflows without awaiting completion', async () => {
+  workflowRunService.start.mockReturnValue(new Promise(() => undefined));
+  const start = service.start();
+  await expect(start).resolves.toBeUndefined();
+});
+
+it('never advances a scheduled proposal to applying', async () => {
+  await service.dispatchDueRun('run-1');
+  expect(agentRunService.approveAndApply).not.toHaveBeenCalled();
+  expect(await agentRunService.getRun('run-1')).toMatchObject({
+    trigger: 'schedule', status: 'awaiting_approval'
+  });
+});
+```
+
+- [ ] **Step 7: Separate schedule calculation from queued dispatch**
+
+`WorkflowScheduleService.start()` registers its interval and schedules the
+initial scan in a detached microtask. Each due slot awaits only conversation/job
+creation, not CLI completion. Preserve `runKey` checks and force proposal-only
+behavior.
+
+- [ ] **Step 8: Run Task 5 tests**
+
+Run: `npm test -- --runInBand tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/ConversationManager.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 9: Commit Task 5**
+
+```bash
+git add src/services/workflows/AgentRunService.ts src/services/workflows/WorkflowRunService.ts src/services/workflows/WorkflowScheduleService.ts src/services/workflows/types.ts src/services/chat/ChatService.ts src/services/chat/ConversationManager.ts src/types/storage/HybridStorageTypes.ts src/core/services/ServiceDefinitions.ts src/core/background/BackgroundProcessor.ts tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts
+git commit -m "feat: persist supervised workflow runs"
+```
+
+---
+
+### Task 6: Approval and deterministic vault applier
+
+**Files:**
+- Create: `src/services/workflows/VaultChangeApplier.ts`
+- Create: `src/services/workflows/VaultChangePreconditions.ts`
+- Modify: `src/services/workflows/AgentRunService.ts`
+- Modify: `src/core/services/ServiceDefinitions.ts`
+- Create: `tests/unit/VaultChangeApplier.test.ts`
+- Modify: `tests/unit/AgentRunService.test.ts`
+
+**Interfaces:**
+- Consumes: Task 4 plans and Task 5 runs.
+- Produces: `AgentRunService.approveAndApply(request)` and per-operation results.
+- Consumed by: Task 8 and ThinkBox.
+
+```ts
+export interface ApprovalRequest {
+  runId: string;
+  planHash: string;
+  operationIds: string[];
+  approval: {
+    kind: 'human';
+    source: 'nexus-ui' | 'thinkbox';
+    confirmedAt: number;
+  };
+}
+```
+
+- [ ] **Step 1: Write failing approval-binding tests**
+
+```ts
+await expect(service.approveAndApply({
+  runId: 'run-1', planHash: 'sha256:wrong', operationIds: ['op-1'],
+  approval: { kind: 'human', source: 'nexus-ui', confirmedAt: NOW }
+})).rejects.toThrow('plan hash');
+
+await expect(service.approveAndApply({
+  runId: 'run-1', planHash: validHash, operationIds: ['op-1']
+})).rejects.toThrow('explicit human approval context');
+```
+
+- [ ] **Step 2: Write failing operation tests**
+
+Cover all four types, stale hashes, duplicate selections, missing dependencies,
+independent continuation, dependency blocking, readback failure, successful
+rollback, and `rollback_failed`.
+
+- [ ] **Step 3: Run and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/VaultChangeApplier.test.ts tests/unit/AgentRunService.test.ts`
+
+Expected: FAIL because approval and applier are absent.
+
+- [ ] **Step 4: Implement the closed registry**
+
+```ts
+type OperationExecutorMap = {
+  move: OperationExecutor<MoveOperation>;
+  archive: OperationExecutor<ArchiveOperation>;
+  setProperty: OperationExecutor<SetPropertyOperation>;
+  replaceAnchored: OperationExecutor<ReplaceAnchoredOperation>;
+};
+```
+
+Resolve executors from existing Nexus storage/content services. Do not route
+through a model-provided tool name. Validate normalized paths and current hashes
+immediately before each effect.
+
+- [ ] **Step 5: Append approval, result, and readback events**
+
+Persist the selected IDs and plan hash before effects. Append one result record
+per operation and finish the run as `completed` only when all selected operations
+succeed; otherwise use `completed_with_issues`.
+
+- [ ] **Step 6: Run Task 6 tests**
+
+Run: `npm test -- --runInBand tests/unit/VaultChangeApplier.test.ts tests/unit/AgentRunService.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit Task 6**
+
+```bash
+git add src/services/workflows/VaultChangeApplier.ts src/services/workflows/VaultChangePreconditions.ts src/services/workflows/AgentRunService.ts src/core/services/ServiceDefinitions.ts tests/unit/VaultChangeApplier.test.ts tests/unit/AgentRunService.test.ts
+git commit -m "feat: apply approved vault change plans"
+```
+
+---
+
+### Task 7: Review the Agent runs UI mockup
+
+**Files:**
+- Create: `docs/mockups/supervised-agent-runs.html`
+- Create when needed: `docs/mockups/supervised-agent-runs.css`
+- Create when needed: `docs/mockups/supervised-agent-runs.js`
+
+**Interfaces:**
+- Consumes: approved design and the run/plan DTOs from Tasks 4–6.
+- Produces: a user-approved interaction contract for Nexus Agent runs and the
+  ThinkBox cockpit.
+- Consumed by: runtime Task 8 and ThinkBox Task 3.
+
+- [ ] **Step 1: Use the repository mockup workflow**
+
+Invoke the `nexus-ui-mockups` skill before creating the preview. Reuse Nexus
+visual language and realistic copy; label all persistence and execution as
+simulated.
+
+- [ ] **Step 2: Build the interactive preview**
+
+Cover workflow selection, preflight, running, awaiting approval, exact operation
+selection, confirmation, partial results, stale precondition, rollback failure,
+recommendations, trace details, and mobile/empty/error states. Show both Nexus
+Agent runs and the narrower ThinkBox cockpit without inventing separate state.
+
+- [ ] **Step 3: Render, inspect, and obtain user approval**
+
+Open the standalone mockup, exercise every state, inspect keyboard flow and
+responsive layout, and present screenshots or the local preview. Stop before
+production UI until the user approves the interaction shape.
+
+- [ ] **Step 4: Commit the approved mockup**
+
+```bash
+git add -f docs/mockups/supervised-agent-runs.html docs/mockups/supervised-agent-runs.css docs/mockups/supervised-agent-runs.js
+git commit -m "docs: mock up supervised agent runs"
+```
+
+Omit nonexistent companion files from `git add` when the approved preview is a
+single self-contained HTML file.
+
+---
+
+### Task 8: Public supervised-workflow service and Nexus run UI
+
+**Files:**
+- Create: `src/services/workflows/SupervisedWorkflowService.ts`
+- Create: `src/ui/workflows/AgentRunsView.ts`
+- Create: `src/ui/workflows/AgentRunDetailRenderer.ts`
+- Modify: `src/core/services/ServiceDefinitions.ts`
+- Modify: `src/main.ts`
+- Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
+- Modify: `styles.css`
+- Create: `tests/unit/SupervisedWorkflowService.test.ts`
+- Create: `tests/unit/AgentRunsView.test.ts`
+
+**Interfaces:**
+- Produces the public service consumed by ThinkBox:
+
+```ts
+interface SupervisedWorkflowService {
+  listWorkflows(): Promise<SupervisedWorkflowSummary[]>;
+  getPreflight(workflowId: string): Promise<SupervisedPreflight>;
+  start(input: { workspaceId: string; workflowId: string }): Promise<{ runId: string }>;
+  getRun(runId: string): Promise<SupervisedRun>;
+  listRuns(filter?: { workflowId?: string; activeOnly?: boolean }): Promise<SupervisedRun[]>;
+  cancel(runId: string): Promise<SupervisedRun>;
+  approveAndApply(input: ApprovalRequest): Promise<SupervisedRun>;
+  openRun(runId: string): Promise<void>;
+  openWorkflow(workspaceId: string, workflowId: string): Promise<void>;
+}
+```
+
+- [ ] **Step 1: Write failing public-service contract tests**
+
+Test compatible-workflow filtering, preflight, start returning before backend
+completion, status reads, cancellation, approval forwarding, and errors for chat
+workflows.
+
+- [ ] **Step 2: Run and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/SupervisedWorkflowService.test.ts`
+
+Expected: FAIL because the public service is absent.
+
+- [ ] **Step 3: Implement and register the stable service**
+
+Register it as `supervisedWorkflowService` through `ServiceDefinitions.ts` and
+expose it through the plugin's existing `getService()` surface. Return plain DTOs;
+do not leak child processes, internal tokens, Obsidian elements, or mutable
+conversation objects.
+
+- [ ] **Step 4: Write failing view tests**
+
+```ts
+expect(renderedRun.statusText).toBe('Awaiting approval');
+expect(renderedRun.details).toContain('promptHash');
+expect(renderedRun.details).not.toContain('capabilityToken');
+expect(cancelButton.disabled).toBe(false);
+```
+
+- [ ] **Step 5: Implement Agent runs list and detail views**
+
+Use registered DOM events, `styles.css`, Obsidian theme variables, accessible
+labels, and sentence-case text. Show run identity, status, trigger, duration,
+hashes, plan validation, operations, trace, stdout/stderr, approval, and readback.
+Absorb the free-form experimental modal entry so there is one production path.
+
+- [ ] **Step 6: Run Task 8 tests**
+
+Run: `npm test -- --runInBand tests/unit/SupervisedWorkflowService.test.ts tests/unit/AgentRunsView.test.ts tests/unit/WorkflowEditorRenderer.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit Task 8**
+
+```bash
+git add src/services/workflows/SupervisedWorkflowService.ts src/ui/workflows/AgentRunsView.ts src/ui/workflows/AgentRunDetailRenderer.ts src/core/services/ServiceDefinitions.ts src/main.ts src/components/workspace/WorkflowEditorRenderer.ts styles.css tests/unit/SupervisedWorkflowService.test.ts tests/unit/AgentRunsView.test.ts
+git commit -m "feat: expose supervised workflow runs"
+```
+
+---
+
+### Task 9: Nexus integration verification
+
+**Files:**
+- Modify only if a test exposes a defect in Tasks 1–8.
+
+**Interfaces:**
+- Verifies the complete Nexus deliverable consumed by the ThinkBox plan.
+
+- [ ] **Step 1: Run all focused suites together**
+
+Run:
+
+```bash
+npm test -- --runInBand \
+  tests/unit/WorkspaceWorkflowExecution.test.ts \
+  tests/unit/WorkflowEditorRenderer.test.ts \
+  tests/unit/AgentCapabilityPolicyService.test.ts \
+  tests/unit/AgentRunProxySource.test.ts \
+  tests/unit/ClaudeHeadlessService.test.ts \
+  tests/unit/ClaudeCliWorkflowBackend.test.ts \
+  tests/unit/VaultChangePlan.test.ts \
+  tests/unit/AgentRunService.test.ts \
+  tests/unit/WorkflowRunService.test.ts \
+  tests/unit/WorkflowScheduleService.test.ts \
+  tests/unit/VaultChangeApplier.test.ts \
+  tests/unit/SupervisedWorkflowService.test.ts \
+  tests/unit/AgentRunsView.test.ts
+```
+
+Expected: PASS with no open handle.
+
+- [ ] **Step 2: Run the complete Nexus suite**
+
+Run: `npm test -- --runInBand`
+
+Expected: PASS. If an established unrelated baseline failure reproduces on the
+base commit, document exact evidence and do not broaden this plan to fix it.
+
+- [ ] **Step 3: Run build and whitespace validation**
+
+Run: `npm run build`
+
+Expected: exit 0.
+
+Run: `git diff --check`
+
+Expected: no output.
+
+- [ ] **Step 4: Prove startup does not await CLI execution**
+
+Run the BackgroundProcessor and scheduler integration test with a never-settling
+fake backend. Expected: background startup completes, exactly one job is queued,
+and no `ClaudeCliWorkflowBackend.start()` call occurs before service readiness.
+
+- [ ] **Step 5: Inspect final scope**
+
+Run: `git status --short` and `git log --oneline <base>..HEAD`.
+
+Expected: only Tasks 1–8 implementation/tests and their intentional commits.
+
+- [ ] **Step 6: Stop at the publication gate**
+
+Do not push, open a PR, release, deploy, reload Nexus, create live prompts, or run
+against the user's live vault without a new explicit authorization.
