@@ -62,4 +62,31 @@ describe('AgentCapabilityPolicyService', () => {
     second.revoke('token-2');
     expect(second.resolve('token-2')).toBeUndefined();
   });
+
+  it('accepts only the exact actively issued grant and rejects forged or revoked grants', () => {
+    const policy = new AgentCapabilityPolicyService(() => 'token-1');
+    const issued = policy.issue('run-1', 'vault-readonly');
+    const forgedGrant = {
+      runId: issued.grant.runId,
+      profile: issued.grant.profile,
+      expiresAt: issued.grant.expiresAt
+    };
+
+    expect(policy.allows(issued.grant, 'contentManager', 'read')).toBe(true);
+    expect(policy.allows(forgedGrant, 'contentManager', 'read')).toBe(false);
+
+    policy.revoke(issued.token);
+    expect(policy.allows(issued.grant, 'contentManager', 'read')).toBe(false);
+  });
+
+  it('invalidates an issued grant when its active issuance expires', () => {
+    let now = 1_000;
+    const policy = new AgentCapabilityPolicyService(() => 'token-1', () => now);
+    const issued = policy.issue('run-1', 'vault-readonly', 50);
+
+    expect(policy.allows(issued.grant, 'contentManager', 'read')).toBe(true);
+
+    now = 1_050;
+    expect(policy.allows(issued.grant, 'contentManager', 'read')).toBe(false);
+  });
 });

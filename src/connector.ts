@@ -21,7 +21,10 @@ import { SearchManagerAgent } from './agents';
 import { MemoryManagerAgent } from './agents';
 import { IAgent } from './agents/interfaces/IAgent';
 import { ITool } from './agents/interfaces/ITool';
-import { agentCapabilityPolicyService } from './services/workflows/AgentCapabilityPolicyService';
+import {
+    agentCapabilityPolicyService,
+    bindAgentCapabilityGrant
+} from './services/workflows/AgentCapabilityPolicyService';
 import type { AgentCapabilityGrant } from './services/workflows/AgentCapabilityPolicyService';
 
 /**
@@ -558,6 +561,19 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
                     ErrorCode.InvalidParams,
                     'Invalid or expired agent capability token'
                 );
+            }
+
+            const capabilityGrant = typedParams._agentCapabilityGrant as AgentCapabilityGrant | undefined;
+            delete typedParams._agentCapabilityGrant;
+            if (capabilityGrant) {
+                if (!isToolManagerMetaTool(agent, tool)
+                    && !agentCapabilityPolicyService.allows(capabilityGrant, agent, tool)) {
+                    throw new McpError(
+                        ErrorCode.InvalidParams,
+                        `Tool "${agent}_${tool}" is not allowed by capability profile vault-readonly`
+                    );
+                }
+                bindAgentCapabilityGrant(typedParams, capabilityGrant);
             }
 
             const toolManagerMetaTool = isToolManagerMetaTool(agent, tool);

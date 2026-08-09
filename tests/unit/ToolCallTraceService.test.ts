@@ -1,6 +1,62 @@
 import { ToolCallTraceService } from '../../src/services/trace/ToolCallTraceService';
 
 describe('ToolCallTraceService', () => {
+  it('never persists internal capability grant or token fields in trace content or metadata', async () => {
+    const memoryService = {
+      recordActivityTrace: jest.fn().mockResolvedValue('trace-1')
+    };
+    const sessionContextManager = {
+      getWorkspaceContext: jest.fn().mockReturnValue(null),
+      setWorkspaceContext: jest.fn()
+    };
+    const workspaceService = {
+      getWorkspaceByNameOrId: jest.fn().mockResolvedValue({
+        id: 'workspace-uuid',
+        name: 'Workspace Name'
+      })
+    };
+    const service = new ToolCallTraceService(
+      memoryService as never,
+      sessionContextManager as never,
+      workspaceService as never,
+      {} as never
+    );
+
+    await service.captureToolCall(
+      'toolManager_useTools',
+      {
+        workspaceId: 'Workspace Name',
+        sessionId: 'session-1',
+        tool: 'content read "Projects/A.md"',
+        _agentCapabilityToken: 'secret-agent-token',
+        _agentCapabilityGrant: {
+          runId: 'run-secret',
+          profile: 'vault-readonly',
+          expiresAt: 9_999
+        },
+        nested: {
+          _agentCapabilityToken: 'nested-secret-agent-token'
+        }
+      },
+      {
+        success: false,
+        providedParams: {
+          _agentCapabilityGrant: { runId: 'run-secret' },
+          _agentCapabilityToken: 'secret-agent-token'
+        }
+      },
+      false,
+      12
+    );
+
+    const trace = memoryService.recordActivityTrace.mock.calls[0][0];
+    const serialized = JSON.stringify(trace);
+    expect(serialized).not.toContain('_agentCapabilityGrant');
+    expect(serialized).not.toContain('_agentCapabilityToken');
+    expect(serialized).not.toContain('secret-agent-token');
+    expect(serialized).not.toContain('run-secret');
+  });
+
   it('resolves top-level workspace names before recording useTools traces', async () => {
     const memoryService = {
       recordActivityTrace: jest.fn().mockResolvedValue('trace-1')

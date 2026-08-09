@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { ToolManagerAgent } from '../../src/agents/toolManager/toolManager';
+import { ToolListStrategy } from '../../src/handlers/strategies/ToolListStrategy';
 import { buildAgentRunProxySource } from '../../src/services/workflows/AgentRunProxySource';
 
 interface ProxyExerciseResult {
@@ -12,7 +14,11 @@ interface ProxyExerciseResult {
   exitCode: number | null;
 }
 
-async function exerciseProxy(lines: string[], token: string): Promise<ProxyExerciseResult> {
+async function exerciseProxy(
+  lines: string[],
+  token: string,
+  responseForRequest?: (request: Record<string, unknown>) => Record<string, unknown>
+): Promise<ProxyExerciseResult> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-agent-proxy-'));
   const socketPath = path.join(tempDir, 'proxy.sock');
   const forwarded: Record<string, unknown>[] = [];
@@ -28,7 +34,12 @@ async function exerciseProxy(lines: string[], token: string): Promise<ProxyExerc
         if (line.length > 0) {
           forwarded.push(JSON.parse(line) as Record<string, unknown>);
           const request = forwarded[forwarded.length - 1];
-          socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { accepted: true } })}\n`);
+          const response = responseForRequest?.(request) ?? {
+            jsonrpc: '2.0',
+            id: request.id,
+            result: { accepted: true }
+          };
+          socket.write(`${JSON.stringify(response)}\n`);
         }
         newline = buffer.indexOf('\n');
       }
@@ -88,7 +99,19 @@ describe('buildAgentRunProxySource', () => {
 
     const result = await exerciseProxy(
       [JSON.stringify(toolCall), JSON.stringify(toolsList)],
-      'secret-agent-token'
+      'secret-agent-token',
+      request => request.method === 'tools/list'
+        ? {
+            jsonrpc: '2.0',
+            id: request.id,
+            result: {
+              tools: [
+                { name: 'toolManager_getTools', inputSchema: { type: 'object' } },
+                { name: 'toolManager_useTools', inputSchema: { type: 'object' } }
+              ]
+            }
+          }
+        : { jsonrpc: '2.0', id: request.id, result: { accepted: true } }
     );
 
     expect(result.exitCode).toBe(0);
@@ -98,6 +121,53 @@ describe('buildAgentRunProxySource', () => {
     );
     expect(result.forwarded[1]).toEqual(toolsList);
     expect(result.stdout).not.toContain('secret-agent-token');
+    expect(result.stderr).not.toContain('secret-agent-token');
+  });
+
+  it('returns a read-only initial tools/list catalog without mutating instructions', async () => {
+    const toolsList = { jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} };
+    const toolManager = new ToolManagerAgent({} as never, new Map());
+    const liveCatalog = await new ToolListStrategy(
+      {} as never,
+      new Map([['toolManager', toolManager]]),
+      true
+    ).handle({ method: 'tools/list' });
+    expect(JSON.stringify(liveCatalog)).toContain('content write');
+    expect(JSON.stringify(liveCatalog)).toContain('storage move');
+
+    const result = await exerciseProxy(
+      [JSON.stringify(toolsList)],
+      'secret-agent-token',
+      request => ({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: liveCatalog
+      })
+    );
+
+    const response = JSON.parse(result.stdout.trim()) as {
+      result: { tools: Array<{ name: string; description: string }> };
+    };
+    expect(result.exitCode).toBe(0);
+    expect(response.result.tools.map(tool => tool.name)).toEqual([
+      'toolManager_getTools',
+      'toolManager_useTools'
+    ]);
+    expect(JSON.stringify(response)).not.toContain('content write');
+    expect(JSON.stringify(response)).not.toContain('storage move');
+    expect(JSON.stringify(response)).toContain('vault-readonly');
+  });
+
+  it('fails closed when Nexus returns a malformed tools/list catalog', async () => {
+    const toolsList = { jsonrpc: '2.0', id: 8, method: 'tools/list', params: {} };
+    const result = await exerciseProxy(
+      [JSON.stringify(toolsList)],
+      'secret-agent-token',
+      request => ({ jsonrpc: '2.0', id: request.id, result: { accepted: true } })
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe('');
     expect(result.stderr).not.toContain('secret-agent-token');
   });
 

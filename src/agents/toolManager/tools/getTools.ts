@@ -4,7 +4,10 @@ import { getErrorMessage } from '../../../utils/errorUtils';
 import { SchemaData, WorkspaceNameProvider } from '../toolManager';
 import { GetToolsParams, GetToolsResult } from '../types';
 import { ToolCliNormalizer } from '../services/ToolCliNormalizer';
-import { agentCapabilityPolicyService } from '../../../services/workflows/AgentCapabilityPolicyService';
+import {
+  agentCapabilityPolicyService,
+  getBoundAgentCapabilityGrant
+} from '../../../services/workflows/AgentCapabilityPolicyService';
 
 const INTERNAL_ONLY_TOOLS = new Set<string>([]);
 
@@ -159,6 +162,7 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
 
   async execute(params: GetToolsParams): Promise<GetToolsResult> {
     try {
+      const capabilityGrant = getBoundAgentCapabilityGrant(params);
       const requests = this.cliNormalizer.normalizeDiscoveryRequests(params);
       const resultSchemas = [];
       const notFound: string[] = [];
@@ -178,8 +182,8 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
         if (!item.tools || item.tools.length === 0) {
           const allTools = agent.getTools().filter(tool =>
             !INTERNAL_ONLY_TOOLS.has(tool.slug)
-            && (!params._agentCapabilityGrant
-              || agentCapabilityPolicyService.allows(params._agentCapabilityGrant, item.agent, tool.slug))
+            && (!capabilityGrant
+              || agentCapabilityPolicyService.allows(capabilityGrant, item.agent, tool.slug))
           );
           for (const tool of allTools) {
             resultSchemas.push(this.cliNormalizer.buildCliSchema(item.agent, tool, { compact: true }));
@@ -194,8 +198,8 @@ export class GetToolsTool implements ITool<GetToolsParams, GetToolsResult> {
             continue;
           }
 
-          if (params._agentCapabilityGrant
-            && !agentCapabilityPolicyService.allows(params._agentCapabilityGrant, item.agent, toolSlug)) {
+          if (capabilityGrant
+            && !agentCapabilityPolicyService.allows(capabilityGrant, item.agent, toolSlug)) {
             notFound.push(`Tool "${toolSlug}" not found in agent "${item.agent}"`);
             continue;
           }

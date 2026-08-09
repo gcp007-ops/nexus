@@ -99,6 +99,28 @@ function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+const INTERNAL_CAPABILITY_FIELDS = new Set([
+  '_agentCapabilityGrant',
+  '_agentCapabilityToken'
+]);
+
+function sanitizeCapabilityData(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeCapabilityData(item));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!INTERNAL_CAPABILITY_FIELDS.has(key)) {
+      sanitized[key] = sanitizeCapabilityData(entry);
+    }
+  }
+  return sanitized;
+}
+
 export interface ToolCallCaptureData {
   toolName: string;
   params: ToolCallParams;
@@ -141,10 +163,13 @@ export class ToolCallTraceService {
     _executionTime: number
   ): Promise<void> {
     try {
+      const sanitizedParams = sanitizeCapabilityData(params);
+      const sanitizedResponse = sanitizeCapabilityData(response);
+
       // 1. Extract agent and mode from tool name
       const { agent, mode } = this.parseToolName(toolName);
-      const paramsRecord = asRecord(params);
-      const responseRecord = asRecord(response);
+      const paramsRecord = asRecord(sanitizedParams);
+      const responseRecord = asRecord(sanitizedResponse);
 
       // 2. Get session ID from params
       const sessionId = this.extractSessionId(paramsRecord);

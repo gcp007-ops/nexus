@@ -11,6 +11,22 @@ export interface IssuedAgentCapability {
   grant: AgentCapabilityGrant;
 }
 
+const grantsByExecutionParams = new WeakMap<object, AgentCapabilityGrant>();
+
+/** Bind trusted authority out-of-band so it is not a tool parameter or DTO. */
+export function bindAgentCapabilityGrant(
+  params: object,
+  grant: AgentCapabilityGrant
+): void {
+  grantsByExecutionParams.set(params, grant);
+}
+
+export function getBoundAgentCapabilityGrant(
+  params: object
+): AgentCapabilityGrant | undefined {
+  return grantsByExecutionParams.get(params);
+}
+
 type TokenFactory = () => string;
 type Clock = () => number;
 
@@ -42,6 +58,7 @@ function createSecureToken(): string {
 
 export class AgentCapabilityPolicyService {
   private readonly grantsByToken = new Map<string, AgentCapabilityGrant>();
+  private readonly tokensByGrant = new Map<AgentCapabilityGrant, string>();
 
   constructor(
     private readonly tokenFactory: TokenFactory = createSecureToken,
@@ -67,6 +84,7 @@ export class AgentCapabilityPolicyService {
       expiresAt: this.now() + ttlMs
     });
     this.grantsByToken.set(token, grant);
+    this.tokensByGrant.set(grant, token);
     return { token, grant };
   }
 
@@ -77,17 +95,28 @@ export class AgentCapabilityPolicyService {
     }
     if (this.now() >= grant.expiresAt) {
       this.grantsByToken.delete(token);
+      this.tokensByGrant.delete(grant);
       return undefined;
     }
     return grant;
   }
 
   revoke(token: string): void {
+    const grant = this.grantsByToken.get(token);
     this.grantsByToken.delete(token);
+    if (grant) {
+      this.tokensByGrant.delete(grant);
+    }
   }
 
   allows(grant: AgentCapabilityGrant, agent: string, tool: string): boolean {
+    const token = this.tokensByGrant.get(grant);
+    if (!token || this.grantsByToken.get(token) !== grant) {
+      return false;
+    }
     if (this.now() >= grant.expiresAt || grant.profile !== 'vault-readonly') {
+      this.grantsByToken.delete(token);
+      this.tokensByGrant.delete(grant);
       return false;
     }
     return VAULT_READONLY_TOOLS.has(`${agent}:${tool}`);

@@ -17,7 +17,11 @@ import type { ITool } from '../../src/agents/interfaces/ITool';
 import { GetToolsTool } from '../../src/agents/toolManager/tools/getTools';
 import { UseToolTool } from '../../src/agents/toolManager/tools/useTools';
 import { ToolBatchExecutionService } from '../../src/agents/toolManager/services/ToolBatchExecutionService';
-import { agentCapabilityPolicyService } from '../../src/services/workflows/AgentCapabilityPolicyService';
+import {
+  agentCapabilityPolicyService,
+  bindAgentCapabilityGrant,
+  getBoundAgentCapabilityGrant
+} from '../../src/services/workflows/AgentCapabilityPolicyService';
 import { MCPConnector } from '../../src/connector';
 
 const FILLED = {
@@ -175,11 +179,12 @@ describe('agent capability context contract', () => {
 
     try {
       const getTools = new GetToolsTool(registry, { workspaces: [], customAgents: [], vaultRoot: [] });
-      const discovered = await getTools.execute({
+      const discoveryParams = {
         ...FILLED,
-        tool: '--help',
-        _agentCapabilityGrant: issued.grant
-      });
+        tool: '--help'
+      };
+      bindAgentCapabilityGrant(discoveryParams, issued.grant);
+      const discovered = await getTools.execute(discoveryParams);
       const commands = discovered.data?.tools.map(tool => tool.command) ?? [];
       expect(commands).toContain('content read');
       expect(commands).not.toContain('content write');
@@ -189,11 +194,12 @@ describe('agent capability context contract', () => {
         new ToolBatchExecutionService({} as never, registry),
         normalizer
       );
-      const result = await useTools.execute({
+      const executionParams = {
         ...FILLED,
-        tool: 'content write "x.md" "blocked"',
-        _agentCapabilityGrant: issued.grant
-      });
+        tool: 'content write "x.md" "blocked"'
+      };
+      bindAgentCapabilityGrant(executionParams, issued.grant);
+      const result = await useTools.execute(executionParams);
 
       expect(result).toMatchObject({ success: false });
       expect(result.error).toContain('capability profile vault-readonly');
@@ -202,6 +208,51 @@ describe('agent capability context contract', () => {
       agentCapabilityPolicyService.revoke(issued.token);
     }
   });
+
+  it.each(['serial', 'parallel'] as const)(
+    'checks every normalized call in a mixed %s batch before invoking its tool',
+    async strategy => {
+      const read = jest.fn().mockResolvedValue({ success: true });
+      const write = jest.fn().mockResolvedValue({ success: true });
+      const tools = [makeTool('read', read), makeTool('write', write)];
+      const registry = new Map<string, IAgent>([['contentManager', makeContentAgent(tools)]]);
+      const issued = agentCapabilityPolicyService.issue(`run-mixed-${strategy}`, 'vault-readonly');
+      const batch = new ToolBatchExecutionService({} as never, registry);
+
+      try {
+        const result = await batch.execute({
+          context: FILLED,
+          strategy,
+          _agentCapabilityGrant: issued.grant,
+          calls: [
+            { agent: 'contentManager', tool: 'read', params: { path: 'a.md' } },
+            {
+              agent: 'contentManager',
+              tool: 'write',
+              params: { path: 'blocked.md', content: 'blocked' },
+              continueOnFailure: true
+            },
+            { agent: 'contentManager', tool: 'read', params: { path: 'b.md' } }
+          ]
+        });
+
+        expect(result).toMatchObject({
+          success: false,
+          data: {
+            results: [
+              { agent: 'contentManager', tool: 'read', success: true },
+              { agent: 'contentManager', tool: 'write', success: false },
+              { agent: 'contentManager', tool: 'read', success: true }
+            ]
+          }
+        });
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(write).not.toHaveBeenCalled();
+      } finally {
+        agentCapabilityPolicyService.revoke(issued.token);
+      }
+    }
+  );
 
   it('keeps capability internals out of public tool schemas', () => {
     const registry = new Map<string, IAgent>([['contentManager', makeContentAgent([makeTool('read')])]]);
@@ -252,8 +303,9 @@ describe('agent capability context contract', () => {
       });
 
       const routed = executeAgentTool.mock.calls[0][2] as Record<string, unknown>;
-      expect(routed._agentCapabilityGrant).toBe(issued.grant);
+      expect(routed).not.toHaveProperty('_agentCapabilityGrant');
       expect(routed).not.toHaveProperty('_agentCapabilityToken');
+      expect(getBoundAgentCapabilityGrant(routed)).toBe(issued.grant);
     } finally {
       agentCapabilityPolicyService.revoke(issued.token);
     }
@@ -286,6 +338,34 @@ describe('agent capability context contract', () => {
       }
     })).rejects.toThrow(/invalid or expired agent capability token/i);
     expect(executeAgentTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a tokenized raw legacy mutator on the direct connector path', async () => {
+    const executeAgentTool = jest.fn().mockResolvedValue({ success: true });
+    const connector = Object.create(MCPConnector.prototype) as MCPConnector;
+    Object.assign(connector as unknown as Record<string, unknown>, {
+      toolRouter: {
+        validateBatchOperations: jest.fn(),
+        executeAgentTool
+      }
+    });
+    const issued = agentCapabilityPolicyService.issue('run-direct-legacy', 'vault-readonly');
+
+    try {
+      await expect(connector.callTool({
+        agent: 'contentManager',
+        tool: 'write',
+        params: {
+          sessionId: 'session-1',
+          path: 'blocked.md',
+          content: 'blocked',
+          _agentCapabilityToken: issued.token
+        }
+      })).rejects.toThrow(/not allowed by capability profile vault-readonly/i);
+      expect(executeAgentTool).not.toHaveBeenCalled();
+    } finally {
+      agentCapabilityPolicyService.revoke(issued.token);
+    }
   });
 
   it('sanitizes capability context on the external MCP request hook', async () => {

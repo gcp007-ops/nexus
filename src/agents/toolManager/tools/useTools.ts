@@ -2,6 +2,7 @@ import { ITool } from '../../interfaces/ITool';
 import { ToolBatchExecutionService } from '../services/ToolBatchExecutionService';
 import { ToolCliNormalizer } from '../services/ToolCliNormalizer';
 import { NormalizedUseToolParams, UseToolParams, UseToolResult } from '../types';
+import { getBoundAgentCapabilityGrant } from '../../../services/workflows/AgentCapabilityPolicyService';
 
 export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
   slug: string;
@@ -29,7 +30,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
       context: this.cliNormalizer.normalizeContext(params),
       calls: this.cliNormalizer.normalizeExecutionCalls(params),
       strategy: params.strategy,
-      _agentCapabilityGrant: params._agentCapabilityGrant
+      _agentCapabilityGrant: getBoundAgentCapabilityGrant(params)
     };
     return this.batchExecutionService.execute(normalizedParams);
   }

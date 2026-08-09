@@ -5,6 +5,11 @@ import { IAgent } from '../../agents/interfaces/IAgent';
 import { SessionContextManager } from '../../services/SessionContextManager';
 import { logger } from '../../utils/logger';
 import { getErrorMessage } from '../../utils/errorUtils';
+import {
+    agentCapabilityPolicyService,
+    bindAgentCapabilityGrant,
+    type AgentCapabilityGrant
+} from '../../services/workflows/AgentCapabilityPolicyService';
 
 /** Callback type for tool response handling */
 type ToolResponseCallback = (
@@ -79,7 +84,11 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
         
         try {
             context = await this.buildRequestContext(request);
+            const capabilityGrant = this.prepareCapabilityBoundary(context);
             const processedParams = await this.processParameters(context);
+            if (capabilityGrant && context.agentName === 'toolManager') {
+                bindAgentCapabilityGrant(processedParams, capabilityGrant);
+            }
             result = await this.executeTool(context, processedParams);
             success = true;
             
@@ -89,7 +98,7 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
                     const executionTime = Date.now() - startTime;
                     await this.onToolResponse(
                         request.params.name,
-                        context.params,
+                        this.sanitizeCapabilityParams(context.params),
                         result,
                         success,
                         executionTime
@@ -112,7 +121,7 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
                     const errorResult: ToolExecutionResult = { success: false, error: (error as Error).message };
                     await this.onToolResponse(
                         request.params.name,
-                        context.params,
+                        this.sanitizeCapabilityParams(context.params),
                         errorResult,
                         false,
                         executionTime
@@ -157,7 +166,7 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
             const errorResult = {
                 success: false,
                 error: enhancedMessage,
-                providedParams: context?.params,
+                providedParams: context ? this.sanitizeCapabilityParams(context.params) : undefined,
                 expectedParams: parameterSchema?.required,
                 suggestions: [
                     'Double-check all required parameters are provided',
@@ -360,6 +369,50 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
         }
 
         return processedParams;
+    }
+
+    /**
+     * Legacy MCP names bypass ToolManager's normalized batch executor, so their
+     * capability check belongs at this request boundary. Calls without trusted
+     * capability context remain available to the normal connector.
+     */
+    private prepareCapabilityBoundary(context: IRequestContext): AgentCapabilityGrant | undefined {
+        const hasGrant = Object.prototype.hasOwnProperty.call(context.params, '_agentCapabilityGrant');
+        const hasToken = Object.prototype.hasOwnProperty.call(context.params, '_agentCapabilityToken');
+        if (!hasGrant && !hasToken) {
+            return undefined;
+        }
+
+        const grant = context.params._agentCapabilityGrant as AgentCapabilityGrant | undefined;
+        context.params = this.sanitizeCapabilityParams(context.params);
+        if (context.agentName !== 'toolManager'
+            && (!grant || !agentCapabilityPolicyService.allows(grant, context.agentName, context.tool))) {
+            const profile = grant?.profile === 'vault-readonly' ? grant.profile : 'vault-readonly';
+            throw new Error(
+                `Tool "${context.agentName}_${context.tool}" is not allowed by capability profile ${profile}`
+            );
+        }
+        return grant;
+    }
+
+    private sanitizeCapabilityParams(params: Record<string, unknown>): Record<string, unknown> {
+        const sanitized: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(params)) {
+            if (key !== '_agentCapabilityGrant' && key !== '_agentCapabilityToken') {
+                sanitized[key] = this.sanitizeCapabilityValue(value);
+            }
+        }
+        return sanitized;
+    }
+
+    private sanitizeCapabilityValue(value: unknown): unknown {
+        if (Array.isArray(value)) {
+            return value.map(item => this.sanitizeCapabilityValue(item));
+        }
+        if (typeof value !== 'object' || value === null) {
+            return value;
+        }
+        return this.sanitizeCapabilityParams(value as Record<string, unknown>);
     }
 
     private async executeTool(context: IRequestContext, processedParams: EnhancedToolParams): Promise<ToolExecutionResult> {
