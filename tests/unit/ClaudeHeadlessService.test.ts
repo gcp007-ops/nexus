@@ -6,9 +6,14 @@ import {
   type ClaudeHeadlessProcessResult,
   type ClaudeHeadlessServiceDependencies
 } from '../../src/services/external/ClaudeHeadlessService';
+import { resolveDesktopBinaryPath } from '../../src/utils/binaryDiscovery';
 
 jest.mock('../../src/utils/desktopProcess', () => ({
   spawnDesktopProcess: jest.fn()
+}));
+
+jest.mock('../../src/utils/binaryDiscovery', () => ({
+  resolveDesktopBinaryPath: jest.fn()
 }));
 
 type MockChildProcess = EventEmitter & {
@@ -48,11 +53,18 @@ describe('ClaudeHeadlessService', () => {
   const { spawnDesktopProcess } = jest.requireMock('../../src/utils/desktopProcess') as {
     spawnDesktopProcess: jest.Mock;
   };
+  const resolveDesktopBinaryPathMock = resolveDesktopBinaryPath as jest.Mock;
   let service: ClaudeHeadlessService;
 
   beforeEach(() => {
     Platform.isDesktop = true;
     Platform.isWin = false;
+    resolveDesktopBinaryPathMock.mockReset();
+    resolveDesktopBinaryPathMock.mockImplementation((binaryName: string, options?: {
+      windowsExecutable?: string;
+    }) => options?.windowsExecutable === 'native-only'
+      ? `C:\\Program Files\\${binaryName}\\${binaryName}.exe`
+      : `C:\\Users\\test\\AppData\\Roaming\\npm\\${binaryName}.cmd`);
     service = new ClaudeHeadlessService(
       {
         vault: {
@@ -179,7 +191,7 @@ describe('ClaudeHeadlessService', () => {
     expect(result.stderr).toContain('Claude headless command is too large for Windows argv transport');
   });
 
-  it('passes capability variables only when explicitly supplied for a workflow child', () => {
+  it('never places a capability token in the Claude environment', () => {
     const previousToken = process.env.NEXUS_AGENT_RUN_TOKEN;
     const previousSocket = process.env.NEXUS_MCP_SOCKET_PATH;
     const previousAlternateToken = process.env.nexus_agent_run_token;
@@ -198,19 +210,18 @@ describe('ClaudeHeadlessService', () => {
 
       const explicitEnv = service.buildClaudeEnv({
         NEXUS_AGENT_RUN_TOKEN: 'fresh-run-token',
+        nexus_agent_run_token: 'fresh-alternate-token',
         NEXUS_MCP_SOCKET_PATH: '/tmp/fresh-run.sock'
       });
       expect(explicitEnv).toMatchObject({
-        NEXUS_AGENT_RUN_TOKEN: 'fresh-run-token',
         NEXUS_MCP_SOCKET_PATH: '/tmp/fresh-run.sock'
       });
       expect(Object.keys(explicitEnv).filter((key) =>
         key.toUpperCase() === 'NEXUS_AGENT_RUN_TOKEN'
-        || key.toUpperCase() === 'NEXUS_MCP_SOCKET_PATH'
-      )).toEqual([
-        'NEXUS_AGENT_RUN_TOKEN',
-        'NEXUS_MCP_SOCKET_PATH'
-      ]);
+      )).toEqual([]);
+      expect(Object.keys(explicitEnv).filter((key) =>
+        key.toUpperCase() === 'NEXUS_MCP_SOCKET_PATH'
+      )).toEqual(['NEXUS_MCP_SOCKET_PATH']);
     } finally {
       if (previousToken === undefined) {
         delete process.env.NEXUS_AGENT_RUN_TOKEN;
@@ -233,6 +244,26 @@ describe('ClaudeHeadlessService', () => {
         process.env.NeXuS_McP_SoCkEt_PaTh = previousAlternateSocket;
       }
     }
+  });
+
+  it('integrates native-only Windows resolution into the supervised runtime', () => {
+    Platform.isWin = true;
+    jest.spyOn(service as unknown as {
+      getVaultBasePath: () => string | null;
+    }, 'getVaultBasePath').mockReturnValue('/mock/vault');
+
+    const runtime = service.getWorkflowRuntime();
+
+    expect(runtime).toMatchObject({
+      claudePath: 'C:\\Program Files\\claude\\claude.exe',
+      nodePath: 'C:\\Program Files\\node\\node.exe'
+    });
+    expect(resolveDesktopBinaryPathMock).toHaveBeenNthCalledWith(1, 'claude', {
+      windowsExecutable: 'native-only'
+    });
+    expect(resolveDesktopBinaryPathMock).toHaveBeenNthCalledWith(2, 'node', {
+      windowsExecutable: 'native-only'
+    });
   });
 
   it('caps captured output and ignores terminal events after close', async () => {
@@ -424,15 +455,17 @@ describe('ClaudeHeadlessService', () => {
     jest.useRealTimers();
   });
 
-  it('rejects termination when Windows taskkill reports failure', async () => {
+  it('forces Windows tree termination after graceful taskkill fails and the root closes', async () => {
+    jest.useFakeTimers();
     Platform.isWin = true;
     const child = createMockChildProcess();
     spawnDesktopProcess.mockReturnValue(child);
-    const taskkill = new EventEmitter();
+    const gracefulTaskkill = new EventEmitter();
+    const forcedTaskkill = new EventEmitter();
     const childProcessModule = require('child_process') as typeof import('child_process');
-    const taskkillSpawn = jest.spyOn(childProcessModule, 'spawn').mockReturnValue(
-      taskkill as ReturnType<typeof childProcessModule.spawn>
-    );
+    const taskkillSpawn = jest.spyOn(childProcessModule, 'spawn')
+      .mockReturnValueOnce(gracefulTaskkill as ReturnType<typeof childProcessModule.spawn>)
+      .mockReturnValueOnce(forcedTaskkill as ReturnType<typeof childProcessModule.spawn>);
     const handle = service.startProcess({
       command: 'C:\\Program Files\\Claude\\claude.exe',
       args: ['-p'],
@@ -440,9 +473,8 @@ describe('ClaudeHeadlessService', () => {
       terminationGraceMs: 10
     });
 
-    const termination = handle.terminateTree();
-    const observedTermination = termination.then(
-      () => null,
+    const observedTermination = handle.terminateTree().then(
+      () => 'resolved' as const,
       (error: unknown) => error
     );
     await Promise.resolve();
@@ -452,12 +484,61 @@ describe('ClaudeHeadlessService', () => {
       expect.objectContaining({ windowsHide: true })
     );
 
-    taskkill.emit('close', 1);
+    gracefulTaskkill.emit('close', 1);
+    child.emit('close', null);
+    await jest.advanceTimersByTimeAsync(10);
+
+    expect(taskkillSpawn).toHaveBeenNthCalledWith(
+      2,
+      'taskkill',
+      ['/PID', '42', '/T', '/F'],
+      expect.objectContaining({ windowsHide: true })
+    );
+    forcedTaskkill.emit('close', 0);
+
+    await expect(observedTermination).resolves.toBe('resolved');
+    await handle.result;
+    jest.useRealTimers();
+  });
+
+  it('rejects Windows termination when forced taskkill does not confirm success', async () => {
+    jest.useFakeTimers();
+    Platform.isWin = true;
+    const child = createMockChildProcess();
+    spawnDesktopProcess.mockReturnValue(child);
+    const gracefulTaskkill = new EventEmitter();
+    const forcedTaskkill = new EventEmitter();
+    const childProcessModule = require('child_process') as typeof import('child_process');
+    const taskkillSpawn = jest.spyOn(childProcessModule, 'spawn')
+      .mockReturnValueOnce(gracefulTaskkill as ReturnType<typeof childProcessModule.spawn>)
+      .mockReturnValueOnce(forcedTaskkill as ReturnType<typeof childProcessModule.spawn>);
+    const handle = service.startProcess({
+      command: 'C:\\Program Files\\Claude\\claude.exe',
+      args: ['-p'],
+      shell: false,
+      terminationGraceMs: 10
+    });
+
+    const observedTermination = handle.terminateTree().then(
+      () => null,
+      (error: unknown) => error
+    );
+    await Promise.resolve();
+    gracefulTaskkill.emit('close', 0);
+    await jest.advanceTimersByTimeAsync(10);
+    forcedTaskkill.emit('close', 1);
     child.emit('close', null);
 
     await expect(observedTermination).resolves.toEqual(
       expect.objectContaining({ message: expect.stringContaining('taskkill') })
     );
+    expect(taskkillSpawn).toHaveBeenNthCalledWith(
+      2,
+      'taskkill',
+      ['/PID', '42', '/T', '/F'],
+      expect.objectContaining({ windowsHide: true })
+    );
     await handle.result;
+    jest.useRealTimers();
   });
 });

@@ -22,6 +22,10 @@ const STATIC_COMMON_WINDOWS_BIN_DIRS = [
     'C:\\Program Files\\Anthropic\\Claude'
 ];
 
+export interface DesktopBinaryResolutionOptions {
+    windowsExecutable?: 'legacy' | 'native-only';
+}
+
 function loadDesktopModule<TModuleName extends keyof DesktopModuleMap>(
     moduleName: TModuleName
 ): DesktopModuleMap[TModuleName] {
@@ -40,17 +44,20 @@ function loadDesktopModule<TModuleName extends keyof DesktopModuleMap>(
     return maybeRequire(moduleName) as DesktopModuleMap[TModuleName];
 }
 
-export function resolveDesktopBinaryPath(binaryName: string): string | null {
+export function resolveDesktopBinaryPath(
+    binaryName: string,
+    options: DesktopBinaryResolutionOptions = {}
+): string | null {
     if (!Platform.isDesktop) {
         return null;
     }
 
-    const fromPath = resolveFromCurrentPath(binaryName);
+    const fromPath = resolveFromCurrentPath(binaryName, options);
     if (fromPath) {
         return fromPath;
     }
 
-    const fromCommonLocations = resolveFromCommonLocations(binaryName);
+    const fromCommonLocations = resolveFromCommonLocations(binaryName, options);
     if (fromCommonLocations) {
         return fromCommonLocations;
     }
@@ -58,7 +65,10 @@ export function resolveDesktopBinaryPath(binaryName: string): string | null {
     return resolveFromLoginShell(binaryName);
 }
 
-function resolveFromCurrentPath(binaryName: string): string | null {
+function resolveFromCurrentPath(
+    binaryName: string,
+    options: DesktopBinaryResolutionOptions
+): string | null {
     if (!Platform.isDesktop) {
         return null;
     }
@@ -77,8 +87,14 @@ function resolveFromCurrentPath(binaryName: string): string | null {
             .split(/\r?\n/)
             .map((line) => line.trim())
             .filter(Boolean);
+        const nativeOnly = Platform.isWin && options.windowsExecutable === 'native-only';
         const preferredLine = Platform.isWin
-            ? lines.find((line) => isWindowsCommandWrapperPath(line) && nodeFs.existsSync(line))
+            ? lines.find((line) => (
+                (nativeOnly
+                    ? isWindowsNativeExecutablePath(line)
+                    : isWindowsCommandWrapperPath(line))
+                && nodeFs.existsSync(line)
+            ))
             : null;
 
         if (preferredLine) {
@@ -86,7 +102,10 @@ function resolveFromCurrentPath(binaryName: string): string | null {
         }
 
         for (const line of lines) {
-            if (nodeFs.existsSync(line)) {
+            if (
+                nodeFs.existsSync(line)
+                && (!nativeOnly || isWindowsNativeExecutablePath(line))
+            ) {
                 return line;
             }
         }
@@ -97,7 +116,10 @@ function resolveFromCurrentPath(binaryName: string): string | null {
     return null;
 }
 
-function resolveFromCommonLocations(binaryName: string): string | null {
+function resolveFromCommonLocations(
+    binaryName: string,
+    options: DesktopBinaryResolutionOptions
+): string | null {
     if (!Platform.isDesktop) {
         return null;
     }
@@ -107,7 +129,9 @@ function resolveFromCommonLocations(binaryName: string): string | null {
         const pathMod = loadDesktopModule('path');
         const binDirs = Platform.isWin ? getCommonWindowsBinDirs() : COMMON_UNIX_BIN_DIRS;
         const candidateNames = Platform.isWin
-            ? [`${binaryName}.cmd`, `${binaryName}.bat`, `${binaryName}.exe`, binaryName]
+            ? options.windowsExecutable === 'native-only'
+                ? [`${binaryName}.exe`]
+                : [`${binaryName}.cmd`, `${binaryName}.bat`, `${binaryName}.exe`, binaryName]
             : [binaryName];
 
         for (const dir of binDirs) {
@@ -127,6 +151,10 @@ function resolveFromCommonLocations(binaryName: string): string | null {
 
 function isWindowsCommandWrapperPath(path: string): boolean {
     return /\.(cmd|bat)$/i.test(path);
+}
+
+function isWindowsNativeExecutablePath(path: string): boolean {
+    return /\.exe$/i.test(path);
 }
 
 function getCommonWindowsBinDirs(): string[] {

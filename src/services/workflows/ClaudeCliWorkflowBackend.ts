@@ -244,14 +244,6 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
                 artifacts.proxyPath,
                 buildAgentRunProxySource()
               );
-              await artifacts.writeFile(
-                artifacts.mcpConfigPath,
-                JSON.stringify(
-                  this.buildMcpConfig(runtime.nodePath, artifacts.proxyPath),
-                  null,
-                  2
-                )
-              );
 
               if (state.terminalIntent) {
                 status = state.terminalIntent;
@@ -262,22 +254,35 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
                   this.capabilityTtlMs(request.timeoutMs)
                 );
                 token = issued.token;
-                state.processHandle = this.dependencies.headlessService.startProcess(
-                  this.buildProcessOptions(request, runtime, artifacts, token)
+                await artifacts.writeFile(
+                  artifacts.mcpConfigPath,
+                  JSON.stringify(
+                    this.buildMcpConfig(runtime.nodePath, artifacts.proxyPath, token),
+                    null,
+                    2
+                  )
                 );
-                workflowProcessStarted = true;
-                this.startTerminationIfNeeded(state);
-                const processResult = await state.processHandle.result;
-                await Promise.resolve(state.termination);
-                state.terminalLocked = true;
-                stdout = processResult.stdout;
-                stderr = processResult.stderr;
-                stdoutTruncated = processResult.stdoutTruncated;
-                stderrTruncated = processResult.stderrTruncated;
-                exitCode = processResult.exitCode;
-                status = state.terminalIntent ?? (
-                  processResult.exitCode === 0 ? 'completed' : 'failed'
-                );
+
+                if (state.terminalIntent) {
+                  status = state.terminalIntent;
+                } else {
+                  state.processHandle = this.dependencies.headlessService.startProcess(
+                    this.buildProcessOptions(request, runtime, artifacts)
+                  );
+                  workflowProcessStarted = true;
+                  this.startTerminationIfNeeded(state);
+                  const processResult = await state.processHandle.result;
+                  await Promise.resolve(state.termination);
+                  state.terminalLocked = true;
+                  stdout = processResult.stdout;
+                  stderr = processResult.stderr;
+                  stdoutTruncated = processResult.stdoutTruncated;
+                  stderrTruncated = processResult.stderrTruncated;
+                  exitCode = processResult.exitCode;
+                  status = state.terminalIntent ?? (
+                    processResult.exitCode === 0 ? 'completed' : 'failed'
+                  );
+                }
               }
             }
           }
@@ -365,8 +370,7 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
   private buildProcessOptions(
     request: WorkflowExecutionRequest,
     runtime: ResolvedWorkflowRuntime,
-    artifacts: WorkflowTempArtifacts,
-    token: string
+    artifacts: WorkflowTempArtifacts
   ): ClaudeHeadlessProcessOptions {
     const allowedMcpTools = this.buildAllowedMcpTools();
     return {
@@ -395,8 +399,7 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
         NEXUS_MCP_SOCKET_PATH: getPrimaryIpcPath(
           this.app.vault.getName(),
           Platform.isWin
-        ),
-        NEXUS_AGENT_RUN_TOKEN: token
+        )
       }),
       stdinText: request.prompt.trim(),
       maxOutputChars: WORKFLOW_OUTPUT_LIMIT_CHARS
@@ -413,14 +416,22 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
 
   private buildMcpConfig(
     nodePath: string,
-    proxyPath: string
+    proxyPath: string,
+    token: string
   ): Record<string, unknown> {
     return {
       mcpServers: {
         [getPrimaryServerKey(this.app.vault.getName())]: {
           type: 'stdio',
           command: nodePath,
-          args: [proxyPath]
+          args: [proxyPath],
+          env: {
+            NEXUS_AGENT_RUN_TOKEN: token,
+            NEXUS_MCP_SOCKET_PATH: getPrimaryIpcPath(
+              this.app.vault.getName(),
+              Platform.isWin
+            )
+          }
         }
       }
     };
@@ -462,8 +473,8 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     ) {
       return false;
     }
-    return !this.isWindowsCommandWrapper(runtime.claudePath)
-      && !this.isWindowsCommandWrapper(runtime.nodePath);
+    return this.isSafeNativeWindowsExecutable(runtime.claudePath)
+      && this.isSafeNativeWindowsExecutable(runtime.nodePath);
   }
 
   private validateRuntimeMessage(runtime: ClaudeHeadlessWorkflowRuntime): string {
@@ -476,17 +487,17 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     if (!runtime.nodePath) {
       return 'Node.js was not found on PATH.';
     }
-    if (runtime.claudePath && this.isWindowsCommandWrapper(runtime.claudePath)) {
+    if (runtime.claudePath && !this.isSafeNativeWindowsExecutable(runtime.claudePath)) {
       return 'Supervised execution requires a native Claude executable on Windows; .cmd and .bat wrappers are not allowed.';
     }
-    if (runtime.nodePath && this.isWindowsCommandWrapper(runtime.nodePath)) {
+    if (runtime.nodePath && !this.isSafeNativeWindowsExecutable(runtime.nodePath)) {
       return 'Supervised execution requires a native Node.js executable on Windows; .cmd and .bat wrappers are not allowed.';
     }
     return 'Vault base path is unavailable.';
   }
 
-  private isWindowsCommandWrapper(command: string): boolean {
-    return Platform.isWin && /\.(cmd|bat)$/iu.test(command);
+  private isSafeNativeWindowsExecutable(command: string): boolean {
+    return !Platform.isWin || /\.exe$/iu.test(command);
   }
 
   private capabilityTtlMs(timeoutMs: number): number {

@@ -49,6 +49,34 @@ describe('resolveDesktopBinaryPath', () => {
     expect(resolveDesktopBinaryPath('claude')).toBe('C:\\Tools\\claude');
   });
 
+  it('prefers a native Windows executable when supervised resolution is requested', () => {
+    execSyncMock.mockReturnValue(
+      [
+        'C:\\Users\\test\\AppData\\Roaming\\npm\\claude',
+        'C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd',
+        'C:\\Program Files\\Claude\\claude.exe'
+      ].join('\r\n') as never
+    );
+    existsSyncMock.mockReturnValue(true);
+
+    expect(resolveDesktopBinaryPath('claude', {
+      windowsExecutable: 'native-only'
+    })).toBe('C:\\Program Files\\Claude\\claude.exe');
+  });
+
+  it('fails closed when supervised Windows resolution finds only wrappers', () => {
+    execSyncMock.mockReturnValue(
+      'C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd\r\n' as never
+    );
+    existsSyncMock.mockImplementation((path) => (
+      String(path).toLowerCase().endsWith('claude.cmd')
+    ));
+
+    expect(resolveDesktopBinaryPath('claude', {
+      windowsExecutable: 'native-only'
+    })).toBeNull();
+  });
+
   it('checks the npm global bin directory from APPDATA with wrapper-first ordering', () => {
     process.env.APPDATA = 'C:\\Users\\test\\AppData\\Roaming';
     execSyncMock.mockImplementation(() => {

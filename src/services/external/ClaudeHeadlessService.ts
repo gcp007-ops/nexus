@@ -97,8 +97,12 @@ export class ClaudeHeadlessService {
 
     getWorkflowRuntime(): ClaudeHeadlessWorkflowRuntime {
         return {
-            claudePath: resolveDesktopBinaryPath('claude'),
-            nodePath: resolveDesktopBinaryPath('node'),
+            claudePath: resolveDesktopBinaryPath('claude', {
+                windowsExecutable: 'native-only'
+            }),
+            nodePath: resolveDesktopBinaryPath('node', {
+                windowsExecutable: 'native-only'
+            }),
             vaultPath: this.getVaultBasePath()
         };
     }
@@ -282,7 +286,10 @@ export class ClaudeHeadlessService {
         this.deleteEnvironmentKeysCaseInsensitive(env, AGENT_CAPABILITY_ENV_KEYS);
         for (const [key, value] of Object.entries(extra)) {
             const normalizedKey = key.toUpperCase();
-            if (CLAUDE_AUTH_ENV_KEYS.has(normalizedKey)) {
+            if (
+                CLAUDE_AUTH_ENV_KEYS.has(normalizedKey)
+                || normalizedKey === 'NEXUS_AGENT_RUN_TOKEN'
+            ) {
                 continue;
             }
             env[AGENT_CAPABILITY_ENV_KEYS.has(normalizedKey) ? normalizedKey : key] = value;
@@ -344,9 +351,7 @@ export class ClaudeHeadlessService {
         let stderrTruncated = false;
         let chosenResult: ClaudeHeadlessProcessResult | null = null;
         let resultSettled = false;
-        let processClosed = false;
         let resolveResult!: (value: ClaudeHeadlessProcessResult) => void;
-        let resolveClosed!: () => void;
         let stdinErrorHandler: ((error: NodeJS.ErrnoException) => void) | null = null;
         let terminationPromise: Promise<void> | null = null;
         let resultBlockedOnTermination = false;
@@ -354,10 +359,6 @@ export class ClaudeHeadlessService {
         const result = new Promise<ClaudeHeadlessProcessResult>((resolve) => {
             resolveResult = resolve;
         });
-        const closed = new Promise<void>((resolve) => {
-            resolveClosed = resolve;
-        });
-
         const appendBounded = (current: string, chunk: Buffer | string): { value: string; truncated: boolean } => {
             const text = chunk.toString();
             const remaining = Math.max(0, maxOutputChars - current.length);
@@ -394,29 +395,24 @@ export class ClaudeHeadlessService {
             chosenResult ??= value;
         };
 
-        const markClosed = () => {
-            if (processClosed) {
-                return;
-            }
-            processClosed = true;
-            resolveClosed();
-        };
-
         const terminateTree = (): Promise<void> => {
             if (terminationPromise) {
                 return terminationPromise;
             }
 
             terminationPromise = (async () => {
-                await this.signalProcessTree(child, 'SIGTERM');
                 if (Platform.isWin) {
-                    const closedDuringGrace = await this.waitForClose(closed, terminationGraceMs);
-                    if (!closedDuringGrace) {
-                        await this.signalProcessTree(child, 'SIGKILL');
+                    try {
+                        await this.signalProcessTree(child, 'SIGTERM');
+                    } catch {
+                        // Forced taskkill is the authoritative Windows termination result.
                     }
+                    await this.waitForDelay(terminationGraceMs);
+                    await this.signalProcessTree(child, 'SIGKILL');
                     return;
                 }
 
+                await this.signalProcessTree(child, 'SIGTERM');
                 // A detached POSIX group can outlive its root process. Keep the
                 // full grace period, signal the original group with KILL even if
                 // the root closed, then confirm that no group member remains.
@@ -429,7 +425,6 @@ export class ClaudeHeadlessService {
 
         const terminateAfterLocalFailure = () => {
             if (child.pid === undefined || child.pid === null) {
-                markClosed();
                 finalize();
                 return;
             }
@@ -467,7 +462,6 @@ export class ClaudeHeadlessService {
         }
 
         function handleProcessClose(exitCode: number | null): void {
-            markClosed();
             chooseResult({
                 stdout,
                 stderr,
@@ -527,22 +521,6 @@ export class ClaudeHeadlessService {
         stdinText?: string
     ): Promise<ClaudeHeadlessProcessResult> {
         return await this.startProcess({ command, args, cwd, env, stdinText }).result;
-    }
-
-    private async waitForClose(closed: Promise<void>, graceMs: number): Promise<boolean> {
-        return await new Promise<boolean>((resolve) => {
-            let settled = false;
-            const finish = (didClose: boolean) => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                window.clearTimeout(timer);
-                resolve(didClose);
-            };
-            const timer = window.setTimeout(() => finish(false), graceMs);
-            void closed.then(() => finish(true));
-        });
     }
 
     private async waitForDelay(delayMs: number): Promise<void> {

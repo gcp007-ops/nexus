@@ -238,20 +238,32 @@ describe('ClaudeCliWorkflowBackend', () => {
     expect(processOptions.args).not.toContain('--dangerously-skip-permissions');
     expect(processOptions.stdinText).toBe('Inspect the vault and return a proposal.');
     expect(processOptions.env).toMatchObject({
-      NEXUS_AGENT_RUN_TOKEN: 'secret-agent-token',
       NEXUS_MCP_SOCKET_PATH: '/tmp/nexus_mcp_test-vault.sock'
     });
+    expect(Object.keys(processOptions.env ?? {}).filter((key) => (
+      key.toUpperCase() === 'NEXUS_AGENT_RUN_TOKEN'
+    ))).toEqual([]);
+    expect(processOptions.args).not.toContain('secret-agent-token');
 
     const config = JSON.parse(artifacts.writes.get(artifacts.mcpConfigPath) ?? '{}') as {
-      mcpServers: Record<string, { type: string; command: string; args: string[] }>;
+      mcpServers: Record<string, {
+        type: string;
+        command: string;
+        args: string[];
+        env: Record<string, string>;
+      }>;
     };
     expect(config.mcpServers['nexus-test-vault']).toEqual({
       type: 'stdio',
       command: '/mock/bin/node',
-      args: [artifacts.proxyPath]
+      args: [artifacts.proxyPath],
+      env: {
+        NEXUS_AGENT_RUN_TOKEN: 'secret-agent-token',
+        NEXUS_MCP_SOCKET_PATH: '/tmp/nexus_mcp_test-vault.sock'
+      }
     });
     expect(artifacts.writes.get(artifacts.proxyPath)).toContain('NEXUS_AGENT_RUN_TOKEN');
-    expect(JSON.stringify(Array.from(artifacts.writes.entries()))).not.toContain('secret-agent-token');
+    expect(artifacts.writes.get(artifacts.proxyPath)).not.toContain('secret-agent-token');
   });
 
   it('rejects model metacharacters before any child receives the capability environment', async () => {
@@ -552,8 +564,10 @@ describe('ClaudeCliWorkflowBackend', () => {
 
     try {
       await artifacts.writeFile(artifacts.proxyPath, 'proxy');
-      await artifacts.writeFile(artifacts.mcpConfigPath, '{}');
+      await artifacts.writeFile(artifacts.mcpConfigPath, '{"fixture":"sensitive"}');
       await expect(fsPromises.readFile(artifacts.proxyPath, 'utf8')).resolves.toBe('proxy');
+      const configStat = await fsPromises.stat(artifacts.mcpConfigPath);
+      expect(configStat.mode & 0o777).toBe(0o600);
 
       await artifacts.cleanup();
 
