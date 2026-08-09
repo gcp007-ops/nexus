@@ -495,17 +495,7 @@ function assertCanonicalText(value: unknown, label: string, allowEmpty: boolean)
 }
 
 function containsUnsafeTextControl(text: string): boolean {
-  return Array.from(text).some(character => {
-    const codePoint = character.codePointAt(0) ?? 0;
-    return codePoint <= 0x1f
-      || (codePoint >= 0x7f && codePoint <= 0x9f)
-      || codePoint === 0x061c
-      || (codePoint >= 0x200b && codePoint <= 0x200f)
-      || (codePoint >= 0x202a && codePoint <= 0x202e)
-      || codePoint === 0x2060
-      || (codePoint >= 0x2066 && codePoint <= 0x2069)
-      || codePoint === 0xfeff;
-  });
+  return /[\p{Cc}\p{Cf}]/u.test(text);
 }
 
 function assertSha256(value: unknown, label: string): string {

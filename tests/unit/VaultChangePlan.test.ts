@@ -286,6 +286,61 @@ describe('VaultChangePlan', () => {
       .toThrow('unsafe control character');
   });
 
+  it('rejects U+2063 invisible separator in executable paths and anchors', () => {
+    const pathPlan = validPlan();
+    const unsafePath = 'Notes/\u2063source.md';
+    pathPlan.operations = [{
+      ...archiveOperation(),
+      path: unsafePath,
+      preconditions: [existingPrecondition(unsafePath)]
+    }];
+    expect(() => parseVaultChangePlan(rawPlan(pathPlan), expectedIdentity()))
+      .toThrow('unsafe control character');
+
+    const anchorPlan = validPlan();
+    anchorPlan.operations = [{
+      ...replaceAnchoredOperation(),
+      startAnchor: '## Before\u2063'
+    }];
+    expect(() => parseVaultChangePlan(rawPlan(anchorPlan), expectedIdentity()))
+      .toThrow('unsafe control character');
+  });
+
+  it.each([
+    ['Cc', 'Notes/\u001Csource.md'],
+    ['Cf outside the legacy list', 'Notes/\u2061source.md']
+  ])('rejects categorical Unicode %s controls in paths', (_category, path) => {
+    const plan = validPlan();
+    plan.operations = [{
+      ...archiveOperation(),
+      path,
+      preconditions: [existingPrecondition(path)]
+    }];
+
+    expect(() => parseVaultChangePlan(rawPlan(plan), expectedIdentity()))
+      .toThrow('unsafe control character');
+  });
+
+  it('accepts NFKC-stable accented text and ASCII names', () => {
+    const accentedPathPlan = validPlan();
+    accentedPathPlan.operations = [{
+      ...archiveOperation(),
+      path: 'Notes/café.md',
+      preconditions: [existingPrecondition('Notes/café.md')]
+    }];
+    expect(parseVaultChangePlan(rawPlan(accentedPathPlan), expectedIdentity()).operations[0].type)
+      .toBe('archive');
+
+    const accentedAnchorPlan = validPlan();
+    accentedAnchorPlan.operations = [{
+      ...replaceAnchoredOperation(),
+      startAnchor: '## Café',
+      endAnchor: '## Depois'
+    }];
+    expect(parseVaultChangePlan(rawPlan(accentedAnchorPlan), expectedIdentity()).operations[0].type)
+      .toBe('replaceAnchored');
+  });
+
   it('requires coherent target preconditions and rejects unrelated paths', () => {
     const missingMoveDestination = validPlan();
     missingMoveDestination.operations = [{
