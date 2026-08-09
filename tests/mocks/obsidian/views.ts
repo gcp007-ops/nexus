@@ -145,6 +145,23 @@ export class Component {
   }
 }
 
+// ItemView mock with the Component lifecycle used by render-scoped view tests.
+export class ItemView extends Component {
+  app: App;
+  containerEl: HTMLElement;
+
+  constructor(public leaf: { app?: App }) {
+    super();
+    this.app = leaf.app ?? new App();
+    const container = createMockElement('div');
+    Object.defineProperty(container, 'children', {
+      configurable: true,
+      value: [createMockElement('div'), createMockElement('div')]
+    });
+    this.containerEl = container;
+  }
+}
+
 // Plugin mock
 export class Plugin extends Component {
   app: App;

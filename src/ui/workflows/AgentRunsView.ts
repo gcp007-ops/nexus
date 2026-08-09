@@ -2,6 +2,7 @@ import {
   ItemView,
   Notice,
   type App,
+  Component,
   type WorkspaceLeaf,
   type ViewStateResult
 } from 'obsidian';
@@ -24,6 +25,7 @@ export class AgentRunsView extends ItemView {
   private selectedRunId: string | null = null;
   private isClosed = false;
   private refreshInFlight: Promise<void> | null = null;
+  private renderComponent: Component | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: NexusPlugin) {
     super(leaf);
@@ -70,6 +72,7 @@ export class AgentRunsView extends ItemView {
     this.service = null;
     this.runs = [];
     this.selectedRunId = null;
+    this.disposeRenderComponent();
     this.contentContainer.empty();
     return Promise.resolve();
   }
@@ -111,6 +114,7 @@ export class AgentRunsView extends ItemView {
   }
 
   private render(): void {
+    const renderComponent = this.beginRender();
     const container = this.contentContainer;
     container.empty();
     container.addClass('nexus-agent-runs-view');
@@ -121,7 +125,7 @@ export class AgentRunsView extends ItemView {
       text: 'Refresh',
       attr: { 'aria-label': 'Refresh agent runs' }
     });
-    this.registerDomEvent(refresh, 'click', () => void this.refresh());
+    renderComponent.registerDomEvent(refresh, 'click', () => void this.refresh());
 
     if (this.runs.length === 0) {
       container.createEl('p', {
@@ -147,7 +151,7 @@ export class AgentRunsView extends ItemView {
       button.createSpan({ cls: 'nexus-agent-runs-list-name', text: run.workflow.name });
       button.createSpan({ cls: 'nexus-agent-runs-list-status', text: statusLabel(run.status) });
       button.createSpan({ cls: 'nexus-agent-runs-list-time', text: new Date(run.queuedAt).toLocaleString() });
-      this.registerDomEvent(button, 'click', () => {
+      renderComponent.registerDomEvent(button, 'click', () => {
         this.selectedRunId = run.runId;
         this.render();
       });
@@ -157,7 +161,7 @@ export class AgentRunsView extends ItemView {
     const selected = this.runs.find(run => run.runId === this.selectedRunId) ?? this.runs[0];
     new AgentRunDetailRenderer({
       app: this.app,
-      component: this,
+      component: renderComponent,
       onCancel: async runId => {
         if (!this.service) return;
         await this.service.cancel(runId);
@@ -183,6 +187,7 @@ export class AgentRunsView extends ItemView {
   }
 
   private renderLoading(message: string): void {
+    this.beginRender();
     const container = this.contentContainer;
     container.empty();
     container.addClass('nexus-agent-runs-view');
@@ -190,6 +195,7 @@ export class AgentRunsView extends ItemView {
   }
 
   private renderError(message: string): void {
+    this.beginRender();
     const container = this.contentContainer;
     container.empty();
     container.addClass('nexus-agent-runs-view');
@@ -199,6 +205,19 @@ export class AgentRunsView extends ItemView {
       text: `Agent runs could not be loaded: ${message}`
     });
     new Notice('Agent runs could not be loaded.');
+  }
+
+  private beginRender(): Component {
+    this.disposeRenderComponent();
+    const component = new Component();
+    component.load();
+    this.renderComponent = component;
+    return component;
+  }
+
+  private disposeRenderComponent(): void {
+    this.renderComponent?.unload();
+    this.renderComponent = null;
   }
 }
 

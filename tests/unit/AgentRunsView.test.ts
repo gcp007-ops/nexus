@@ -1,9 +1,11 @@
-import { App, Component } from 'obsidian';
+import { App, Component, type WorkspaceLeaf } from 'obsidian';
+import type NexusPlugin from '../../src/main';
 import type { SupervisedRun } from '../../src/services/workflows/SupervisedWorkflowService';
 import {
   AgentRunDetailRenderer,
   buildAgentRunPresentation
 } from '../../src/ui/workflows/AgentRunDetailRenderer';
+import { AgentRunsView } from '../../src/ui/workflows/AgentRunsView';
 
 interface MockElement {
   tagName: string;
@@ -143,6 +145,7 @@ describe('Agent runs UI', () => {
 
   it('gates cancel and approval actions from the authoritative run status', () => {
     expect(buildAgentRunPresentation({ ...awaitingApprovalRun(), status: 'running' }).canCancel).toBe(true);
+    expect(buildAgentRunPresentation(awaitingApprovalRun()).canCancel).toBe(true);
     expect(buildAgentRunPresentation(awaitingApprovalRun()).canApprove).toBe(true);
     expect(buildAgentRunPresentation({ ...awaitingApprovalRun(), status: 'completed' }).canCancel).toBe(false);
   });
@@ -160,8 +163,9 @@ describe('Agent runs UI', () => {
 
     const rendered = renderer.render(root as unknown as HTMLElement, awaitingApprovalRun());
 
-    expect(rendered.cancelButton.disabled).toBe(true);
-    expect(rendered.cancelButton.getAttribute('aria-label')).toBe('Cancel agent run');
+    expect(rendered.cancelButton.disabled).toBe(false);
+    expect(rendered.cancelButton.textContent).toBe('Reject proposal');
+    expect(rendered.cancelButton.getAttribute('aria-label')).toBe('Reject agent proposal');
     expect(rendered.approveButton?.disabled).toBe(false);
     expect(rendered.approveButton?.getAttribute('aria-label')).toBe('Review and approve selected operations');
     expect(register.mock.calls.length).toBeGreaterThanOrEqual(3);
@@ -184,5 +188,57 @@ describe('Agent runs UI', () => {
 
     expect(rendered.approveButton).toBeNull();
     expect(rendered.operationInputs).toHaveLength(0);
+  });
+
+  it('unloads each render-scoped component before new handlers and again on close', async () => {
+    const plugin = {
+      getService: jest.fn()
+    } as unknown as NexusPlugin;
+    const view = new AgentRunsView(
+      { app: new App() } as unknown as WorkspaceLeaf,
+      plugin
+    ) as unknown as {
+      containerEl: HTMLElement;
+      runs: SupervisedRun[];
+      selectedRunId: string | null;
+      renderComponent: Component | null;
+      render(): void;
+      onClose(): Promise<void>;
+      registerDomEvent: jest.Mock;
+    };
+    const content = element();
+    Object.defineProperty(view.containerEl, 'children', {
+      configurable: true,
+      value: [element(), content]
+    });
+    view.runs = [awaitingApprovalRun()];
+    view.selectedRunId = 'run-1';
+    view.registerDomEvent = jest.fn();
+
+    view.render();
+    const firstScope = view.renderComponent;
+    if (!firstScope) throw new Error('Expected first render scope');
+    const order: string[] = [];
+    const firstUnload = jest.spyOn(firstScope, 'unload').mockImplementation(() => {
+      order.push('unload-first');
+    });
+    const register = jest.spyOn(Component.prototype, 'registerDomEvent')
+      .mockImplementation(() => { order.push('register-new'); });
+
+    view.render();
+
+    expect(firstUnload).toHaveBeenCalledTimes(1);
+    expect(order[0]).toBe('unload-first');
+    expect(order).toContain('register-new');
+    expect(view.registerDomEvent).not.toHaveBeenCalled();
+    const secondScope = view.renderComponent;
+    if (!secondScope) throw new Error('Expected second render scope');
+    const secondUnload = jest.spyOn(secondScope, 'unload');
+
+    await view.onClose();
+
+    expect(secondUnload).toHaveBeenCalledTimes(1);
+    expect(view.renderComponent).toBeNull();
+    register.mockRestore();
   });
 });

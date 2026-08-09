@@ -20,7 +20,7 @@ import {
 } from './VaultChangePlan';
 import type {
   ApprovalRequest,
-  VaultOperationResult
+  VaultOperationStatus
 } from './VaultChangeApplier';
 
 export interface SupervisedWorkflowSummary {
@@ -56,6 +56,48 @@ export interface SupervisedRunTraceEvent {
   operationId?: string;
 }
 
+export interface SupervisedRenameReadback {
+  sourcePath?: string;
+  sourceExists?: boolean;
+  destinationPath?: string;
+  destinationExists?: boolean;
+}
+
+export interface SupervisedSetPropertyReadback {
+  path?: string;
+  property?: string;
+  valuePresent?: boolean;
+  contentHash?: string;
+}
+
+export interface SupervisedReplaceAnchoredReadback {
+  path?: string;
+  contentHash?: string;
+}
+
+interface SupervisedApplicationOperationBase {
+  operationId: string;
+  status: VaultOperationStatus;
+  startedAt: number;
+  finishedAt: number;
+  error?: string;
+  rollbackError?: string;
+}
+
+export type SupervisedApplicationOperation =
+  | (SupervisedApplicationOperationBase & {
+    type: 'move' | 'archive';
+    readback?: SupervisedRenameReadback;
+  })
+  | (SupervisedApplicationOperationBase & {
+    type: 'setProperty';
+    readback?: SupervisedSetPropertyReadback;
+  })
+  | (SupervisedApplicationOperationBase & {
+    type: 'replaceAnchored';
+    readback?: SupervisedReplaceAnchoredReadback;
+  });
+
 export interface SupervisedRun {
   runId: string;
   workspace: { id: string; name?: string };
@@ -89,7 +131,7 @@ export interface SupervisedRun {
   } | null;
   application: {
     operationIds: string[];
-    operations: VaultOperationResult[];
+    operations: SupervisedApplicationOperation[];
   } | null;
   trace: SupervisedRunTraceEvent[];
 }
@@ -402,7 +444,7 @@ function readApplication(conversation: RunConversation): SupervisedRun['applicat
   if (operations.some(operation => operation === null)) return null;
   return {
     operationIds: value.operationIds.map(String),
-    operations: operations.filter((operation): operation is VaultOperationResult => operation !== null)
+    operations: operations.filter((operation): operation is SupervisedApplicationOperation => operation !== null)
   };
 }
 
@@ -428,7 +470,7 @@ function eventRecord(metadata: Record<string, unknown> | undefined): Record<stri
   return isRecord(metadata?.agentRunEvent) ? metadata.agentRunEvent : null;
 }
 
-function projectOperationResult(value: unknown): VaultOperationResult | null {
+function projectOperationResult(value: unknown): SupervisedApplicationOperation | null {
   if (!isRecord(value)
     || typeof value.operationId !== 'string'
     || !isOperationType(value.type)
@@ -442,26 +484,59 @@ function projectOperationResult(value: unknown): VaultOperationResult | null {
     || (value.rollbackError !== undefined && typeof value.rollbackError !== 'string')) {
     return null;
   }
-  return {
+  const base: SupervisedApplicationOperationBase = {
     operationId: value.operationId,
-    type: value.type,
     status: value.status,
     startedAt: value.startedAt,
     finishedAt: value.finishedAt,
-    ...(value.readback === undefined ? {} : { readback: cloneJson(value.readback) }),
     ...(value.error === undefined ? {} : { error: value.error }),
     ...(value.rollbackError === undefined ? {} : { rollbackError: value.rollbackError })
   };
+  if (value.type === 'move' || value.type === 'archive') {
+    const readback: SupervisedRenameReadback | undefined = value.readback === undefined ? undefined : {
+      ...(typeof value.readback.sourcePath === 'string' ? { sourcePath: value.readback.sourcePath } : {}),
+      ...(typeof value.readback.sourceExists === 'boolean' ? { sourceExists: value.readback.sourceExists } : {}),
+      ...(typeof value.readback.destinationPath === 'string' ? { destinationPath: value.readback.destinationPath } : {}),
+      ...(typeof value.readback.destinationExists === 'boolean' ? { destinationExists: value.readback.destinationExists } : {})
+    };
+    return {
+      ...base,
+      type: value.type,
+      ...(readback === undefined ? {} : { readback })
+    };
+  }
+  if (value.type === 'setProperty') {
+    const readback: SupervisedSetPropertyReadback | undefined = value.readback === undefined ? undefined : {
+      ...(typeof value.readback.path === 'string' ? { path: value.readback.path } : {}),
+      ...(typeof value.readback.property === 'string' ? { property: value.readback.property } : {}),
+      ...(typeof value.readback.valuePresent === 'boolean' ? { valuePresent: value.readback.valuePresent } : {}),
+      ...(typeof value.readback.contentHash === 'string' ? { contentHash: value.readback.contentHash } : {})
+    };
+    return {
+      ...base,
+      type: value.type,
+      ...(readback === undefined ? {} : { readback })
+    };
+  }
+  const readback: SupervisedReplaceAnchoredReadback | undefined = value.readback === undefined ? undefined : {
+    ...(typeof value.readback.path === 'string' ? { path: value.readback.path } : {}),
+    ...(typeof value.readback.contentHash === 'string' ? { contentHash: value.readback.contentHash } : {})
+  };
+  return {
+    ...base,
+    type: value.type,
+    ...(readback === undefined ? {} : { readback })
+  };
 }
 
-function isOperationType(value: unknown): value is VaultOperationResult['type'] {
+function isOperationType(value: unknown): value is SupervisedApplicationOperation['type'] {
   return value === 'move'
     || value === 'archive'
     || value === 'setProperty'
     || value === 'replaceAnchored';
 }
 
-function isOperationStatus(value: unknown): value is VaultOperationResult['status'] {
+function isOperationStatus(value: unknown): value is VaultOperationStatus {
   return value === 'succeeded'
     || value === 'failed'
     || value === 'blocked_dependency'

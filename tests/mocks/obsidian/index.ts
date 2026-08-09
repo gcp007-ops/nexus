@@ -49,6 +49,7 @@ export {
   Scope,
   Modal,
   Component,
+  ItemView,
   Plugin,
   Menu,
   MenuItem,

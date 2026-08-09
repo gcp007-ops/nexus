@@ -1071,6 +1071,86 @@ describe('AgentRunService', () => {
     await expect(service.cancel('conversation-1')).rejects.toThrow('not cancellable');
   });
 
+  it('rejects an awaiting proposal by CAS without a handle, effect, or sibling metadata loss', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const { service, backend, applier } = createService(store);
+
+    const rejected = await service.cancel('conversation-1');
+
+    expect(rejected.status).toBe('rejected');
+    expect(rejected.finishedAt).toBe(1_001);
+    expect(store.conversations.get('conversation-1')?.metadata).toMatchObject({
+      unrelated: { keep: true },
+      agentRun: { status: 'rejected', planHash: seeded.planHash }
+    });
+    expect(backend.start).not.toHaveBeenCalled();
+    expect(applier.apply).not.toHaveBeenCalled();
+    expect(applier.reconcile).not.toHaveBeenCalled();
+    expect(applier.effect).not.toHaveBeenCalled();
+  });
+
+  it('cannot reject after approval has won the applying lock and started effects', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'succeeded',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        readback: {
+          path: 'note.md',
+          property: 'status',
+          valuePresent: true,
+          value: 'done',
+          contentHash: `sha256:${'d'.repeat(64)}`
+        }
+      }]
+    };
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    let signalApplying!: () => void;
+    const applyingEntered = new Promise<void>(resolve => { signalApplying = resolve; });
+    let releaseEffect!: () => void;
+    const effectRelease = new Promise<void>(resolve => { releaseEffect = resolve; });
+    applier.apply.mockImplementation(async (
+      _plan: unknown,
+      _request: ApprovalRequest,
+      beforeEffects?: () => Promise<void>,
+      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>
+    ) => {
+      await beforeEffects?.();
+      signalApplying();
+      await effectRelease;
+      applier.effect('op-1');
+      await afterOperation?.(applyResult.operations[0]);
+      return applyResult;
+    });
+
+    const approval = service.approveAndApply(approvalRequest(seeded.planHash));
+    await applyingEntered;
+    let cancellationSettled = false;
+    const cancellation = service.cancel('conversation-1').then(
+      value => { cancellationSettled = true; return { kind: 'fulfilled' as const, value }; },
+      error => { cancellationSettled = true; return { kind: 'rejected' as const, error }; }
+    );
+    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+
+    expect(cancellationSettled).toBe(false);
+    releaseEffect();
+    await expect(approval).resolves.toEqual(applyResult);
+    const cancellationOutcome = await cancellation;
+    expect(cancellationOutcome.kind).toBe('rejected');
+    expect(cancellationOutcome.kind === 'rejected' ? String(cancellationOutcome.error) : '')
+      .toContain('not cancellable from completed');
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
+  });
+
   it('serializes cancellation of a queued start before backend dispatch', async () => {
     const store = createConversationStore();
     const backend = createDeferredBackend();

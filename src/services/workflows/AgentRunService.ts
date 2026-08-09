@@ -441,6 +441,21 @@ export class AgentRunService {
     }
 
     const current = await this.requireRun(runId);
+    if (current.status === 'awaiting_approval' || current.status === 'applying') {
+      return this.applyLocks.acquire(runId, async () => {
+        const authoritative = await this.requireRun(runId);
+        if (authoritative.status !== 'awaiting_approval') {
+          throw new Error(`Agent run ${runId} is not cancellable from ${authoritative.status}`);
+        }
+        const rejected = transitionAgentRun(authoritative, 'rejected', { finishedAt: this.now() });
+        const applied = await this.persistTransition(runId, ['awaiting_approval'], rejected);
+        if (!applied) {
+          const winner = await this.requireRun(runId);
+          throw new Error(`Agent run rejection transition lost from ${winner.status}: ${runId}`);
+        }
+        return this.record(runId, rejected);
+      });
+    }
     if (current.status !== 'queued' && current.status !== 'running') {
       throw new Error(`Agent run ${runId} is not cancellable from ${current.status}`);
     }

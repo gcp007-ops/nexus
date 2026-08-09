@@ -54,7 +54,9 @@ export function buildAgentRunPresentation(run: SupervisedRun): AgentRunPresentat
       planHash: run.hashes.planHash,
       planValidation: run.planValidation.status
     }),
-    canCancel: run.status === 'queued' || run.status === 'running',
+    canCancel: run.status === 'queued'
+      || run.status === 'running'
+      || run.status === 'awaiting_approval',
     canApprove: run.status === 'awaiting_approval'
       && run.planValidation.status === 'valid'
       && run.plan !== null
@@ -106,10 +108,11 @@ export class AgentRunDetailRenderer {
     this.renderApplication(container, run);
 
     const actions = container.createDiv({ cls: 'nexus-agent-run-actions' });
+    const rejectsProposal = run.status === 'awaiting_approval';
     const cancelButton = actions.createEl('button', {
-      text: 'Cancel run',
+      text: rejectsProposal ? 'Reject proposal' : 'Cancel run',
       cls: 'nexus-agent-run-button',
-      attr: { 'aria-label': 'Cancel agent run' }
+      attr: { 'aria-label': rejectsProposal ? 'Reject agent proposal' : 'Cancel agent run' }
     });
     cancelButton.disabled = !presentation.canCancel;
     this.dependencies.component.registerDomEvent(cancelButton, 'click', () => {
@@ -117,7 +120,7 @@ export class AgentRunDetailRenderer {
       cancelButton.disabled = true;
       void Promise.resolve(this.dependencies.onCancel(run.runId)).catch(error => {
         cancelButton.disabled = false;
-        new Notice(`Failed to cancel run: ${errorMessage(error)}`);
+        new Notice(`${rejectsProposal ? 'Failed to reject proposal' : 'Failed to cancel run'}: ${errorMessage(error)}`);
       });
     });
 

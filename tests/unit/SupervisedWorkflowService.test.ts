@@ -257,16 +257,54 @@ describe('SupervisedWorkflowService', () => {
         schema: 'agent-run-apply-receipt/v1',
         runId: 'run-1',
         planHash: PLAN_HASH,
-        operationIds: ['archive-1'],
+        operationIds: ['archive-1', 'property-1', 'replace-1'],
         operations: [{
           operationId: 'archive-1',
           type: 'archive',
           status: 'succeeded',
           startedAt: 160,
           finishedAt: 170,
-          readback: { sourceExists: false, destinationExists: true },
+          readback: {
+            sourcePath: 'Inbox/Stale.md',
+            sourceExists: false,
+            destinationPath: '.archive/2026-08-09/Inbox/Stale.md',
+            destinationExists: true,
+            capabilityToken: 'nested-secret',
+            resolvedPrompt: 'nested-prompt-text',
+            connectorPath: '/private/plugin/connector.js',
+            childHandle: { pid: 123 },
+            extra: { env: { API_KEY: 'nested-env-secret' } }
+          },
           capabilityToken: 'must-never-leak',
           childHandle: { pid: 123 }
+        }, {
+          operationId: 'property-1',
+          type: 'setProperty',
+          status: 'rolled_back',
+          startedAt: 171,
+          finishedAt: 180,
+          readback: {
+            path: 'Projects/Case.md',
+            property: 'status',
+            valuePresent: false,
+            value: { resolvedPrompt: 'must-not-cross' },
+            contentHash: `sha256:${'d'.repeat(64)}`,
+            configPath: '/private/config.json'
+          },
+          error: 'Authoritative readback failed.'
+        }, {
+          operationId: 'replace-1',
+          type: 'replaceAnchored',
+          status: 'rollback_failed',
+          startedAt: 181,
+          finishedAt: 190,
+          readback: {
+            path: 'Projects/Case.md',
+            contentHash: `sha256:${'e'.repeat(64)}`,
+            handle: { pid: 999 }
+          },
+          error: 'Readback failed.',
+          rollbackError: 'Rollback failed.'
         }]
       }
     };
@@ -282,10 +320,45 @@ describe('SupervisedWorkflowService', () => {
       status: 'succeeded',
       startedAt: 160,
       finishedAt: 170,
-      readback: { sourceExists: false, destinationExists: true }
+      readback: {
+        sourcePath: 'Inbox/Stale.md',
+        sourceExists: false,
+        destinationPath: '.archive/2026-08-09/Inbox/Stale.md',
+        destinationExists: true
+      }
+    }, {
+      operationId: 'property-1',
+      type: 'setProperty',
+      status: 'rolled_back',
+      startedAt: 171,
+      finishedAt: 180,
+      readback: {
+        path: 'Projects/Case.md',
+        property: 'status',
+        valuePresent: false,
+        contentHash: `sha256:${'d'.repeat(64)}`
+      },
+      error: 'Authoritative readback failed.'
+    }, {
+      operationId: 'replace-1',
+      type: 'replaceAnchored',
+      status: 'rollback_failed',
+      startedAt: 181,
+      finishedAt: 190,
+      readback: {
+        path: 'Projects/Case.md',
+        contentHash: `sha256:${'e'.repeat(64)}`
+      },
+      error: 'Readback failed.',
+      rollbackError: 'Rollback failed.'
     }]);
     expect(JSON.stringify(result)).not.toContain('must-never-leak');
     expect(JSON.stringify(result)).not.toContain('childHandle');
+    expect(JSON.stringify(result)).not.toContain('nested-secret');
+    expect(JSON.stringify(result)).not.toContain('nested-prompt-text');
+    expect(JSON.stringify(result)).not.toContain('/private/');
+    expect(JSON.stringify(result)).not.toContain('nested-env-secret');
+    expect(JSON.stringify(result)).not.toContain('must-not-cross');
   });
 
   it('filters active runs without inventing another lifecycle', async () => {
@@ -319,6 +392,22 @@ describe('SupervisedWorkflowService', () => {
     expect(dependencies.agentRunService.cancel).toHaveBeenCalledWith('run-1');
     expect(dependencies.agentRunService.approveAndApply).toHaveBeenCalledWith(approval);
     expect(dependencies.agentRunService.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns authoritative rejected readback after cancelling an awaiting proposal', async () => {
+    const dependencies = makeDependencies();
+    dependencies.agentRunService.cancel.mockResolvedValue(run('rejected'));
+    dependencies.agentRunService.get.mockResolvedValue(run('rejected'));
+    (dependencies.conversationService.getConversation as jest.Mock)
+      .mockResolvedValue(conversation('rejected'));
+    const service = new SupervisedWorkflowService(dependencies);
+
+    await expect(service.cancel('run-1')).resolves.toMatchObject({
+      runId: 'run-1',
+      status: 'rejected'
+    });
+    expect(dependencies.agentRunService.cancel).toHaveBeenCalledWith('run-1');
+    expect(dependencies.agentRunService.get).toHaveBeenCalledWith('run-1');
   });
 
   it('delegates navigation to the single production surfaces', async () => {
