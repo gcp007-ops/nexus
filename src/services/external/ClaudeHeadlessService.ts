@@ -402,11 +402,10 @@ export class ClaudeHeadlessService {
 
             terminationPromise = (async () => {
                 if (Platform.isWin) {
-                    try {
-                        await this.signalProcessTree(child, 'SIGTERM');
-                    } catch {
+                    const gracefulTermination = this.signalProcessTree(child, 'SIGTERM');
+                    void gracefulTermination.catch(() => {
                         // Forced taskkill is the authoritative Windows termination result.
-                    }
+                    });
                     await this.waitForDelay(terminationGraceMs);
                     await this.signalProcessTree(child, 'SIGKILL');
                     return;

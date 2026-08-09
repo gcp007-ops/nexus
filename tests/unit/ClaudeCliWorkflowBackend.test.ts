@@ -1,3 +1,5 @@
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { App, Platform, Plugin } from 'obsidian';
 import {
   ClaudeCliWorkflowBackend,
@@ -12,12 +14,35 @@ import {
 import type {
   WorkflowExecutionRequest
 } from '../../src/services/workflows/WorkflowExecutionBackend';
-import type {
-  ClaudeHeadlessProcessHandle,
-  ClaudeHeadlessProcessOptions,
-  ClaudeHeadlessProcessResult,
-  ClaudeHeadlessWorkflowRuntime
+import {
+  ClaudeHeadlessService,
+  type ClaudeHeadlessProcessHandle,
+  type ClaudeHeadlessProcessOptions,
+  type ClaudeHeadlessProcessResult,
+  type ClaudeHeadlessWorkflowRuntime
 } from '../../src/services/external/ClaudeHeadlessService';
+
+jest.mock('../../src/utils/desktopProcess', () => ({
+  spawnDesktopProcess: jest.fn()
+}));
+
+type MockDesktopChild = EventEmitter & {
+  pid: number;
+  stdin: PassThrough;
+  stdout: PassThrough;
+  stderr: PassThrough;
+  kill: jest.Mock<boolean, [NodeJS.Signals?]>;
+};
+
+function createMockDesktopChild(): MockDesktopChild {
+  const child = new EventEmitter() as MockDesktopChild;
+  child.pid = 42;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = jest.fn(() => true);
+  return child;
+}
 
 interface DeferredProcess extends ClaudeHeadlessProcessHandle {
   finish(result: ClaudeHeadlessProcessResult): void;
@@ -166,13 +191,19 @@ function createCompletedProcess(result: ClaudeHeadlessProcessResult): DeferredPr
 }
 
 describe('ClaudeCliWorkflowBackend', () => {
+  const { spawnDesktopProcess } = jest.requireMock('../../src/utils/desktopProcess') as {
+    spawnDesktopProcess: jest.Mock;
+  };
+
   beforeEach(() => {
     Platform.isDesktop = true;
     Platform.isWin = false;
+    spawnDesktopProcess.mockReset();
   });
 
   afterEach(() => {
     jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
   it('returns immediately with a cancellable handle and cancels idempotently', async () => {
@@ -358,6 +389,97 @@ describe('ClaudeCliWorkflowBackend', () => {
     expect(processHandle.terminateTree).toHaveBeenCalledTimes(1);
     expect(policy.resolve('secret-agent-token')).toBeUndefined();
     expect(artifacts.cleanupCount).toBe(1);
+  });
+
+  it('forces Windows termination after grace when graceful taskkill never settles', async () => {
+    jest.useFakeTimers();
+    Platform.isWin = true;
+    const app = {
+      vault: {
+        getName: () => 'Test Vault'
+      }
+    } as unknown as App;
+    const plugin = {
+      manifest: {
+        dir: '/mock/.obsidian/plugins/nexus'
+      }
+    } as unknown as Plugin;
+    const artifacts = new InMemoryTempArtifacts();
+    const policy = new AgentCapabilityPolicyService(() => 'secret-agent-token');
+    const child = createMockDesktopChild();
+    spawnDesktopProcess.mockReturnValue(child);
+    const gracefulTaskkill = new EventEmitter();
+    const forcedTaskkill = new EventEmitter();
+    const childProcessModule = require('child_process') as typeof import('child_process');
+    const taskkillSpawn = jest.spyOn(childProcessModule, 'spawn')
+      .mockReturnValueOnce(gracefulTaskkill as ReturnType<typeof childProcessModule.spawn>)
+      .mockReturnValueOnce(forcedTaskkill as ReturnType<typeof childProcessModule.spawn>);
+    const realHeadlessService = new ClaudeHeadlessService(app, plugin);
+    const authProcess = createCompletedProcess({
+      stdout: 'Authenticated',
+      stderr: '',
+      exitCode: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    });
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const backend = new ClaudeCliWorkflowBackend(app, plugin, {
+      headlessService: {
+        getWorkflowRuntime: () => ({
+          claudePath: 'C:\\Program Files\\Claude\\claude.exe',
+          nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+          vaultPath: 'C:\\Vault'
+        }),
+        buildClaudeEnv: (extra) => realHeadlessService.buildClaudeEnv(extra),
+        startAuthStatusProcess: () => authProcess,
+        startProcess: (options) => {
+          resolveStarted();
+          return realHeadlessService.startProcess({
+            ...options,
+            terminationGraceMs: 10
+          });
+        }
+      },
+      capabilityPolicy: policy,
+      tempArtifactFactory: new InMemoryTempArtifactFactory(artifacts)
+    });
+
+    const handle = backend.start(makeRequest());
+    await started;
+    const cancellation = handle.cancel();
+    await Promise.resolve();
+
+    expect(taskkillSpawn).toHaveBeenNthCalledWith(
+      1,
+      'taskkill',
+      ['/PID', '42', '/T'],
+      expect.objectContaining({ windowsHide: true })
+    );
+
+    await jest.advanceTimersByTimeAsync(10);
+
+    expect(taskkillSpawn).toHaveBeenNthCalledWith(
+      2,
+      'taskkill',
+      ['/PID', '42', '/T', '/F'],
+      expect.objectContaining({ windowsHide: true })
+    );
+    forcedTaskkill.emit('close', 0);
+    child.emit('close', null);
+
+    await cancellation;
+    await expect(handle.result).resolves.toMatchObject({ status: 'cancelled' });
+    expect(policy.resolve('secret-agent-token')).toBeUndefined();
+    expect(artifacts.cleanupCount).toBe(1);
+    expect(child.listenerCount('close')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+
+    gracefulTaskkill.emit('error', new Error('late graceful taskkill failure'));
+    await Promise.resolve();
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it('keeps a completed process terminal when cancel arrives late', async () => {
