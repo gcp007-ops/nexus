@@ -611,6 +611,156 @@ describe('AgentRunService', () => {
     await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
   });
 
+  it('serializes concurrent applying reconciliation so a missing result event is appended once', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'succeeded',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        readback: {
+          path: 'note.md',
+          property: 'status',
+          value: 'done',
+          contentHash: `sha256:${'d'.repeat(64)}`
+        }
+      }]
+    };
+    const append = store.addMessage.getMockImplementation();
+    const mutate = store.mutateConversationMetadata.getMockImplementation();
+    if (!append || !mutate) throw new Error('Expected conversation store implementations');
+    let appendCalls = 0;
+    store.addMessage.mockImplementation(async params => {
+      appendCalls += 1;
+      if (appendCalls === 2) throw new Error('operation event append failed');
+      return append(params);
+    });
+    let terminalizations = 0;
+    store.mutateConversationMetadata.mockImplementation(async (conversationId, mutation) => {
+      const outcome = await mutate(conversationId, mutation);
+      const status = outcome.metadata?.agentRun?.status;
+      if (outcome.applied && (status === 'completed' || status === 'completed_with_issues')) {
+        terminalizations += 1;
+      }
+      return outcome;
+    });
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('operation event append failed');
+
+    let signalFirstAppend!: () => void;
+    const firstAppendEntered = new Promise<void>(resolve => {
+      signalFirstAppend = resolve;
+    });
+    let releaseFirstAppend!: () => void;
+    const firstAppendRelease = new Promise<void>(resolve => {
+      releaseFirstAppend = resolve;
+    });
+    let operationAppendCalls = 0;
+    store.addMessage.mockImplementation(async params => {
+      const event = params.metadata?.agentRunEvent;
+      if ((event as { kind?: string } | undefined)?.kind === 'operation_result') {
+        operationAppendCalls += 1;
+        if (operationAppendCalls === 1) {
+          signalFirstAppend();
+          await firstAppendRelease;
+        }
+      }
+      return append(params);
+    });
+
+    const first = service.reconcileApplying('conversation-1');
+    await firstAppendEntered;
+    const second = service.reconcileApplying('conversation-1');
+    for (let turn = 0; turn < 10; turn += 1) {
+      await Promise.resolve();
+    }
+    releaseFirstAppend();
+    const outcomes = await Promise.allSettled([first, second]);
+
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    const operationEvents = store.conversations.get('conversation-1')?.messages.filter(message =>
+      (message.metadata?.agentRunEvent as { kind?: string } | undefined)?.kind === 'operation_result'
+    );
+    expect(operationEvents).toHaveLength(1);
+    expect(terminalizations).toBe(1);
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('keeps reconciliation behind an in-flight approval and effect for the same run', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [{
+        operationId: 'op-1',
+        type: 'setProperty',
+        status: 'succeeded',
+        startedAt: 1_001,
+        finishedAt: 1_002,
+        readback: {
+          path: 'note.md',
+          property: 'status',
+          value: 'done',
+          contentHash: `sha256:${'d'.repeat(64)}`
+        }
+      }]
+    };
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    let signalApplying!: () => void;
+    const applyingEntered = new Promise<void>(resolve => {
+      signalApplying = resolve;
+    });
+    let releaseEffect!: () => void;
+    const effectRelease = new Promise<void>(resolve => {
+      releaseEffect = resolve;
+    });
+    applier.apply.mockImplementation(async (
+      _plan: unknown,
+      _request: ApprovalRequest,
+      beforeEffects?: () => Promise<void>,
+      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>
+    ) => {
+      await beforeEffects?.();
+      signalApplying();
+      await effectRelease;
+      applier.effect('op-1');
+      await afterOperation?.(applyResult.operations[0]);
+      return applyResult;
+    });
+
+    const approval = service.approveAndApply(approvalRequest(seeded.planHash));
+    await applyingEntered;
+    const reconciliation = service.reconcileApplying('conversation-1');
+    for (let turn = 0; turn < 10; turn += 1) {
+      await Promise.resolve();
+    }
+
+    expect(applier.reconcile).not.toHaveBeenCalled();
+    releaseEffect();
+    await expect(approval).resolves.toEqual(applyResult);
+    await expect(reconciliation).rejects.toThrow('is not applying');
+
+    expect(applier.apply).toHaveBeenCalledTimes(1);
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.reconcile).toHaveBeenCalledTimes(1);
+    const operationEvents = store.conversations.get('conversation-1')?.messages.filter(message =>
+      (message.metadata?.agentRunEvent as { kind?: string } | undefined)?.kind === 'operation_result'
+    );
+    expect(operationEvents).toHaveLength(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
+  });
+
   it('executes zero effects when approval event persistence fails', async () => {
     const seeded = approvableConversation();
     const store = createConversationStore([seeded.value]);

@@ -3,6 +3,7 @@ import type {
   WorkspaceWorkflow
 } from '../../database/types/workspace/WorkspaceTypes';
 import type { ConversationData } from '../../types/chat/ChatTypes';
+import { NamedLocks } from '../../utils/AsyncLock';
 import {
   hashVaultChangePlan,
   parseVaultChangePlan,
@@ -158,7 +159,7 @@ export class AgentRunService {
   private readonly starts = new Map<string, StartEntry>();
   private readonly handles = new Map<string, WorkflowExecutionHandle>();
   private readonly completions = new Map<string, Promise<void>>();
-  private readonly approvals = new Set<string>();
+  private readonly applyLocks = new NamedLocks();
 
   constructor(private readonly dependencies: AgentRunServiceDependencies) {
     this.now = dependencies.now ?? (() => Date.now());
@@ -313,83 +314,84 @@ export class AgentRunService {
 
   async approveAndApply(request: ApprovalRequest): Promise<VaultChangeApplyResult> {
     this.assertHumanApproval(request);
-    if (this.approvals.has(request.runId)) {
-      throw new Error(`Agent run approval is already active: ${request.runId}`);
-    }
-    this.approvals.add(request.runId);
-    try {
-      const conversation = await this.dependencies.conversations.getConversation(request.runId);
-      if (!conversation) {
-        throw new Error(`Conversation not found: ${request.runId}`);
-      }
-      const currentValue = conversation.metadata?.agentRun;
-      if (!isAgentRunMetadata(currentValue)) {
-        throw new Error(`Agent run not found: ${request.runId}`);
-      }
-      const current = normalizeAgentRunMetadata(currentValue);
-      if (current.status !== 'awaiting_approval') {
-        throw new Error(`Agent run ${request.runId} is not awaiting approval`);
-      }
-
-      const planMessage = this.requirePlanMessage(conversation);
-      const plan = parseVaultChangePlan(planMessage.content, {
-        runId: request.runId,
-        workflowId: current.workflowId,
-        promptHash: current.promptHash,
-        workflowHash: current.workflowHash,
-        workspaceId: current.workspaceId
-      });
-      const recomputedHash = hashVaultChangePlan(plan);
-      const persistedEventHash = this.planMessageHash(planMessage.metadata);
-      if (
-        current.planHash !== recomputedHash
-        || persistedEventHash !== recomputedHash
-        || request.planHash !== recomputedHash
-      ) {
-        throw new Error('Requested plan hash does not match the persisted immutable plan hash');
-      }
-
-      const applying = transitionAgentRun(current, 'applying', {});
-      const selectedIds = new Set(request.operationIds);
-      const initialReceipt: VaultChangeApplyReceipt = {
-        schema: 'agent-run-apply-receipt/v1',
-        runId: request.runId,
-        planHash: request.planHash,
-        operationIds: plan.operations
-          .filter(operation => selectedIds.has(operation.operationId))
-          .map(operation => operation.operationId),
-        operations: []
-      };
-      const result = await this.dependencies.applier.apply(plan, request, async () => {
-        await this.appendResultMessage(
-          request.runId,
-          JSON.stringify({
-            planHash: request.planHash,
-            operationIds: [...request.operationIds],
-            approval: {
-              kind: request.approval.kind,
-              source: request.approval.source,
-              confirmedAt: request.approval.confirmedAt
-            }
-          }),
-          'approval'
-        );
-        const applied = await this.beginApplying(request.runId, current, applying, initialReceipt);
-        if (!applied) {
-          throw new Error(`Agent run applying transition lost: ${request.runId}`);
+    return this.applyLocks.acquire(
+      request.runId,
+      async () => {
+        const conversation = await this.dependencies.conversations.getConversation(request.runId);
+        if (!conversation) {
+          throw new Error(`Conversation not found: ${request.runId}`);
         }
-      }, async operation => {
-        await this.persistOperationReceipt(request.runId, initialReceipt, operation);
-      });
+        const currentValue = conversation.metadata?.agentRun;
+        if (!isAgentRunMetadata(currentValue)) {
+          throw new Error(`Agent run not found: ${request.runId}`);
+        }
+        const current = normalizeAgentRunMetadata(currentValue);
+        if (current.status !== 'awaiting_approval') {
+          throw new Error(`Agent run ${request.runId} is not awaiting approval`);
+        }
 
-      await this.appendMissingOperationEvents(request.runId, result);
-      return this.reconcileApplying(request.runId);
-    } finally {
-      this.approvals.delete(request.runId);
-    }
+        const planMessage = this.requirePlanMessage(conversation);
+        const plan = parseVaultChangePlan(planMessage.content, {
+          runId: request.runId,
+          workflowId: current.workflowId,
+          promptHash: current.promptHash,
+          workflowHash: current.workflowHash,
+          workspaceId: current.workspaceId
+        });
+        const recomputedHash = hashVaultChangePlan(plan);
+        const persistedEventHash = this.planMessageHash(planMessage.metadata);
+        if (
+          current.planHash !== recomputedHash
+          || persistedEventHash !== recomputedHash
+          || request.planHash !== recomputedHash
+        ) {
+          throw new Error('Requested plan hash does not match the persisted immutable plan hash');
+        }
+
+        const applying = transitionAgentRun(current, 'applying', {});
+        const selectedIds = new Set(request.operationIds);
+        const initialReceipt: VaultChangeApplyReceipt = {
+          schema: 'agent-run-apply-receipt/v1',
+          runId: request.runId,
+          planHash: request.planHash,
+          operationIds: plan.operations
+            .filter(operation => selectedIds.has(operation.operationId))
+            .map(operation => operation.operationId),
+          operations: []
+        };
+        const result = await this.dependencies.applier.apply(plan, request, async () => {
+          await this.appendResultMessage(
+            request.runId,
+            JSON.stringify({
+              planHash: request.planHash,
+              operationIds: [...request.operationIds],
+              approval: {
+                kind: request.approval.kind,
+                source: request.approval.source,
+                confirmedAt: request.approval.confirmedAt
+              }
+            }),
+            'approval'
+          );
+          const applied = await this.beginApplying(request.runId, current, applying, initialReceipt);
+          if (!applied) {
+            throw new Error(`Agent run applying transition lost: ${request.runId}`);
+          }
+        }, async operation => {
+          await this.persistOperationReceipt(request.runId, initialReceipt, operation);
+        });
+
+        await this.appendMissingOperationEvents(request.runId, result);
+        return this.reconcileApplyingExclusive(request.runId);
+      }
+    );
   }
 
   async reconcileApplying(runId: string): Promise<VaultChangeApplyResult> {
+    return this.applyLocks.acquire(runId, () => this.reconcileApplyingExclusive(runId));
+  }
+
+  private async reconcileApplyingExclusive(runId: string): Promise<VaultChangeApplyResult> {
     const conversation = await this.dependencies.conversations.getConversation(runId);
     if (!conversation) {
       throw new Error(`Conversation not found: ${runId}`);
