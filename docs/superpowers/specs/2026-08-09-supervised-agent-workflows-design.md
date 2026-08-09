@@ -194,6 +194,12 @@ For proposal runs:
 
 - native Claude filesystem and shell tools remain disabled;
 - the CLI receives a strict MCP configuration for the current vault;
+- the Claude process environment never contains the capability token;
+- the token is supplied only in the temporary MCP server `env` block, so only
+  the proxy child receives it;
+- that configuration lives in a unique local directory with mode `0600`, is
+  never synced into the vault, and is removed on every terminal path;
+- failure to remove the token-bearing configuration makes the run `failed`;
 - Nexus applies the `vault-readonly` profile inside tool dispatch;
 - discovery hides disallowed tools where possible;
 - execution rejects every disallowed agent/tool pair even if manually forged;
@@ -202,7 +208,14 @@ For proposal runs:
 
 Non-interactive CLI execution is allowed only because the Nexus boundary itself
 enforces the capability profile. `--dangerously-skip-permissions` is not treated
-as authorization and must not broaden the MCP policy.
+as authorization and is not used by supervised workflow runs. Supervised runs
+also use safe mode, disable native tools, and explicitly allow only the two
+canonical Nexus MCP metatools.
+
+The bearer token is ephemeral but may exist briefly in the mode-`0600` MCP
+configuration as a controlled exception to the no-persistence preference. It
+must never appear in Claude's environment, argv, logs, traces, DTOs,
+conversation metadata, synced storage, or vault files.
 
 ThinkBox never falls back to spawning the CLI directly. If Nexus is unavailable,
 the run is unavailable.

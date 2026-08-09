@@ -13,7 +13,8 @@
 - Initial executor: local Claude CLI with model alias `sonnet`.
 - Existing workflows without `execution` retain current chat behavior.
 - Proposal runs use `capabilityProfile: vault-readonly` and cannot mutate through MCP.
-- Native Claude filesystem and shell tools remain disabled.
+- Native Claude filesystem and shell tools remain disabled; supervised runs use
+  safe mode and never use `--dangerously-skip-permissions`.
 - Manual and scheduled starts enqueue and return without awaiting the CLI.
 - Scheduled runs never apply automatically; a later explicit human approval may
   apply their proposal. Initial `VaultHygiene-Agentico` scheduling is disabled.
@@ -193,8 +194,9 @@ issue(runId: string, profile: 'vault-readonly', ttlMs = 60 * 60_000): {
 };
 ```
 
-Tokens are random, live only in memory, expire, and are never logged or stored in
-conversation metadata.
+Tokens are random, expire, and remain in memory except for the controlled
+mode-`0600` MCP configuration created by Task 3. They are never logged, stored
+in conversation metadata, synced storage, or vault files.
 
 - [ ] **Step 4: Write failing dispatcher tests for discovery and forged writes**
 
@@ -319,29 +321,40 @@ Replace the promise-only private `runProcess()` path with a small process runner
 that captures stdout/stderr, exposes `terminateTree()`, settles once, removes
 listeners, and cleans the temp directory after completion. Keep prompt transport
 on stdin. The MCP config must invoke the temporary token-injecting proxy, not the
-unfiltered installed connector.
+unfiltered installed connector. Put `NEXUS_AGENT_RUN_TOKEN` only in that MCP
+server's `env` block; never put it in the Claude process environment. Create the
+config in a unique local directory with mode `0600`, and make a final cleanup
+failure terminal `failed`.
 
 - [ ] **Step 5: Make bypass non-configurable for workflow runs**
 
-`ClaudeCliWorkflowBackend` constructs fixed CLI arguments:
+`ClaudeCliWorkflowBackend` constructs fixed CLI arguments. `<server-key>` is the
+same canonical key used by the temporary MCP configuration:
 
 ```ts
 [
   '-p', '--strict-mcp-config', '--mcp-config', mcpConfigPath,
-  '--tools', '', '--disable-slash-commands', '--output-format', 'text',
-  '--max-turns', String(request.maxTurns), '--model', request.model,
-  '--dangerously-skip-permissions'
+  '--safe-mode', '--tools', '',
+  '--allowedTools',
+  `mcp__${serverKey}__toolManager_getTools,mcp__${serverKey}__toolManager_useTools`,
+  '--disable-slash-commands', '--output-format', 'text',
+  '--max-turns', String(request.maxTurns), '--model', 'sonnet'
 ]
 ```
 
-The flag is an execution detail only after Task 2 server enforcement. It is not
-accepted from workflow input or UI.
+The backend accepts only the initial approved model alias `sonnet`. It executes
+native binaries with structured argv and `shell: false`; on Windows, resolution
+must prefer a native executable and fail closed when only `.cmd`/`.bat` wrappers
+exist.
 
 - [ ] **Step 6: Cover late close/error, double cancel, and temp cleanup**
 
 Add tests proving only the first terminal event wins, double cancel is
 idempotent, the capability token is revoked, and the temporary proxy/config
-directory is removed on every terminal path.
+directory is removed on every terminal path. Also cover token absence from the
+Claude environment, proxy-only token injection, mode `0600`, Windows native
+binary preference, forced escalation after a failed graceful `taskkill`, POSIX
+root-close-before-grace, and cleanup failure.
 
 - [ ] **Step 7: Run Task 3 tests**
 
@@ -498,7 +511,8 @@ Reject invalid transitions in one pure transition function.
 - [ ] **Step 4: Snapshot prompt/workflow identity before queueing**
 
 Hash canonical snapshots and persist only hashes plus the non-secret resolved
-configuration. Do not persist the capability token. Construct the exact agent
+configuration. Do not persist the capability token outside Task 3's controlled
+mode-`0600` temporary MCP config. Construct the exact agent
 prompt from `CLAUDE.md` instruction, workspace, saved prompt, workflow steps,
 output schema, and explicit no-write contract.
 
