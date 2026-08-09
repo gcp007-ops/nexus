@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-09
 
-**Status:** Approved in conversation; awaiting review of this written specification
+**Status:** Approved
 
 **Primary repository:** Nexus
 

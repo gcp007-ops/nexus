@@ -39,7 +39,6 @@
 - Modify: `src/database/types/workspace/WorkspaceTypes.ts`
 - Modify: `src/services/helpers/WorkspaceNormalizer.ts`
 - Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
-- Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
 - Modify: `tests/unit/WorkflowEditorRenderer.test.ts`
 - Create: `tests/unit/WorkspaceWorkflowExecution.test.ts`
 
@@ -97,8 +96,14 @@ export interface WorkflowExecutionConfig {
 }
 
 export interface WorkspaceWorkflow {
-  // existing fields stay unchanged
+  id: string;
+  name: string;
+  when: string;
+  steps: string;
+  promptId?: string;
+  promptName?: string;
   execution?: WorkflowExecutionConfig;
+  schedule?: WorkflowSchedule;
 }
 ```
 
@@ -335,8 +340,9 @@ failure terminal `failed`.
 
 - [ ] **Step 5: Make bypass non-configurable for workflow runs**
 
-`ClaudeCliWorkflowBackend` constructs fixed CLI arguments. `<server-key>` is the
-same canonical key used by the temporary MCP configuration:
+`ClaudeCliWorkflowBackend` constructs fixed CLI arguments. `serverKey` is the
+exact value returned by `getPrimaryServerKey()` and used by the temporary MCP
+configuration:
 
 ```ts
 [
@@ -454,26 +460,45 @@ git commit -m "feat: validate vault change plans"
 ### Task 5: Conversation-backed run lifecycle and non-blocking scheduling
 
 **Files:**
-- Create: `src/services/workflows/AgentRunService.ts`
+- Modify: `src/services/workflows/AgentRunService.ts`
 - Modify: `src/services/workflows/WorkflowRunService.ts`
 - Modify: `src/services/workflows/WorkflowScheduleService.ts`
+- Create: `src/services/workflows/WorkflowAuthorityService.ts`
+- Create: `src/services/workflows/WorkflowRunReservationService.ts`
+- Modify: `src/services/workflows/WorkflowExecutionBackend.ts`
+- Modify: `src/services/workflows/ClaudeCliWorkflowBackend.ts`
+- Modify: `src/services/workflows/AgentCapabilityPolicyService.ts`
 - Modify: `src/services/workflows/types.ts`
 - Modify: `src/database/types/workspace/WorkspaceTypes.ts`
 - Modify: `src/services/helpers/WorkspaceNormalizer.ts`
+- Modify: `src/database/storage/JSONLWriter.ts`
+- Modify: `src/database/repositories/interfaces/IConversationRepository.ts`
+- Modify: `src/database/repositories/ConversationRepository.ts`
+- Modify: `src/database/interfaces/IStorageAdapter.ts`
+- Modify: `src/database/adapters/HybridStorageAdapter.ts`
+- Modify: `src/services/ConversationService.ts`
 - Modify: `src/services/chat/ChatService.ts`
 - Modify: `src/services/chat/ConversationManager.ts`
 - Modify: `src/types/storage/HybridStorageTypes.ts`
 - Modify: `src/core/services/ServiceDefinitions.ts`
 - Modify: `src/core/background/BackgroundProcessor.ts`
-- Create: `tests/unit/AgentRunService.test.ts`
-- Create: `tests/unit/WorkflowRunService.test.ts`
-- Create: `tests/unit/WorkflowScheduleService.test.ts`
+- Modify: `src/components/workspace/WorkflowEditorRenderer.ts`
+- Modify: `src/settings/tabs/WorkspacesTab.ts`
+- Modify: `tests/unit/AgentRunService.test.ts`
+- Modify: `tests/unit/WorkflowRunService.test.ts`
+- Modify: `tests/unit/WorkflowScheduleService.test.ts`
+- Create: `tests/unit/WorkflowAuthorityService.test.ts`
+- Modify: `tests/unit/AgentCapabilityPolicyService.test.ts`
+- Modify: `tests/unit/ClaudeCliWorkflowBackend.test.ts`
+- Modify: `tests/unit/ConversationRepository.test.ts`
 - Modify: `tests/unit/WorkspaceWorkflowExecution.test.ts`
 - Modify: `tests/unit/WorkflowEditorRenderer.test.ts`
 
 **Interfaces:**
 - Consumes: Tasks 1, 3, and 4.
-- Produces: `AgentRunService.start/get/list/cancel/reconcileInterrupted` and backend dispatch from `WorkflowRunService`.
+- Produces: authority-gated `WorkflowRunService.start`, local `runKey`
+  reservation, CAS-backed `AgentRunService` transitions, structured security
+  outcomes, and stable restart reconciliation.
 - Consumed by: Tasks 6 and 7 and the ThinkBox plan.
 
 The Task 5 correction also closes the scheduling authority boundary:
@@ -482,9 +507,16 @@ The Task 5 correction also closes the scheduling authority boundary:
 type WorkflowAuthorityScope = 'vault-synced' | 'machine-local';
 
 interface WorkflowExecutionConfig {
-  // existing fields
+  backend: 'chat' | 'claude-cli';
   authorityScope: WorkflowAuthorityScope;
   authorityDeviceId?: string;
+  model?: string;
+  mode: 'proposal';
+  capabilityProfile: 'vault-readonly';
+  outputSchema: 'vault-change-plan/v1';
+  maxTurns: number;
+  timeoutMinutes: number;
+  approvalRequired: true;
 }
 ```
 
@@ -497,69 +529,236 @@ The existing Execution editor persists the scope and authority ID, offers the
 current device ID as an explicit user action, and does not expose
 `machine-local` execution until its local-read capability exists.
 
-- [ ] **Step 1: Write failing run-state tests**
+- [ ] **Step 1: Write failing authority and reservation tests**
 
 ```ts
-it('uses conversationId as runId and appends immutable plan output', async () => {
-  const started = await service.start(makeStartRequest());
-  expect(started.runId).toBe('conversation-1');
-  await backend.resolve(validPlanText());
-  expect(await service.get('conversation-1')).toMatchObject({
-    status: 'awaiting_approval', planHash: expect.stringMatching(/^sha256:/)
-  });
-  expect(conversations.addMessage).toHaveBeenCalledWith(expect.objectContaining({
-    conversationId: 'conversation-1', role: 'assistant', content: validPlanText()
-  }));
+it('accepts only the configured vault authority device', () => {
+  const authority = new WorkflowAuthorityService(appWithDeviceId('device-a'));
+  expect(authority.assertCanRun(makeExecution({ authorityDeviceId: 'device-a' })))
+    .toBe('device-a');
+  expect(() => authority.assertCanRun(makeExecution({ authorityDeviceId: 'device-b' })))
+    .toThrow('Workflow authority device mismatch');
 });
 
-it('marks persisted running conversations interrupted on restart', async () => {
+it('rejects a vault-synced run on a non-authority device before persistence', async () => {
+  authority.assertCanRun.mockImplementation(() => {
+    throw new Error('Workflow authority device mismatch');
+  });
+  await expect(service.start(makeRequest({ authorityDeviceId: 'device-a' })))
+    .rejects.toThrow('Workflow authority device mismatch');
+  expect(chatService.createConversation).not.toHaveBeenCalled();
+});
+
+it('reserves one runKey across concurrent services in this Nexus instance', async () => {
+  const reservation = new WorkflowRunReservationService();
+  const first = makeWorkflowRunService({ reservation, createGate });
+  const second = makeWorkflowRunService({ reservation, createGate });
+  const a = first.start(makeRequest({ runKey: 'slot-1' }));
+  await createGate.entered;
+  await expect(second.start(makeRequest({ runKey: 'slot-1' })))
+    .rejects.toThrow('Workflow run is already reserved: slot-1');
+  createGate.release();
+  await a;
+});
+```
+
+- [ ] **Step 2: Run authority tests and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/WorkflowEditorRenderer.test.ts`
+
+Expected: FAIL because authority fields, the authority service and the shared
+reservation do not exist.
+
+- [ ] **Step 3: Implement the authority boundary and local reservation**
+
+```ts
+export class WorkflowAuthorityService {
+  constructor(private readonly app: Pick<App, 'loadLocalStorage'>) {}
+  currentDeviceId(): string;
+  assertCanRun(execution: WorkflowExecutionConfig): string;
+}
+
+export class WorkflowRunReservationService {
+  runExclusive<T>(runKey: string, action: () => Promise<T>): Promise<T>;
+}
+```
+
+Export one `NEXUS_DEVICE_ID_STORAGE_KEY` constant from `JSONLWriter.ts` and use
+it both there and in `WorkflowAuthorityService`; do not create a second device
+identity. `assertCanRun` accepts only `vault-synced`, requires a non-empty
+`authorityDeviceId`, compares it with the current ID and returns that ID.
+`WorkflowRunService.start()` calls it before `hasRunKey`, reservation,
+conversation creation or backend dispatch. Inside `runExclusive`, recheck
+`ConversationService.hasRunKey(runKey)` and create the conversation before
+releasing the key. Inject one reservation instance from `ServiceDefinitions` so
+manual and scheduled callers share it.
+
+- [ ] **Step 4: Persist and render authority configuration**
+
+Normalize existing `claude-cli` blocks to `authorityScope: 'vault-synced'` but
+leave `authorityDeviceId` absent so they fail closed until explicitly assigned.
+Add fixed `Vault synced` scope copy and an authority-device text field to the
+Execution editor. Pass the current device ID from `WorkspacesTab`; a button
+labelled `Use this device` copies it into the draft. Validate a non-empty ID on
+save. Do not offer `machine-local` in this delivery.
+
+- [ ] **Step 5: Write failing CAS, early-cancel and orphan-handle tests**
+
+```ts
+it('cancels a start requested before queued metadata exists', async () => {
+  const start = service.start(makeStartRequest());
+  const cancel = service.cancel('conversation-1');
+  releaseConversationRead();
+  await expect(cancel).resolves.toMatchObject({ status: 'cancelled' });
+  expect(backend.start).not.toHaveBeenCalled();
+  await start;
+});
+
+it('terminates the retained handle before surfacing running persistence failure', async () => {
+  conversations.mutateConversationMetadata.mockRejectedValueOnce(new Error('disk'));
+  await expect(service.start(makeStartRequest())).rejects.toThrow('disk');
+  expect(handle.cancel).toHaveBeenCalledTimes(1);
+  await expect(handle.result).resolves.toBeDefined();
+});
+
+it('does not overwrite a concurrently completed run during reconciliation', async () => {
+  conversations.mutateConversationMetadata.mockResolvedValue({ applied: false });
   await service.reconcileInterrupted();
-  expect(conversations.updateConversationMetadata).toHaveBeenCalledWith(
-    'run-old', expect.objectContaining({ agentRun: expect.objectContaining({ status: 'interrupted' }) })
+  const mutate = conversations.mutateConversationMetadata.mock.calls[0][1];
+  expect(mutate({ agentRun: makeRun({ status: 'completed' }) })).toBeNull();
+});
+```
+
+- [ ] **Step 6: Run lifecycle-race tests and confirm RED**
+
+Run: `npm test -- --runInBand tests/unit/AgentRunService.test.ts`
+
+Expected: FAIL on cancellation before first persistence, rejected running
+persistence leaving a detached handle, and non-CAS reconciliation.
+
+- [ ] **Step 7: Add serialized compare-and-set metadata mutation**
+
+```ts
+export interface ConversationMetadataMutationResult {
+  applied: boolean;
+  metadata?: NonNullable<ConversationData['metadata']>;
+}
+
+mutateConversationMetadata(
+  conversationId: string,
+  mutate: (
+    current: Readonly<NonNullable<ConversationData['metadata']>>
+  ) => NonNullable<ConversationData['metadata']> | null
+): Promise<ConversationMetadataMutationResult>;
+```
+
+Implement this method in `ConversationManager` with one `NamedLocks` lock per
+conversation. Inside the lock, reread the authoritative conversation, call the
+pure mutator on the latest metadata, treat `null` as a failed comparison and
+write the returned whole metadata once. Expose it through `ChatService`.
+`AgentRunService` must use a `persistTransition(runId, expectedStatuses, next)`
+helper where `expectedStatuses` is
+`readonly (AgentRunStatus | undefined)[]`. Its mutator checks the latest typed
+`agentRun.status`, replaces only `agentRun`, and preserves every sibling key.
+A failed comparison is a benign no-op for completion/restart races and an error
+for the initiating queued-to-running transition.
+
+Replace the pre-persistence cancellation promise with a start entry containing
+`cancelRequested` plus a deferred settled result. After queued metadata is
+written, a requested cancellation persists `cancelled` and never calls
+`backend.start`. If the backend has started and the running CAS/write fails,
+await `handle.cancel()` and `handle.result` before removing it or propagating
+the storage error; make a best-effort CAS to `failed` without weakening the
+requirement that the process is already terminated.
+
+- [ ] **Step 8: Write failing stable-snapshot reconciliation tests**
+
+```ts
+it('snapshots IDs before transitions can reorder conversations', async () => {
+  conversationService.getConversationIdsSnapshot.mockResolvedValue(['a', 'b', 'c']);
+  await service.reconcileInterrupted();
+  expect(conversationService.getConversationIdsSnapshot).toHaveBeenCalledTimes(1);
+  expect(conversationService.getConversation).toHaveBeenCalledWith('a');
+  expect(conversationService.getConversation).toHaveBeenCalledWith('b');
+  expect(conversationService.getConversation).toHaveBeenCalledWith('c');
+});
+```
+
+- [ ] **Step 9: Implement an immutable ID snapshot for restart reconciliation**
+
+Add `getConversationIdsSnapshot(): Promise<string[]>` to the repository,
+adapter and conversation service contracts. The hybrid repository executes
+`SELECT id FROM conversations ORDER BY id ASC` and returns only IDs; the legacy
+fallback sorts `Object.keys(index.conversations)`. `ConversationManager` first
+obtains this complete immutable array, then hydrates those IDs. It must not use
+`LIMIT/OFFSET` ordered by mutable `updated`. `reconcileInterrupted()` then CASes
+only snapshot members still in `queued` or `running` to `interrupted`.
+
+- [ ] **Step 10: Write failing structured-security and truncation tests**
+
+```ts
+it('returns a structured securityBlocked result after a denied valid grant', async () => {
+  policy.allows(issued.grant, 'contentManager', 'write');
+  expect(policy.revoke(issued.token)).toBe(true);
+});
+
+it.each([
+  { stdoutTruncated: true, stderrTruncated: false },
+  { stdoutTruncated: false, stderrTruncated: true }
+])('rejects truncated completed output', async flags => {
+  backend.resolve({ ...completed(validPlanText()), ...flags });
+  await completion;
+  expect(await service.get('conversation-1')).toMatchObject({ status: 'invalid_output' });
+});
+```
+
+- [ ] **Step 11: Propagate policy denial structurally**
+
+Add `securityBlocked: boolean` to `WorkflowExecutionResult`. Track denial on the
+issued token inside `AgentCapabilityPolicyService`: `allows()` marks a valid
+grant when it rejects an agent/tool pair, and `revoke(token)` returns and clears
+that token's denial bit. `ClaudeCliWorkflowBackend` captures this boolean during
+its mandatory revoke cleanup and returns it after token redaction. Remove the
+`CAPABILITY_REJECTION` regex from `AgentRunService`; transition to
+`security_blocked` only from the structured boolean. A `completed` result with
+either truncation flag is `invalid_output` before parsing, even when the visible
+stdout is valid JSON.
+
+- [ ] **Step 12: Write failing hash-only conversation tests**
+
+```ts
+it('does not persist the resolved Claude prompt in chat settings', async () => {
+  await service.start(makeClaudeRequest());
+  expect(chatService.createConversation).toHaveBeenCalledWith(
+    expect.any(String),
+    undefined,
+    expect.not.objectContaining({ systemPrompt: expect.any(String) })
+  );
+  expect(agentRunService.start).toHaveBeenCalledWith(
+    expect.objectContaining({ resolvedPrompt: 'resolved secret-free prompt' })
   );
 });
 ```
 
-- [ ] **Step 2: Run lifecycle tests and confirm RED**
-
-Run: `npm test -- --runInBand tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts`
-
-Expected: FAIL because the lifecycle service and dispatch do not exist.
-
-- [ ] **Step 3: Implement typed state transitions**
-
-```ts
-export type AgentRunStatus =
-  | 'queued' | 'running' | 'awaiting_approval' | 'applying' | 'completed'
-  | 'completed_with_issues' | 'rejected' | 'preflight_failed'
-  | 'security_blocked' | 'invalid_output' | 'timed_out' | 'cancelled'
-  | 'interrupted' | 'failed';
-```
-
-Store `metadata.agentRun` through a merge-preserving helper that reads current
-metadata, replaces only the `agentRun` object, and appends plan/result messages.
-Reject invalid transitions in one pure transition function.
-
-- [ ] **Step 4: Snapshot prompt/workflow identity before queueing**
+- [ ] **Step 13: Keep the resolved prompt in memory only**
 
 Hash canonical snapshots and persist only hashes plus the non-secret resolved
-configuration. Do not persist the capability token outside Task 3's controlled
-mode-`0600` temporary MCP config. Construct the exact agent
-prompt from `CLAUDE.md` instruction, workspace, saved prompt, workflow steps,
-output schema, and explicit no-write contract.
+configuration. For `claude-cli`, omit `systemPrompt` and all resolved
+workspace/saved-prompt text from `createConversation` chat settings. Pass it
+only in the in-memory `AgentRunStartRequest`, hash it in `AgentRunService`, and
+construct the exact backend prompt from the `CLAUDE.md` instruction, workspace,
+saved prompt, workflow steps, output schema and explicit no-write contract.
+Do not persist the capability token outside Task 3's controlled mode-`0600`
+temporary MCP config. Keep the legacy chat path behavior unchanged.
 
-- [ ] **Step 5: Dispatch chat and Claude backends without changing legacy runs**
+- [ ] **Step 14: Dispatch chat and Claude backends without changing legacy runs**
 
 `WorkflowRunService.start()` keeps the current chat path when `execution` is
-absent or `backend === 'chat'`. For `claude-cli`, it creates the conversation,
-queues through `AgentRunService`, and returns before `handle.result` settles.
+absent or `backend === 'chat'`. For `claude-cli`, it creates the hash-only
+conversation, queues through `AgentRunService`, and returns before
+`handle.result` settles.
 
-Add a failing authority test before production changes: a manual
-`vault-synced` start whose `authorityDeviceId` differs from the local device ID
-must fail preflight before conversation creation or backend dispatch. The
-matching device remains allowed.
-
-- [ ] **Step 6: Write failing scheduler non-blocking tests**
+- [ ] **Step 15: Write failing scheduler non-blocking tests**
 
 ```ts
 it('enqueues due workflows without awaiting completion', async () => {
@@ -584,37 +783,45 @@ it('dispatches a synchronized schedule only on its configured leader', async () 
 });
 ```
 
-- [ ] **Step 7: Separate schedule calculation from queued dispatch**
+- [ ] **Step 16: Separate schedule calculation from queued dispatch**
 
 `WorkflowScheduleService.start()` registers its interval and schedules the
 initial scan in a detached microtask. Each due slot awaits only conversation/job
-creation, not CLI completion. Preserve `runKey` checks and force proposal-only
-behavior. Reserve the key atomically for concurrent scheduler services inside
-the supported authority instance. Do not claim cross-host exclusion: the
-`authorityDeviceId` gate is the authority boundary. Record `authorityScope` and
-the local `deviceId` in run metadata.
+creation, not CLI completion. Before calculating due slots for a `claude-cli`
+workflow, the scheduler calls the same `WorkflowAuthorityService.assertCanRun`;
+a non-authority device neither calculates nor dispatches that workflow. Preserve
+proposal-only behavior. The shared
+`WorkflowRunService` reservation performs the runKey check-and-create boundary;
+the scheduler does not implement a second lock. Do not claim cross-host
+exclusion: `authorityDeviceId` plus the one-open-instance operating constraint
+is the boundary. Record `authorityScope` and the actual local `deviceId` in
+`metadata.agentRun` and include them in the workflow hash.
 
-As part of the reviewed Task 5 correction, also:
+- [ ] **Step 17: Run Task 5 tests**
 
-- serialize/CAS agent-run metadata transitions while preserving sibling
-  metadata;
-- make cancellation before `queued` and storage failure after backend start
-  settle fail-closed without orphaning a handle;
-- reject truncated completed output and propagate policy denial structurally;
-- omit the resolved prompt text from Claude conversation metadata;
-- replace mutable OFFSET restart reconciliation with a stable snapshot/cursor.
-
-- [ ] **Step 8: Run Task 5 tests**
-
-Run: `npm test -- --runInBand tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/ConversationManager.test.ts`
+Run: `npm test -- --runInBand tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/WorkflowAuthorityService.test.ts tests/unit/AgentCapabilityPolicyService.test.ts tests/unit/ClaudeCliWorkflowBackend.test.ts tests/unit/ConversationRepository.test.ts tests/unit/WorkspaceWorkflowExecution.test.ts tests/unit/WorkflowEditorRenderer.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit Task 5**
+- [ ] **Step 18: Run proportional regression gates**
+
+Run: `npx tsc --noEmit --skipLibCheck`
+
+Run: `npx eslint src/services/workflows/AgentRunService.ts src/services/workflows/WorkflowRunService.ts src/services/workflows/WorkflowScheduleService.ts src/services/workflows/WorkflowAuthorityService.ts src/services/workflows/WorkflowRunReservationService.ts src/services/workflows/WorkflowExecutionBackend.ts src/services/workflows/ClaudeCliWorkflowBackend.ts src/services/workflows/AgentCapabilityPolicyService.ts src/services/chat/ConversationManager.ts src/services/chat/ChatService.ts src/services/ConversationService.ts src/database/repositories/ConversationRepository.ts src/database/storage/JSONLWriter.ts src/components/workspace/WorkflowEditorRenderer.ts`
+
+Run: `npm run build`
+
+Run: `git diff --check`
+
+Expected: every command exits 0. Preserve the recorded unrelated
+`TaskBoardEditCoordinator.test.ts` baseline failure; it is not evidence for or
+against this task.
+
+- [ ] **Step 19: Commit the Task 5 correction**
 
 ```bash
-git add src/services/workflows/AgentRunService.ts src/services/workflows/WorkflowRunService.ts src/services/workflows/WorkflowScheduleService.ts src/services/workflows/types.ts src/database/types/workspace/WorkspaceTypes.ts src/services/helpers/WorkspaceNormalizer.ts src/components/workspace/WorkflowEditorRenderer.ts src/services/chat/ChatService.ts src/services/chat/ConversationManager.ts src/types/storage/HybridStorageTypes.ts src/core/services/ServiceDefinitions.ts src/core/background/BackgroundProcessor.ts tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/WorkspaceWorkflowExecution.test.ts tests/unit/WorkflowEditorRenderer.test.ts
-git commit -m "feat: persist supervised workflow runs"
+git add src/services/workflows/AgentRunService.ts src/services/workflows/WorkflowRunService.ts src/services/workflows/WorkflowScheduleService.ts src/services/workflows/WorkflowAuthorityService.ts src/services/workflows/WorkflowRunReservationService.ts src/services/workflows/WorkflowExecutionBackend.ts src/services/workflows/ClaudeCliWorkflowBackend.ts src/services/workflows/AgentCapabilityPolicyService.ts src/services/workflows/types.ts src/database/types/workspace/WorkspaceTypes.ts src/services/helpers/WorkspaceNormalizer.ts src/database/storage/JSONLWriter.ts src/database/repositories/interfaces/IConversationRepository.ts src/database/repositories/ConversationRepository.ts src/database/interfaces/IStorageAdapter.ts src/database/adapters/HybridStorageAdapter.ts src/services/ConversationService.ts src/services/chat/ChatService.ts src/services/chat/ConversationManager.ts src/types/storage/HybridStorageTypes.ts src/core/services/ServiceDefinitions.ts src/core/background/BackgroundProcessor.ts src/components/workspace/WorkflowEditorRenderer.ts src/settings/tabs/WorkspacesTab.ts tests/unit/AgentRunService.test.ts tests/unit/WorkflowRunService.test.ts tests/unit/WorkflowScheduleService.test.ts tests/unit/WorkflowAuthorityService.test.ts tests/unit/AgentCapabilityPolicyService.test.ts tests/unit/ClaudeCliWorkflowBackend.test.ts tests/unit/ConversationRepository.test.ts tests/unit/WorkspaceWorkflowExecution.test.ts tests/unit/WorkflowEditorRenderer.test.ts
+git commit -m "fix: enforce supervised run authority"
 ```
 
 ---
@@ -888,7 +1095,8 @@ and no `ClaudeCliWorkflowBackend.start()` call occurs before service readiness.
 
 - [ ] **Step 5: Inspect final scope**
 
-Run: `git status --short` and `git log --oneline <base>..HEAD`.
+Run: `git status --short` and
+`git log --oneline "$(git merge-base main HEAD)"..HEAD`.
 
 Expected: only Tasks 1–8 implementation/tests and their intentional commits.
 
