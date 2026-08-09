@@ -1,7 +1,21 @@
-import type { Plugin } from 'obsidian';
+import type { App, Plugin } from 'obsidian';
+import type { ConversationData } from '../../src/types/chat/ChatTypes';
 import { BackgroundProcessor } from '../../src/core/background/BackgroundProcessor';
+import {
+  AgentRunService,
+  type AgentRunConversationStore
+} from '../../src/services/workflows/AgentRunService';
+import type {
+  WorkflowExecutionHandle,
+  WorkflowExecutionRequest,
+  WorkflowExecutionResult
+} from '../../src/services/workflows/WorkflowExecutionBackend';
+import { WorkflowAuthorityService } from '../../src/services/workflows/WorkflowAuthorityService';
+import { WorkflowRunService } from '../../src/services/workflows/WorkflowRunService';
 import { WorkflowScheduleService } from '../../src/services/workflows/WorkflowScheduleService';
 import { WorkflowRunConflictError } from '../../src/services/workflows/WorkflowRunReservationService';
+import { WorkflowRunReservationService } from '../../src/services/workflows/WorkflowRunReservationService';
+import type { WorkspaceWorkflow } from '../../src/database/types/workspace/WorkspaceTypes';
 import type { WorkflowRunRequest } from '../../src/services/workflows/types';
 
 const NOW = new Date(2026, 7, 9, 2, 0, 0, 0).getTime();
@@ -192,6 +206,7 @@ describe('WorkflowScheduleService', () => {
 describe('BackgroundProcessor workflow startup', () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    jest.setSystemTime(NOW);
   });
 
   afterEach(() => {
@@ -238,29 +253,157 @@ describe('BackgroundProcessor workflow startup', () => {
   });
 
   it('finishes startup and queues one run after service readiness when the backend never settles', async () => {
-    const never = new Promise<never>(() => undefined);
+    const never = new Promise<WorkflowExecutionResult>(() => undefined);
     const backendStartReadiness: boolean[] = [];
     let servicesReady = false;
-    let backgroundStartupCompleted = false;
     const claudeCliWorkflowBackend = {
-      start: jest.fn(() => {
+      start: jest.fn((request: WorkflowExecutionRequest): WorkflowExecutionHandle => {
         backendStartReadiness.push(servicesReady);
-        return never;
+        return {
+          runId: request.runId,
+          result: never,
+          cancel: jest.fn(async () => undefined)
+        };
       })
     };
-    const { service, plugin, settings, workflowRunService } = createHarness(
-      () => claudeCliWorkflowBackend.start()
-    );
-    settings.settings.workflowScheduler.lastCheckAt = new Date(2026, 7, 9, 0, 0, 0, 0).getTime();
-    const agentRunService = {
-      reconcileInterrupted: jest.fn(async () => undefined)
+    const conversations = new Map<string, ConversationData>();
+    const conversationStore: AgentRunConversationStore = {
+      getConversation: jest.fn(async (id: string) => conversations.get(id) ?? null),
+      addMessage: jest.fn(async () => undefined),
+      mutateConversationMetadata: jest.fn(async (conversationId, mutate) => {
+        const conversation = conversations.get(conversationId);
+        if (!conversation) {
+          throw new Error(`Conversation not found: ${conversationId}`);
+        }
+        const metadata = mutate(conversation.metadata ?? {});
+        if (metadata === null) {
+          return { applied: false };
+        }
+        conversation.metadata = metadata;
+        return { applied: true, metadata };
+      }),
+      listConversationsWithMetadata: jest.fn(async () => Array.from(conversations.values()))
     };
-    const workflowScheduleService = {
-      start: jest.fn(async () => {
-        await service.start();
-        backgroundStartupCompleted = true;
-      })
+    const agentRunService = new AgentRunService({
+      conversations: conversationStore,
+      backend: claudeCliWorkflowBackend,
+      applier: {
+        apply: jest.fn(),
+        reconcile: jest.fn()
+      } as never,
+      hashSnapshot: jest.fn(async (snapshot: string) => (
+        snapshot.includes('Resolved startup instructions')
+          ? `sha256:${'a'.repeat(64)}`
+          : `sha256:${'b'.repeat(64)}`
+      )),
+      now: () => NOW
+    });
+    const execution = {
+      backend: 'claude-cli' as const,
+      authorityScope: 'vault-synced' as const,
+      authorityDeviceId: 'device-a',
+      model: 'sonnet',
+      mode: 'proposal' as const,
+      capabilityProfile: 'vault-readonly' as const,
+      outputSchema: 'vault-change-plan/v1' as const,
+      maxTurns: 12,
+      timeoutMinutes: 10,
+      approvalRequired: true as const
     };
+    const scheduledWorkflow: WorkspaceWorkflow = {
+      id: 'workflow-1',
+      name: 'Scheduled guardian',
+      when: 'Daily',
+      steps: 'Inspect and propose.',
+      execution,
+      schedule: {
+        enabled: true,
+        frequency: 'daily',
+        hour: 1,
+        minute: 0,
+        catchUp: 'all'
+      }
+    };
+    const workspace = {
+      id: 'workspace-1',
+      name: 'Development',
+      isActive: true,
+      context: { workflows: [scheduledWorkflow] }
+    };
+    const workspaceService = {
+      getWorkspace: jest.fn(async () => workspace),
+      getAllWorkspaces: jest.fn(async () => [workspace])
+    };
+    const authorityService = new WorkflowAuthorityService({
+      loadLocalStorage: jest.fn(() => 'device-a')
+    } as unknown as App);
+    const chatService = {
+      createConversation: jest.fn(async (
+        title: string,
+        _id: string | undefined,
+        chatSettings: Record<string, unknown>
+      ) => {
+        const conversationId = `conversation-${conversations.size + 1}`;
+        conversations.set(conversationId, {
+          id: conversationId,
+          title,
+          messages: [],
+          created: NOW,
+          updated: NOW,
+          metadata: { chatSettings: chatSettings as never }
+        });
+        return { success: true, conversationId, sessionId: 'session-1' };
+      }),
+      sendMessage: jest.fn()
+    };
+    const conversationService = {
+      hasRunKey: jest.fn(async (runKey: string) => Array.from(conversations.values()).some(
+        conversation => conversation.metadata?.chatSettings?.runKey === runKey
+      ))
+    };
+    const app = { workspace: {} } as unknown as App;
+    const workflowRunService = new WorkflowRunService({
+      app,
+      plugin: {} as Plugin,
+      chatService: chatService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['chatService'],
+      workspaceService: workspaceService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['workspaceService'],
+      customPromptStorage: null,
+      agentRunService,
+      conversationService,
+      authorityService,
+      reservationService: new WorkflowRunReservationService()
+    });
+    const workflowRunInternals = workflowRunService as unknown as {
+      workspaceIntegration: {
+        loadWorkspace: (workspaceId: string) => Promise<Record<string, unknown> | null>;
+      };
+      systemPromptBuilder: {
+        build: (params: unknown) => Promise<string>;
+      };
+    };
+    workflowRunInternals.workspaceIntegration = {
+      loadWorkspace: jest.fn(async () => ({ workflowDefinitions: [scheduledWorkflow] }))
+    };
+    workflowRunInternals.systemPromptBuilder = {
+      build: jest.fn(async () => 'Resolved startup instructions')
+    };
+    const plugin = { registerInterval: jest.fn() } as unknown as Plugin;
+    const settings = {
+      settings: {
+        workflowScheduler: {
+          lastCheckAt: new Date(2026, 7, 9, 0, 0, 0, 0).getTime()
+        }
+      },
+      saveSettings: jest.fn(async () => undefined)
+    };
+    const workflowScheduleService = new WorkflowScheduleService({
+      plugin,
+      settings: settings as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['settings'],
+      workspaceService: workspaceService as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['workspaceService'],
+      workflowRunService,
+      authorityService
+    });
+    const scheduleStart = jest.spyOn(workflowScheduleService, 'start');
     const getService = jest.fn(async (name: string) => {
       if (name === 'agentRunService') {
         return agentRunService;
@@ -283,13 +426,17 @@ describe('BackgroundProcessor workflow startup', () => {
     processor.startBackgroundStartupProcessing();
     expect(claudeCliWorkflowBackend.start).not.toHaveBeenCalled();
 
-    jest.advanceTimersByTime(2_000);
+    await jest.advanceTimersByTimeAsync(2_000);
     await flushMicrotasks();
 
-    expect(backgroundStartupCompleted).toBe(true);
     expect(processor.hasRunBackgroundStartupProcessing()).toBe(true);
+    await expect(scheduleStart.mock.results[0]?.value).resolves.toBeUndefined();
     expect(plugin.registerInterval).toHaveBeenCalledTimes(1);
-    expect(workflowRunService.start).toHaveBeenCalledTimes(1);
+    expect(chatService.createConversation).toHaveBeenCalledTimes(1);
+    expect(conversations.size).toBe(1);
+    await expect(agentRunService.get('conversation-1')).resolves.toEqual(
+      expect.objectContaining({ runId: 'conversation-1', status: 'running' })
+    );
     expect(claudeCliWorkflowBackend.start).toHaveBeenCalledTimes(1);
     expect(backendStartReadiness).toEqual([true]);
   });
