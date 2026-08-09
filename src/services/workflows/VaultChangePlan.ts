@@ -135,6 +135,7 @@ function parseSingleJsonObject(raw: string): Record<string, unknown> {
   }
 
   try {
+    assertNoDuplicateJsonKeys(json);
     return expectRecord(JSON.parse(json), 'plan');
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -243,14 +244,15 @@ function validateOperation(
     'expectedEffect', 'risk', 'dependsOn', 'rollback'
   ];
   switch (type) {
-    case 'move':
+    case 'move': {
       assertKnownKeys(operation, [...commonKeys, 'sourcePath', 'destinationPath'], 'move operation');
-      assertVaultPath(operation.sourcePath, 'move sourcePath');
-      assertVaultPath(operation.destinationPath, 'move destinationPath');
-      if (operation.sourcePath === operation.destinationPath) {
+      const sourcePath = assertVaultPath(operation.sourcePath, 'move sourcePath');
+      const destinationPath = assertVaultPath(operation.destinationPath, 'move destinationPath');
+      if (sourcePath.normalize('NFKC') === destinationPath.normalize('NFKC')) {
         throw new Error('move sourcePath and destinationPath must differ');
       }
       break;
+    }
     case 'archive':
       assertKnownKeys(operation, [...commonKeys, 'path'], 'archive operation');
       assertVaultPath(operation.path, 'archive path');
@@ -258,19 +260,20 @@ function validateOperation(
     case 'setProperty':
       assertKnownKeys(operation, [...commonKeys, 'path', 'property', 'value'], 'setProperty operation');
       assertVaultPath(operation.path, 'setProperty path');
-      assertNonBlankString(operation.property, 'setProperty property');
+      assertSafeSetPropertyName(operation.property);
       assertJsonValue(operation.value, 'setProperty value');
       break;
-    case 'replaceAnchored':
+    case 'replaceAnchored': {
       assertKnownKeys(operation, [...commonKeys, 'path', 'startAnchor', 'endAnchor', 'replacement'], 'replaceAnchored operation');
       assertVaultPath(operation.path, 'replaceAnchored path');
-      assertNonBlankString(operation.startAnchor, 'replaceAnchored startAnchor');
-      assertNonBlankString(operation.endAnchor, 'replaceAnchored endAnchor');
-      if (operation.startAnchor === operation.endAnchor) {
+      const startAnchor = assertCanonicalText(operation.startAnchor, 'replaceAnchored startAnchor', false);
+      const endAnchor = assertCanonicalText(operation.endAnchor, 'replaceAnchored endAnchor', false);
+      if (startAnchor.normalize('NFKC') === endAnchor.normalize('NFKC')) {
         throw new Error('replaceAnchored anchors must differ');
       }
       assertString(operation.replacement, 'replaceAnchored replacement');
       break;
+    }
     default:
       throw new Error(`unsupported operation type: ${String(type)}`);
   }
@@ -281,7 +284,8 @@ function validateOperation(
     throw new Error(`unknown findingId "${findingId}"`);
   }
   validateEvidenceIds(operation.evidence, evidenceIds, 'operation evidence');
-  validatePreconditions(operation.preconditions);
+  const preconditions = validatePreconditions(operation.preconditions);
+  validateOperationPreconditions(type, operation, preconditions);
   assertNonBlankString(operation.expectedEffect, 'expectedEffect');
   validateRisk(operation.risk);
   validateDependencies(operation.dependsOn);
@@ -289,26 +293,77 @@ function validateOperation(
   return operationId;
 }
 
-function validatePreconditions(value: unknown): void {
+function validatePreconditions(value: unknown): Map<string, boolean> {
   const preconditions = expectArray(value, 'preconditions');
   if (preconditions.length === 0) {
     throw new Error('preconditions must not be empty');
   }
-  const paths = new Set<string>();
+  const paths = new Map<string, boolean>();
   for (const item of preconditions) {
     const precondition = expectRecord(item, 'precondition');
     assertKnownKeys(precondition, ['path', 'exists', 'contentHash'], 'precondition');
     const path = assertVaultPath(precondition.path, 'precondition path');
-    assertUnique(paths, path, 'precondition path');
     if (typeof precondition.exists !== 'boolean') {
       throw new Error('precondition exists must be boolean');
     }
+    if (paths.has(path)) {
+      throw new Error(`duplicate or contradictory precondition path: ${path}`);
+    }
+    paths.set(path, precondition.exists);
     if (precondition.contentHash !== undefined) {
       if (!precondition.exists) {
         throw new Error('absent precondition must not contain contentHash');
       }
       assertSha256(precondition.contentHash, 'precondition contentHash');
     }
+  }
+  return paths;
+}
+
+function validateOperationPreconditions(
+  type: unknown,
+  operation: Record<string, unknown>,
+  preconditions: Map<string, boolean>
+): void {
+  switch (type) {
+    case 'move':
+      assertOnlyTargetPreconditions(preconditions, [
+        { path: operation.sourcePath as string, exists: true, label: 'move sourcePath' },
+        { path: operation.destinationPath as string, exists: false, label: 'move destinationPath' }
+      ]);
+      return;
+    case 'archive':
+      assertOnlyTargetPreconditions(preconditions, [
+        { path: operation.path as string, exists: true, label: 'archive path' }
+      ]);
+      return;
+    case 'setProperty':
+      assertOnlyTargetPreconditions(preconditions, [
+        { path: operation.path as string, exists: true, label: 'setProperty path' }
+      ]);
+      return;
+    case 'replaceAnchored':
+      assertOnlyTargetPreconditions(preconditions, [
+        { path: operation.path as string, exists: true, label: 'replaceAnchored path' }
+      ]);
+      return;
+    default:
+      return;
+  }
+}
+
+function assertOnlyTargetPreconditions(
+  preconditions: Map<string, boolean>,
+  targets: Array<{ path: string; exists: boolean; label: string }>
+): void {
+  for (const target of targets) {
+    if (preconditions.get(target.path) !== target.exists) {
+      const state = target.exists ? 'existing' : 'absent';
+      throw new Error(`${target.label} must have an ${state} precondition`);
+    }
+  }
+  if (preconditions.size !== targets.length) {
+    throw new Error('preconditions must not contain unrelated paths');
   }
 }
 
@@ -405,17 +460,52 @@ function assertKnownKeys(record: Record<string, unknown>, allowed: string[], lab
 }
 
 function assertVaultPath(value: unknown, label: string): string {
-  const path = assertNonBlankString(value, label);
+  const path = assertCanonicalText(value, label, false);
   if (path !== path.trim()
     || path.includes('\\')
     || path.startsWith('/')
     || path.startsWith('~')
     || /^[A-Za-z]:/.test(path)
-    || path.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
-    || Array.from(path).some(character => character.charCodeAt(0) < 32)) {
+    || path.split('/').some(segment => segment === '' || segment === '.' || segment === '..')) {
     throw new Error(`invalid vault path: ${path}`);
   }
   return path;
+}
+
+function assertSafeSetPropertyName(value: unknown): string {
+  const property = assertCanonicalText(value, 'setProperty property', false);
+  if (property === '__proto__' || property === 'prototype' || property === 'constructor') {
+    throw new Error(`unsafe setProperty property: ${property}`);
+  }
+  return property;
+}
+
+function assertCanonicalText(value: unknown, label: string, allowEmpty: boolean): string {
+  const text = assertString(value, label);
+  if (!allowEmpty && text.trim().length === 0) {
+    throw new Error(`${label} must not be blank`);
+  }
+  if (text.normalize('NFKC') !== text) {
+    throw new Error(`${label} must be NFKC canonical`);
+  }
+  if (containsUnsafeTextControl(text)) {
+    throw new Error(`${label} contains an unsafe control character`);
+  }
+  return text;
+}
+
+function containsUnsafeTextControl(text: string): boolean {
+  return Array.from(text).some(character => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+      || codePoint === 0x061c
+      || (codePoint >= 0x200b && codePoint <= 0x200f)
+      || (codePoint >= 0x202a && codePoint <= 0x202e)
+      || codePoint === 0x2060
+      || (codePoint >= 0x2066 && codePoint <= 0x2069)
+      || codePoint === 0xfeff;
+  });
 }
 
 function assertSha256(value: unknown, label: string): string {
@@ -462,12 +552,182 @@ function expectRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function assertJsonValue(value: unknown, label: string): void {
-  try {
-    canonicalJson(value, new Set<object>());
-  } catch {
-    throw new Error(`${label} must be JSON-serializable`);
+function assertNoDuplicateJsonKeys(json: string): void {
+  const end = scanJsonValue(json, skipJsonWhitespace(json, 0));
+  if (skipJsonWhitespace(json, end) !== json.length) {
+    throw new Error('plan output must be a single JSON object or json fence');
   }
+}
+
+function scanJsonValue(json: string, position: number): number {
+  const start = skipJsonWhitespace(json, position);
+  const character = json[start];
+  if (character === '{') {
+    return scanJsonObject(json, start + 1);
+  }
+  if (character === '[') {
+    return scanJsonArray(json, start + 1);
+  }
+  if (character === '"') {
+    return scanJsonString(json, start).end;
+  }
+  if (json.startsWith('true', start)) {
+    return start + 4;
+  }
+  if (json.startsWith('false', start)) {
+    return start + 5;
+  }
+  if (json.startsWith('null', start)) {
+    return start + 4;
+  }
+  const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(json.slice(start));
+  if (number) {
+    return start + number[0].length;
+  }
+  throw new Error('plan output must be valid JSON');
+}
+
+function scanJsonObject(json: string, position: number): number {
+  let cursor = skipJsonWhitespace(json, position);
+  const keys = new Set<string>();
+  if (json[cursor] === '}') {
+    return cursor + 1;
+  }
+  while (cursor < json.length) {
+    const key = scanJsonString(json, cursor);
+    if (keys.has(key.value)) {
+      throw new Error(`duplicate JSON key "${key.value}"`);
+    }
+    keys.add(key.value);
+    cursor = skipJsonWhitespace(json, key.end);
+    if (json[cursor] !== ':') {
+      throw new Error('plan output must be valid JSON');
+    }
+    cursor = scanJsonValue(json, cursor + 1);
+    cursor = skipJsonWhitespace(json, cursor);
+    if (json[cursor] === '}') {
+      return cursor + 1;
+    }
+    if (json[cursor] !== ',') {
+      throw new Error('plan output must be valid JSON');
+    }
+    cursor = skipJsonWhitespace(json, cursor + 1);
+  }
+  throw new Error('plan output must be valid JSON');
+}
+
+function scanJsonArray(json: string, position: number): number {
+  let cursor = skipJsonWhitespace(json, position);
+  if (json[cursor] === ']') {
+    return cursor + 1;
+  }
+  while (cursor < json.length) {
+    cursor = scanJsonValue(json, cursor);
+    cursor = skipJsonWhitespace(json, cursor);
+    if (json[cursor] === ']') {
+      return cursor + 1;
+    }
+    if (json[cursor] !== ',') {
+      throw new Error('plan output must be valid JSON');
+    }
+    cursor = skipJsonWhitespace(json, cursor + 1);
+  }
+  throw new Error('plan output must be valid JSON');
+}
+
+function scanJsonString(json: string, position: number): { value: string; end: number } {
+  if (json[position] !== '"') {
+    throw new Error('plan output must be valid JSON');
+  }
+  let cursor = position + 1;
+  while (cursor < json.length) {
+    const character = json[cursor];
+    if (character === '"') {
+      const raw = json.slice(position, cursor + 1);
+      try {
+        return { value: JSON.parse(raw) as string, end: cursor + 1 };
+      } catch {
+        throw new Error('plan output must be valid JSON');
+      }
+    }
+    if (character === '\\') {
+      const escaped = json[cursor + 1];
+      if (!escaped) {
+        throw new Error('plan output must be valid JSON');
+      }
+      if (escaped === 'u') {
+        const hexadecimal = json.slice(cursor + 2, cursor + 6);
+        if (!/^[0-9a-fA-F]{4}$/.test(hexadecimal)) {
+          throw new Error('plan output must be valid JSON');
+        }
+        cursor += 6;
+        continue;
+      }
+      if (!'"\\/bfnrt'.includes(escaped)) {
+        throw new Error('plan output must be valid JSON');
+      }
+      cursor += 2;
+      continue;
+    }
+    if (character.charCodeAt(0) < 0x20) {
+      throw new Error('plan output must be valid JSON');
+    }
+    cursor += 1;
+  }
+  throw new Error('plan output must be valid JSON');
+}
+
+function skipJsonWhitespace(json: string, position: number): number {
+  let cursor = position;
+  while (json[cursor] === ' ' || json[cursor] === '\n' || json[cursor] === '\r' || json[cursor] === '\t') {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function assertJsonValue(value: unknown, label: string): void {
+  assertSafePropertyJsonValue(value, label, new Set<object>());
+  canonicalJson(value, new Set<object>());
+}
+
+function assertSafePropertyJsonValue(value: unknown, label: string, ancestors: Set<object>): void {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${label} must be JSON-serializable`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) {
+      throw new Error(`${label} must be JSON-serializable`);
+    }
+    assertDensePlainArray(value);
+    ancestors.add(value);
+    for (const item of value) {
+      assertSafePropertyJsonValue(item, label, ancestors);
+    }
+    ancestors.delete(value);
+    return;
+  }
+  if (typeof value === 'object') {
+    if (ancestors.has(value)) {
+      throw new Error(`${label} must be JSON-serializable`);
+    }
+    assertPlainJsonObject(value);
+    ancestors.add(value);
+    for (const key of Object.keys(value)) {
+      if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
+        throw new Error(`unsafe ${label} key: ${key}`);
+      }
+      assertSafePropertyJsonValue((value as Record<string, unknown>)[key], label, ancestors);
+    }
+    ancestors.delete(value);
+    return;
+  }
+  throw new Error(`${label} must be JSON-serializable`);
 }
 
 function canonicalJson(value: unknown, ancestors: Set<object>): string {
@@ -484,6 +744,7 @@ function canonicalJson(value: unknown, ancestors: Set<object>): string {
     if (ancestors.has(value)) {
       throw new Error('canonical plan contains a cycle');
     }
+    assertDensePlainArray(value);
     ancestors.add(value);
     const json = `[${value.map(item => canonicalJson(item, ancestors)).join(',')}]`;
     ancestors.delete(value);
@@ -493,6 +754,7 @@ function canonicalJson(value: unknown, ancestors: Set<object>): string {
     if (ancestors.has(value)) {
       throw new Error('canonical plan contains a cycle');
     }
+    assertPlainJsonObject(value);
     ancestors.add(value);
     const record = value as Record<string, unknown>;
     const json = `{${Object.keys(record).sort().map(key => (
@@ -502,6 +764,44 @@ function canonicalJson(value: unknown, ancestors: Set<object>): string {
     return json;
   }
   throw new Error('canonical plan contains a non-JSON value');
+}
+
+function assertDensePlainArray(value: unknown[]): void {
+  if (Reflect.getPrototypeOf(value) !== Array.prototype) {
+    throw new Error('canonical plan contains a non-plain array');
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1) {
+    throw new Error('canonical plan contains a sparse array or extra array property');
+  }
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.prototype.hasOwnProperty.call(value, index)) {
+      throw new Error('canonical plan contains a sparse array');
+    }
+  }
+  for (const key of keys) {
+    if (key === 'length') {
+      continue;
+    }
+    if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)) {
+      throw new Error('canonical plan contains a non-JSON array property');
+    }
+  }
+}
+
+function assertPlainJsonObject(value: object): void {
+  const prototype = Reflect.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error('canonical plan contains a non-plain object');
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') {
+      throw new Error('canonical plan contains a symbol key');
+    }
+    if (!Object.prototype.propertyIsEnumerable.call(value, key)) {
+      throw new Error('canonical plan contains a non-enumerable property');
+    }
+  }
 }
 
 function sha256Hex(input: string): string {
