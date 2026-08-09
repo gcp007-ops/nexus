@@ -852,6 +852,32 @@ export interface ApprovalRequest {
     confirmedAt: number;
   };
 }
+
+export type VaultOperationStatus =
+  | 'succeeded'
+  | 'failed'
+  | 'blocked_dependency'
+  | 'readback_failed'
+  | 'rolled_back'
+  | 'rollback_failed';
+
+export interface VaultOperationResult {
+  operationId: string;
+  type: VaultChangeOperation['type'];
+  status: VaultOperationStatus;
+  startedAt: number;
+  finishedAt: number;
+  readback?: Record<string, unknown>;
+  error?: string;
+  rollbackError?: string;
+}
+
+export interface VaultChangeApplyResult {
+  runId: string;
+  planHash: string;
+  status: 'completed' | 'completed_with_issues';
+  operations: VaultOperationResult[];
+}
 ```
 
 - [ ] **Step 1: Write failing approval-binding tests**
@@ -862,16 +888,66 @@ await expect(service.approveAndApply({
   approval: { kind: 'human', source: 'nexus-ui', confirmedAt: NOW }
 })).rejects.toThrow('plan hash');
 
-await expect(service.approveAndApply({
+const missingApproval = {
   runId: 'run-1', planHash: validHash, operationIds: ['op-1']
-})).rejects.toThrow('explicit human approval context');
+} as unknown as ApprovalRequest;
+await expect(service.approveAndApply(missingApproval))
+  .rejects.toThrow('explicit human approval context');
 ```
 
 - [ ] **Step 2: Write failing operation tests**
 
-Cover all four types, stale hashes, duplicate selections, missing dependencies,
-independent continuation, dependency blocking, readback failure, successful
-rollback, and `rollback_failed`.
+```ts
+it.each(['move', 'archive', 'setProperty', 'replaceAnchored'] as const)(
+  'applies and reads back a selected %s operation', async type => {
+    const result = await applier.apply(makePlan(type), approvalFor('op-1'));
+    expect(result.operations).toEqual([
+      expect.objectContaining({ operationId: 'op-1', type, status: 'succeeded' })
+    ]);
+  }
+);
+
+it('continues an independent operation and blocks a dependent after failure', async () => {
+  executor.fail('op-1');
+  const result = await applier.apply(planWithDependencies(), approvalFor('op-1', 'op-2', 'op-3'));
+  expect(statuses(result)).toEqual({
+    'op-1': 'failed', 'op-2': 'blocked_dependency', 'op-3': 'succeeded'
+  });
+});
+
+it('rolls back an applied effect when authoritative readback fails', async () => {
+  executor.failReadback('op-1');
+  const result = await applier.apply(makePlan('replaceAnchored'), approvalFor('op-1'));
+  expect(result.operations[0].status).toBe('rolled_back');
+  expect(executor.rollback).toHaveBeenCalledTimes(1);
+});
+
+it('reports rollback_failed without retrying the effect', async () => {
+  executor.failReadback('op-1');
+  executor.failRollback('op-1');
+  const result = await applier.apply(makePlan('setProperty'), approvalFor('op-1'));
+  expect(result.operations[0].status).toBe('rollback_failed');
+  expect(executor.apply).toHaveBeenCalledTimes(1);
+});
+```
+
+```ts
+await expect(applier.apply(plan, approvalFor('op-1', 'op-1')))
+  .rejects.toThrow('duplicate selected operationId');
+await expect(applier.apply(planDependingOnOp0(), approvalFor('op-1')))
+  .rejects.toThrow('selected operation op-1 requires selected dependency op-0');
+expect(events.appendApproval).not.toHaveBeenCalled();
+expect(executor.apply).not.toHaveBeenCalled();
+
+preconditions.setCurrentHash('note.md', 'sha256:stale');
+await expect(applier.apply(planExpectingFreshHash(), approvalFor('op-1')))
+  .resolves.toMatchObject({ operations: [expect.objectContaining({ status: 'failed' })] });
+expect(executor.apply).not.toHaveBeenCalled();
+
+await applier.apply(plan, approvalFor('op-1'));
+expect(events.appendApproval.mock.invocationCallOrder[0])
+  .toBeLessThan(executor.apply.mock.invocationCallOrder[0]);
+```
 
 - [ ] **Step 3: Run and confirm RED**
 
@@ -883,28 +959,74 @@ Expected: FAIL because approval and applier are absent.
 
 ```ts
 type OperationExecutorMap = {
-  move: OperationExecutor<MoveOperation>;
-  archive: OperationExecutor<ArchiveOperation>;
-  setProperty: OperationExecutor<SetPropertyOperation>;
-  replaceAnchored: OperationExecutor<ReplaceAnchoredOperation>;
+  move: OperationExecutor<MoveVaultChangeOperation>;
+  archive: OperationExecutor<ArchiveVaultChangeOperation>;
+  setProperty: OperationExecutor<SetPropertyVaultChangeOperation>;
+  replaceAnchored: OperationExecutor<ReplaceAnchoredVaultChangeOperation>;
 };
+
+interface PreparedVaultEffect {
+  apply(): Promise<void>;
+  readback(): Promise<Record<string, unknown>>;
+  rollback(): Promise<void>;
+}
+
+interface OperationExecutor<TOperation extends VaultChangeOperation> {
+  prepare(operation: TOperation, context: { runId: string; operationId: string }):
+    Promise<PreparedVaultEffect>;
+}
 ```
 
-Resolve executors from existing Nexus storage/content services. Do not route
-through a model-provided tool name. Validate normalized paths and current hashes
-immediately before each effect.
+The registry is a literal object keyed by the four discriminated-union values;
+never resolve a model-provided agent/tool name. `VaultChangePreconditions`
+resolves paths through `normalizePath`; rejects any model-supplied path whose
+first segment starts with `.`, or that equals/is below `_Base/Dados` or
+`_Base/PluginsSync`; checks `exists`; and for file preconditions computes
+`sha256:` over the exact UTF-8 bytes returned by `vault.read()` immediately
+before `apply()`. The generated `.archive/...` destination is not model-supplied
+and is the only hidden-path exception.
+
+The production executors use Obsidian `Vault`/`FileManager` primitives already
+used by the storage/content tools. `move` captures source and destination and
+renames back on rollback. `archive` chooses and records one concrete
+`.archive/YYYY-MM-DD_HH-mm-ss/<original-path>` destination before applying and
+renames it back on rollback. `setProperty` and `replaceAnchored` capture the
+entire original file text and restore those exact bytes with `vault.process()`
+on rollback. Every readback checks the post-effect paths/content/property, not
+only the return value of the write call. No effect or rollback is retried.
+
+Validate the selected IDs as a unique set, require every selected operation's
+dependencies to be selected, and execute in the plan's already-validated
+topological order. A failed operation blocks its transitive dependents but does
+not stop independent selected operations.
 
 - [ ] **Step 5: Append approval, result, and readback events**
 
-Persist the selected IDs and plan hash before effects. Append one result record
-per operation and finish the run as `completed` only when all selected operations
-succeed; otherwise use `completed_with_issues`.
+`AgentRunService.approveAndApply()` rereads the immutable assistant plan message,
+parses it against the run identity, recomputes `planHash`, and requires both the
+persisted and requested hashes to match while status is `awaiting_approval`.
+Persist an `approval` assistant event containing only the plan hash, selected
+IDs and typed human context, then CAS the run to `applying`, before any effect.
+Append one typed result event per operation. CAS to `completed` only when every
+selected operation is `succeeded`; any other operation status produces
+`completed_with_issues`. If approval-event persistence or the applying CAS
+fails, execute zero effects.
 
 - [ ] **Step 6: Run Task 6 tests**
 
 Run: `npm test -- --runInBand tests/unit/VaultChangeApplier.test.ts tests/unit/AgentRunService.test.ts`
 
 Expected: PASS.
+
+Run: `npx tsc --noEmit --skipLibCheck`
+
+Run: `npx eslint src/services/workflows/VaultChangeApplier.ts src/services/workflows/VaultChangePreconditions.ts src/services/workflows/AgentRunService.ts`
+
+Run: `npm run build`
+
+Run: `git diff --check`
+
+Expected: every command exits 0.
 
 - [ ] **Step 7: Commit Task 6**
 
