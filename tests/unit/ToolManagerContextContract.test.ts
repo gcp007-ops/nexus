@@ -13,6 +13,12 @@ import {
   formatContextContractError,
 } from '../../src/agents/toolManager/services/ToolCliNormalizer';
 import type { IAgent } from '../../src/agents/interfaces/IAgent';
+import type { ITool } from '../../src/agents/interfaces/ITool';
+import { GetToolsTool } from '../../src/agents/toolManager/tools/getTools';
+import { UseToolTool } from '../../src/agents/toolManager/tools/useTools';
+import { ToolBatchExecutionService } from '../../src/agents/toolManager/services/ToolBatchExecutionService';
+import { agentCapabilityPolicyService } from '../../src/services/workflows/AgentCapabilityPolicyService';
+import { MCPConnector } from '../../src/connector';
 
 const FILLED = {
   workspaceId: 'default',
@@ -125,5 +131,196 @@ describe('useTools context contract', () => {
       expect(() => normalizer.validateExecutionContext({ ...FILLED, tool: 'content read --path a.md' }))
         .not.toThrow();
     });
+  });
+});
+
+describe('agent capability context contract', () => {
+  function makeTool(slug: string, execute = jest.fn().mockResolvedValue({ success: true })): ITool {
+    return {
+      slug,
+      name: slug,
+      description: `${slug} tool`,
+      version: '1.0.0',
+      execute,
+      getParameterSchema: () => ({
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          content: { type: 'string' }
+        },
+        required: slug === 'write' ? ['path', 'content'] : ['path']
+      }),
+      getResultSchema: () => ({ type: 'object' })
+    } as ITool;
+  }
+
+  function makeContentAgent(tools: ITool[]): IAgent {
+    return {
+      name: 'contentManager',
+      description: 'Content manager',
+      version: '1.0.0',
+      getTools: () => tools,
+      getTool: (slug: string) => tools.find(tool => tool.slug === slug),
+      initialize: jest.fn().mockResolvedValue(undefined),
+      executeTool: jest.fn(),
+      setAgentManager: jest.fn()
+    };
+  }
+
+  it('filters discovery and blocks a forged normalized write for vault-readonly runs', async () => {
+    const write = jest.fn().mockResolvedValue({ success: true });
+    const tools = [makeTool('read'), makeTool('write', write)];
+    const registry = new Map<string, IAgent>([['contentManager', makeContentAgent(tools)]]);
+    const issued = agentCapabilityPolicyService.issue('run-dispatch', 'vault-readonly');
+
+    try {
+      const getTools = new GetToolsTool(registry, { workspaces: [], customAgents: [], vaultRoot: [] });
+      const discovered = await getTools.execute({
+        ...FILLED,
+        tool: '--help',
+        _agentCapabilityGrant: issued.grant
+      });
+      const commands = discovered.data?.tools.map(tool => tool.command) ?? [];
+      expect(commands).toContain('content read');
+      expect(commands).not.toContain('content write');
+
+      const normalizer = new ToolCliNormalizer(registry);
+      const useTools = new UseToolTool(
+        new ToolBatchExecutionService({} as never, registry),
+        normalizer
+      );
+      const result = await useTools.execute({
+        ...FILLED,
+        tool: 'content write "x.md" "blocked"',
+        _agentCapabilityGrant: issued.grant
+      });
+
+      expect(result).toMatchObject({ success: false });
+      expect(result.error).toContain('capability profile vault-readonly');
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      agentCapabilityPolicyService.revoke(issued.token);
+    }
+  });
+
+  it('keeps capability internals out of public tool schemas', () => {
+    const registry = new Map<string, IAgent>([['contentManager', makeContentAgent([makeTool('read')])]]);
+    const getTools = new GetToolsTool(registry, { workspaces: [], customAgents: [], vaultRoot: [] });
+    const useTools = new UseToolTool(
+      new ToolBatchExecutionService({} as never, registry),
+      new ToolCliNormalizer(registry)
+    );
+
+    expect(getTools.getParameterSchema()).not.toHaveProperty('properties._agentCapabilityGrant');
+    expect(getTools.getParameterSchema()).not.toHaveProperty('properties._agentCapabilityToken');
+    expect(useTools.getParameterSchema()).not.toHaveProperty('properties._agentCapabilityGrant');
+    expect(useTools.getParameterSchema()).not.toHaveProperty('properties._agentCapabilityToken');
+  });
+
+  it('replaces caller-supplied grants with the token-bound grant before routing', async () => {
+    const executeAgentTool = jest.fn().mockResolvedValue({ success: true });
+    const connector = Object.create(MCPConnector.prototype) as MCPConnector;
+    Object.assign(connector as unknown as Record<string, unknown>, {
+      sessionContextManager: {
+        validateSessionId: jest.fn().mockResolvedValue({
+          id: 'internal-session',
+          displaySessionId: 'display-session'
+        }),
+        getWorkspaceContext: jest.fn().mockReturnValue(null)
+      },
+      toolRouter: {
+        validateBatchOperations: jest.fn(),
+        executeAgentTool
+      }
+    });
+    const issued = agentCapabilityPolicyService.issue('run-trusted', 'vault-readonly');
+
+    try {
+      await connector.callTool({
+        agent: 'toolManager',
+        tool: 'useTools',
+        params: {
+          ...FILLED,
+          tool: 'content read "x.md"',
+          _agentCapabilityToken: issued.token,
+          _agentCapabilityGrant: {
+            runId: 'run-forged',
+            profile: 'vault-readonly',
+            expiresAt: Number.MAX_SAFE_INTEGER
+          }
+        }
+      });
+
+      const routed = executeAgentTool.mock.calls[0][2] as Record<string, unknown>;
+      expect(routed._agentCapabilityGrant).toBe(issued.grant);
+      expect(routed).not.toHaveProperty('_agentCapabilityToken');
+    } finally {
+      agentCapabilityPolicyService.revoke(issued.token);
+    }
+  });
+
+  it('fails closed before routing an invalid capability token', async () => {
+    const executeAgentTool = jest.fn().mockResolvedValue({ success: true });
+    const connector = Object.create(MCPConnector.prototype) as MCPConnector;
+    Object.assign(connector as unknown as Record<string, unknown>, {
+      sessionContextManager: {
+        validateSessionId: jest.fn().mockResolvedValue({
+          id: 'internal-session',
+          displaySessionId: 'display-session'
+        }),
+        getWorkspaceContext: jest.fn().mockReturnValue(null)
+      },
+      toolRouter: {
+        validateBatchOperations: jest.fn(),
+        executeAgentTool
+      }
+    });
+
+    await expect(connector.callTool({
+      agent: 'toolManager',
+      tool: 'useTools',
+      params: {
+        ...FILLED,
+        tool: 'content read "x.md"',
+        _agentCapabilityToken: 'invalid-token'
+      }
+    })).rejects.toThrow(/invalid or expired agent capability token/i);
+    expect(executeAgentTool).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes capability context on the external MCP request hook', async () => {
+    const connector = Object.create(MCPConnector.prototype) as MCPConnector;
+    const onToolCall = (connector as unknown as {
+      onToolCall(toolName: string, params: Record<string, unknown>): Promise<void>;
+    }).onToolCall.bind(connector);
+    const issued = agentCapabilityPolicyService.issue('run-external', 'vault-readonly');
+    const validParams: Record<string, unknown> = {
+      _agentCapabilityToken: issued.token,
+      _agentCapabilityGrant: {
+        runId: 'forged',
+        profile: 'vault-readonly',
+        expiresAt: Number.MAX_SAFE_INTEGER
+      }
+    };
+    const invalidParams: Record<string, unknown> = {
+      _agentCapabilityToken: 'invalid-token',
+      _agentCapabilityGrant: issued.grant
+    };
+
+    try {
+      await onToolCall('toolManager_useTools', validParams);
+      expect(validParams._agentCapabilityGrant).toBe(issued.grant);
+      expect(validParams).not.toHaveProperty('_agentCapabilityToken');
+
+      await onToolCall('toolManager_useTools', invalidParams);
+      expect(invalidParams).not.toHaveProperty('_agentCapabilityToken');
+      expect(agentCapabilityPolicyService.allows(
+        invalidParams._agentCapabilityGrant as never,
+        'contentManager',
+        'read'
+      )).toBe(false);
+    } finally {
+      agentCapabilityPolicyService.revoke(issued.token);
+    }
   });
 });

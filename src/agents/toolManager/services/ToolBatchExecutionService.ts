@@ -6,6 +6,10 @@ import { getErrorMessage } from '../../../utils/errorUtils';
 import { getNexusPlugin } from '../../../utils/pluginLocator';
 import { WorkspaceService } from '../../../services/WorkspaceService';
 import { matchWorkspaces } from '../../memoryManager/services/WorkspaceMatcher';
+import {
+  agentCapabilityPolicyService,
+  type AgentCapabilityGrant
+} from '../../../services/workflows/AgentCapabilityPolicyService';
 
 /**
  * The slice of NexusPlugin this service needs. Declared structurally to avoid
@@ -113,8 +117,8 @@ export class ToolBatchExecutionService {
       options.observer?.onBatchStarted?.(batchStartedEvent);
 
       const results = strategy === 'parallel'
-        ? await this.executeParallel(batchId, params.context, params.calls, options.observer)
-        : await this.executeSerial(batchId, params.context, params.calls, options.observer);
+        ? await this.executeParallel(batchId, params.context, params.calls, params._agentCapabilityGrant, options.observer)
+        : await this.executeSerial(batchId, params.context, params.calls, params._agentCapabilityGrant, options.observer);
 
       const success = results.every(result => result.success);
       options.observer?.onBatchCompleted?.({
@@ -136,13 +140,14 @@ export class ToolBatchExecutionService {
     batchId: string,
     context: ToolContext,
     calls: ToolCallParams[],
+    grant?: AgentCapabilityGrant,
     observer?: ToolBatchExecutionObserver
   ): Promise<ToolCallResult[]> {
     const results: ToolCallResult[] = [];
 
     for (let index = 0; index < calls.length; index++) {
       const call = calls[index];
-      const result = await this.executeSingleCall(batchId, context, call, index, calls.length, 'serial', observer);
+      const result = await this.executeSingleCall(batchId, context, call, index, calls.length, 'serial', grant, observer);
       results.push(result);
 
       if (!result.success && !call.continueOnFailure) {
@@ -157,11 +162,12 @@ export class ToolBatchExecutionService {
     batchId: string,
     context: ToolContext,
     calls: ToolCallParams[],
+    grant?: AgentCapabilityGrant,
     observer?: ToolBatchExecutionObserver
   ): Promise<ToolCallResult[]> {
     return Promise.all(
       calls.map((call, index) =>
-        this.executeSingleCall(batchId, context, call, index, calls.length, 'parallel', observer)
+        this.executeSingleCall(batchId, context, call, index, calls.length, 'parallel', grant, observer)
       )
     );
   }
@@ -173,6 +179,7 @@ export class ToolBatchExecutionService {
     callIndex: number,
     totalCalls: number,
     strategy: 'serial' | 'parallel',
+    grant?: AgentCapabilityGrant,
     observer?: ToolBatchExecutionObserver
   ): Promise<ToolCallResult> {
     const stepId = this.createStepId(batchId, callIndex);
@@ -189,7 +196,7 @@ export class ToolBatchExecutionService {
     observer?.onStepStarted?.(stepEvent);
 
     try {
-      const result = await this.executeCall(context, call);
+      const result = await this.executeCall(context, call, grant);
       observer?.onStepCompleted?.({
         ...stepEvent,
         result
@@ -297,7 +304,11 @@ export class ToolBatchExecutionService {
     }
   }
 
-  private async executeCall(context: ToolContext, call: ToolCallParams): Promise<ToolCallResult> {
+  private async executeCall(
+    context: ToolContext,
+    call: ToolCallParams,
+    grant?: AgentCapabilityGrant
+  ): Promise<ToolCallResult> {
     const { agent: agentName, tool: toolSlug } = call;
 
     const callWithAny = call as ToolCallParams & { parameters?: Record<string, unknown> };
@@ -320,6 +331,15 @@ export class ToolBatchExecutionService {
         tool: 'unknown',
         success: false,
         error: `"tool" is required in each normalized call. Use getTools({ tool: "${agentName.replace(/Manager$/, '').toLowerCase()}" }) to inspect available commands for ${agentName}.`
+      };
+    }
+
+    if (grant && !agentCapabilityPolicyService.allows(grant, agentName, toolSlug)) {
+      return {
+        agent: agentName,
+        tool: toolSlug,
+        success: false,
+        error: `Tool "${agentName}_${toolSlug}" is not allowed by capability profile ${grant.profile}`
       };
     }
 

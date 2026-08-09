@@ -51,6 +51,15 @@ const defineService = (create: (context: ServiceCreationContext) => Promise<unkn
  * Note: Events are handled via Obsidian's built-in Events API (plugin.on/trigger)
  */
 export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
+    // Ephemeral, in-memory bearer grants for supervised workflow MCP calls.
+    {
+        name: 'agentCapabilityPolicyService',
+        create: defineService(async () => {
+            const { agentCapabilityPolicyService } = await import('../../services/workflows/AgentCapabilityPolicyService');
+            return agentCapabilityPolicyService;
+        })
+    },
+
     // VaultOperations - centralized vault operations using Obsidian API
     {
         name: 'vaultOperations',

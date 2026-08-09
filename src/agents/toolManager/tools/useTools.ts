@@ -28,7 +28,8 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
     const normalizedParams: NormalizedUseToolParams = {
       context: this.cliNormalizer.normalizeContext(params),
       calls: this.cliNormalizer.normalizeExecutionCalls(params),
-      strategy: params.strategy
+      strategy: params.strategy,
+      _agentCapabilityGrant: params._agentCapabilityGrant
     };
     return this.batchExecutionService.execute(normalizedParams);
   }

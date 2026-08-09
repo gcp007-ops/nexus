@@ -21,6 +21,8 @@ import { SearchManagerAgent } from './agents';
 import { MemoryManagerAgent } from './agents';
 import { IAgent } from './agents/interfaces/IAgent';
 import { ITool } from './agents/interfaces/ITool';
+import { agentCapabilityPolicyService } from './services/workflows/AgentCapabilityPolicyService';
+import type { AgentCapabilityGrant } from './services/workflows/AgentCapabilityPolicyService';
 
 /**
  * Type guard to check if a plugin is a NexusPlugin instance
@@ -49,6 +51,33 @@ function isToolManagerMetaTool(agent: string, tool: string): boolean {
 interface ToolSchemaLike extends Record<string, unknown> {
     properties?: Record<string, unknown>;
     required?: string[];
+}
+
+const DENIED_AGENT_CAPABILITY_GRANT: AgentCapabilityGrant = Object.freeze({
+    runId: 'invalid',
+    profile: 'vault-readonly',
+    expiresAt: 0
+});
+
+function applyTrustedAgentCapability(params: unknown): boolean {
+    if (!params || typeof params !== 'object' || Array.isArray(params)) {
+        return false;
+    }
+
+    const typedParams = params as Record<string, unknown>;
+    delete typedParams._agentCapabilityGrant;
+    const capabilityToken = typedParams._agentCapabilityToken;
+    delete typedParams._agentCapabilityToken;
+
+    if (capabilityToken === undefined) {
+        return false;
+    }
+
+    const grant = typeof capabilityToken === 'string'
+        ? agentCapabilityPolicyService.resolve(capabilityToken)
+        : undefined;
+    typedParams._agentCapabilityGrant = grant ?? DENIED_AGENT_CAPABILITY_GRANT;
+    return !grant;
 }
 
 /**
@@ -157,9 +186,13 @@ export class MCPConnector {
     /**
      * Handle tool calls - now handled by ToolCallTraceService via MCPConnectionManager
      */
-    private async onToolCall(_toolName: string, _params: unknown): Promise<void> {
-        // Tool call tracing is now handled by ToolCallTraceService
+    private onToolCall(_toolName: string, params: unknown): Promise<void> {
+        // This callback runs on the external MCP path before request routing.
+        // Mutating the parsed argument object removes the bearer token before
+        // tracing and replaces any forged grant with trusted server context.
+        applyTrustedAgentCapability(params);
         // This callback is kept for backward compatibility
+        return Promise.resolve();
     }
     
     /**
@@ -515,6 +548,18 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
                 workspaceContext?: { workspaceId?: string };
             };
 
+            // Capability grants are trusted server context, never caller input.
+            // The temporary workflow proxy supplies only the opaque bearer token;
+            // normal MCP callers remain unrestricted when no token is present.
+            const hadCapabilityToken = typedParams._agentCapabilityToken !== undefined;
+            const invalidCapabilityToken = applyTrustedAgentCapability(typedParams);
+            if (hadCapabilityToken && invalidCapabilityToken) {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    'Invalid or expired agent capability token'
+                );
+            }
+
             const toolManagerMetaTool = isToolManagerMetaTool(agent, tool);
 
             const sessionContextManager = this.getSessionContextManagerFromService();
@@ -580,9 +625,12 @@ Keep workspaceId and sessionId values EXACTLY as shown above throughout the conv
                 const resultObj = result as Record<string, unknown> | null;
                 const success = !resultObj?.error;
 
+                const traceParams = { ...typedParams };
+                delete traceParams._agentCapabilityGrant;
+                delete traceParams._agentCapabilityToken;
                 traceService.captureToolCall(
                     toolTraceName,
-                    typedParams,
+                    traceParams,
                     result,
                     success,
                     executionTime

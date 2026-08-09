@@ -4,6 +4,7 @@
 
 import type { CommonResult } from '../../types';
 import type { ToolContext } from '../../types/mcp/AgentTypes';
+import type { AgentCapabilityGrant } from '../../services/workflows/AgentCapabilityPolicyService';
 
 export type { ToolContext } from '../../types/mcp/AgentTypes';
 
@@ -61,6 +62,9 @@ export interface GetToolsParams {
    * - "storage move, content read"
    */
   tool?: string;
+
+  /** Trusted connector-only context. Deliberately omitted from public schemas. */
+  _agentCapabilityGrant?: AgentCapabilityGrant;
 }
 
 export interface GetToolsResult extends CommonResult {
@@ -96,12 +100,16 @@ export interface UseToolParams {
    */
   tool?: string;
   strategy?: 'serial' | 'parallel';
+
+  /** Trusted connector-only context. Deliberately omitted from public schemas. */
+  _agentCapabilityGrant?: AgentCapabilityGrant;
 }
 
 export interface NormalizedUseToolParams {
   context: ToolContext;
   strategy?: 'serial' | 'parallel';
   calls: ToolCallParams[];
+  _agentCapabilityGrant?: AgentCapabilityGrant;
 }
 
 export interface ToolCallResult {
