@@ -28,6 +28,7 @@ import type { ChatService } from '../../services/chat/ChatService';
 import type { CustomPromptStorageService } from '../../agents/promptManager/services/CustomPromptStorageService';
 import type { AgentManager } from '../../services/AgentManager';
 import type { WorkflowRunService } from '../../services/workflows/WorkflowRunService';
+import type { AgentRunService } from '../../services/workflows/AgentRunService';
 
 export interface ServiceDefinition {
     name: string;
@@ -485,20 +486,37 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
     },
 
     {
+        name: 'agentRunService',
+        dependencies: ['chatService'],
+        create: defineService(async (context) => {
+            const { AgentRunService } = await import('../../services/workflows/AgentRunService');
+            const { ClaudeCliWorkflowBackend } = await import('../../services/workflows/ClaudeCliWorkflowBackend');
+            const chatService = await context.serviceManager.getService<ChatService>('chatService');
+
+            return new AgentRunService({
+                conversations: chatService,
+                backend: new ClaudeCliWorkflowBackend(context.app, context.plugin)
+            });
+        })
+    },
+
+    {
         name: 'workflowRunService',
-        dependencies: ['chatService', 'workspaceService', 'customPromptStorageService'],
+        dependencies: ['chatService', 'workspaceService', 'customPromptStorageService', 'agentRunService'],
         create: defineService(async (context) => {
             const { WorkflowRunService } = await import('../../services/workflows/WorkflowRunService');
             const chatService = await context.serviceManager.getService<ChatService>('chatService');
             const workspaceService = await context.serviceManager.getService<WorkspaceService>('workspaceService');
             const customPromptStorage = await context.serviceManager.getService<CustomPromptStorageService>('customPromptStorageService');
+            const agentRunService = await context.serviceManager.getService<AgentRunService>('agentRunService');
 
             return new WorkflowRunService({
                 app: context.app,
                 plugin: context.plugin,
                 chatService,
                 workspaceService,
-                customPromptStorage
+                customPromptStorage,
+                agentRunService
             });
         })
     },

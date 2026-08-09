@@ -1,7 +1,57 @@
 import type {
+  WorkflowCapabilityProfile,
+  WorkflowExecutionBackend,
   WorkflowSchedule,
   WorkspaceWorkflow
 } from '../../database/types/workspace/WorkspaceTypes';
+
+export type AgentRunStatus =
+  | 'queued'
+  | 'running'
+  | 'awaiting_approval'
+  | 'applying'
+  | 'completed'
+  | 'completed_with_issues'
+  | 'rejected'
+  | 'preflight_failed'
+  | 'security_blocked'
+  | 'invalid_output'
+  | 'timed_out'
+  | 'cancelled'
+  | 'interrupted'
+  | 'failed';
+
+export type AgentRunTrigger = 'manual' | 'schedule';
+
+export interface AgentRunMetadata {
+  backend: Extract<WorkflowExecutionBackend, 'claude-cli'>;
+  status: AgentRunStatus;
+  trigger: AgentRunTrigger;
+  model: string;
+  mode: 'proposal';
+  capabilityProfile: WorkflowCapabilityProfile;
+  outputSchema: 'vault-change-plan/v1';
+  approvalRequired: true;
+  maxTurns: number;
+  timeoutMinutes: number;
+  workspaceId: string;
+  workflowId: string;
+  workflowName: string;
+  promptHash: string;
+  workflowHash: string;
+  queuedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  planHash?: string;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+}
+
+export interface AgentRunRecord extends AgentRunMetadata {
+  runId: string;
+  conversationId: string;
+}
 
 export interface WorkflowRunMetadata {
   promptId?: string;
@@ -21,6 +71,7 @@ export interface WorkflowRunRequest extends WorkflowRunMetadata {
 export interface WorkflowRunResult {
   conversationId: string;
   sessionId?: string;
+  runId?: string;
 }
 
 export interface DueWorkflowSlot {

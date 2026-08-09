@@ -4,6 +4,7 @@ import type { ConversationService } from '../ConversationService';
 import type { WorkspaceService } from '../WorkspaceService';
 import type { WorkflowSchedule } from '../../database/types/workspace/WorkspaceTypes';
 import type { WorkflowRunService } from './WorkflowRunService';
+import type { WorkflowRunRequest } from './types';
 
 export interface WorkflowScheduleServiceDeps {
   plugin: Plugin;
@@ -19,18 +20,26 @@ export class WorkflowScheduleService {
 
   constructor(private deps: WorkflowScheduleServiceDeps) {}
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
     if (this.started) {
-      return;
+      return Promise.resolve();
     }
 
     this.started = true;
-    await this.scanDueWorkflows(true);
-
     const intervalId = window.setInterval(() => {
-      void this.scanDueWorkflows(false);
+      this.scheduleScan(false);
     }, 60_000);
     this.deps.plugin.registerInterval(intervalId);
+    this.scheduleScan(true);
+    return Promise.resolve();
+  }
+
+  /** Dispatches only conversation/job creation; application belongs to Task 6. */
+  async dispatchDueRun(request: WorkflowRunRequest): Promise<void> {
+    await this.deps.workflowRunService.start({
+      ...request,
+      openInChat: false
+    });
   }
 
   async scanDueWorkflows(isStartup: boolean): Promise<void> {
@@ -65,7 +74,7 @@ export class WorkflowScheduleService {
               continue;
             }
 
-            await this.deps.workflowRunService.start({
+            await this.dispatchDueRun({
               workspaceId: workspace.id,
               workflowId: workflow.id,
               runTrigger: isStartup && lastCheckAt ? 'catch_up' : 'scheduled',
@@ -82,6 +91,14 @@ export class WorkflowScheduleService {
       this.deps.settings.settings.workflowScheduler.lastCheckAt = now;
       await this.deps.settings.saveSettings();
     }
+  }
+
+  private scheduleScan(isStartup: boolean): void {
+    void Promise.resolve()
+      .then(() => this.scanDueWorkflows(isStartup))
+      .catch(error => {
+        console.error('Workflow schedule scan failed:', error);
+      });
   }
 
   private computeDueSlots(schedule: WorkflowSchedule, lastCheckAt: number | undefined, now: number): number[] {

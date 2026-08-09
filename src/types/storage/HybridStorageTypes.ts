@@ -17,6 +17,7 @@ import type {
   WorkflowSchedule,
   WorkspaceWorkflow
 } from '../../database/types/workspace/WorkspaceTypes';
+import type { AgentRunMetadata } from '../../services/workflows/types';
 
 // ============================================================================
 // Device and Sync Types
@@ -253,7 +254,10 @@ export interface ConversationMetadata {
   runKey?: string;
 
   /** Optional additional metadata (stored as JSON) */
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> & {
+    /** Authoritative supervised workflow lifecycle state. */
+    agentRun?: AgentRunMetadata;
+  };
 }
 
 /**

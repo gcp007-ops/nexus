@@ -36,7 +36,12 @@ interface StreamingChunk {
 /** Conversation service interface */
 interface ConversationServiceLike {
   getConversation: (id: string) => Promise<ConversationData | null>;
-  addMessage: (params: { conversationId: string; role: string; content: string; id?: string }) => Promise<void>;
+  listConversations: (
+    vaultName?: string,
+    limit?: number,
+    page?: number
+  ) => Promise<Array<{ id: string }>>;
+  addMessage: (params: { conversationId: string; role: string; content: string; id?: string }) => Promise<unknown>;
   updateConversation: (id: string, updates: Partial<ConversationData>) => Promise<void>;
   createConversation: (data: unknown) => Promise<ConversationData>;
   deleteConversation: (id: string) => Promise<void>;
@@ -127,7 +132,16 @@ export class ConversationManager {
     toolCalls?: ToolCall[];
     metadata?: Record<string, unknown>;
   }): Promise<void> {
-    await this.dependencies.conversationService.addMessage(params);
+    const result = await this.dependencies.conversationService.addMessage(params);
+    if (
+      typeof result === 'object'
+      && result !== null
+      && 'success' in result
+      && result.success === false
+    ) {
+      const error = 'error' in result ? String(result.error) : 'unknown storage error';
+      throw new Error(error);
+    }
   }
 
   /**
@@ -135,6 +149,58 @@ export class ConversationManager {
    */
   async updateConversation(conversationId: string, updates: Partial<ConversationData>): Promise<void> {
     await this.dependencies.conversationService.updateConversation(conversationId, updates);
+  }
+
+  /**
+   * Load complete conversation records in bounded pages.
+   *
+   * The lightweight list response does not include metadata, so callers that
+   * need to inspect run state must hydrate each conversation before filtering.
+   */
+  async listConversationsWithMetadata(): Promise<ConversationData[]> {
+    const pageSize = 100;
+    const conversations: ConversationData[] = [];
+
+    for (let page = 0; ; page += 1) {
+      const entries = await this.dependencies.conversationService.listConversations(
+        undefined,
+        pageSize,
+        page
+      );
+      const records = await Promise.all(
+        entries.map(entry => this.dependencies.conversationService.getConversation(entry.id))
+      );
+
+      conversations.push(
+        ...records.filter((record): record is ConversationData => record !== null)
+      );
+
+      if (entries.length < pageSize) {
+        break;
+      }
+    }
+
+    return conversations;
+  }
+
+  /**
+   * Merge metadata onto the latest persisted conversation snapshot.
+   */
+  async updateConversationMetadata(
+    conversationId: string,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    const conversation = await this.dependencies.conversationService.getConversation(conversationId);
+    if (!conversation) {
+      throw new Error(`Conversation ${conversationId} not found`);
+    }
+
+    await this.updateConversation(conversationId, {
+      metadata: {
+        ...conversation.metadata,
+        ...metadata
+      }
+    });
   }
 
   /**

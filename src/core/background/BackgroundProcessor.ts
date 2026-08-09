@@ -103,6 +103,13 @@ export class BackgroundProcessor {
 
             this.hasRunBackgroundStartup = true;
 
+            const agentRunService = await this.config.getService<{
+                reconcileInterrupted: () => Promise<void>;
+            }>('agentRunService');
+            if (agentRunService) {
+                await agentRunService.reconcileInterrupted();
+            }
+
             const workflowScheduleService = await this.config.getService<{ start: () => Promise<void> }>('workflowScheduleService');
             if (workflowScheduleService) {
                 await workflowScheduleService.start();

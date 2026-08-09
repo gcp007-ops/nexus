@@ -420,6 +420,27 @@ export class ChatService {
     }
   }
 
+  /** Persist a merge-preserving conversation metadata update. */
+  async updateConversationMetadata(
+    conversationId: string,
+    metadata: NonNullable<ConversationData['metadata']>
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.conversationManager.updateConversationMetadata(conversationId, metadata);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: getErrorMessage(error)
+      };
+    }
+  }
+
+  /** Return authoritative records for persisted agent-run reconciliation. */
+  async listConversationsWithMetadata(): Promise<ConversationData[]> {
+    return this.conversationManager.listConversationsWithMetadata();
+  }
+
   /** Get conversation by ID */
   async getConversation(
     id: string,
