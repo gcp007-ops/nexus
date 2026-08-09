@@ -1,5 +1,6 @@
 import { ButtonComponent, Component, Notice, Setting } from 'obsidian';
 import type {
+  WorkflowExecutionConfig,
   WorkflowCatchUpPolicy,
   WorkflowFrequency,
   WorkflowSchedule,
@@ -136,6 +137,34 @@ export class WorkflowEditorRenderer {
               this.workflow.steps = value;
             });
           });
+      }
+    }, this.component);
+
+    // Execution section — supervised CLI proposals are explicitly read-only.
+    new BoxedSection(form, {
+      title: 'Execution',
+      titleId: 'wf-execution-h',
+      unbounded: true,
+      body: body => {
+        let executionFields!: HTMLElement;
+        new Setting(body)
+          .setName('Backend')
+          .setDesc('Choose the existing chat behavior or a supervised Claude CLI proposal.')
+          .addDropdown(dropdown => {
+            dropdown.addOption('chat', 'Nexus chat');
+            dropdown.addOption('claude-cli', 'Claude CLI (supervised proposal)');
+            dropdown.setValue(this.workflow.execution?.backend || 'chat');
+            dropdown.onChange(value => {
+              this.workflow.execution = value === 'claude-cli'
+                ? this.buildClaudeExecution(this.workflow.execution)
+                : undefined;
+              executionFields.empty();
+              this.renderExecutionFields(executionFields);
+            });
+          });
+
+        executionFields = body.createDiv('nexus-workflow-execution-fields');
+        this.renderExecutionFields(executionFields);
       }
     }, this.component);
 
@@ -330,6 +359,9 @@ export class WorkflowEditorRenderer {
       steps,
       promptId: prompt?.id,
       promptName: prompt?.name,
+      execution: this.workflow.execution?.backend === 'claude-cli'
+        ? this.buildClaudeExecution(this.workflow.execution)
+        : undefined,
       schedule: this.workflow.schedule?.enabled ? this.cloneSchedule(this.workflow.schedule) : undefined
     };
   }
@@ -337,8 +369,107 @@ export class WorkflowEditorRenderer {
   private cloneWorkflow(workflow: Workflow): Workflow {
     return {
       ...workflow,
+      execution: workflow.execution ? this.cloneExecution(workflow.execution) : undefined,
       schedule: workflow.schedule ? this.cloneSchedule(workflow.schedule) : undefined
     };
+  }
+
+  private renderExecutionFields(container: HTMLElement): void {
+    if (this.workflow.execution?.backend !== 'claude-cli') {
+      container.createDiv({
+        cls: 'nexus-form-hint',
+        text: 'Nexus chat keeps the current workflow behavior.'
+      });
+      return;
+    }
+
+    const execution = this.workflow.execution;
+
+    new Setting(container)
+      .setName('Model')
+      .setDesc('Claude model alias for the supervised proposal.')
+      .addText(text => text
+        .setPlaceholder('Sonnet')
+        .setValue(execution.model || 'sonnet')
+        .onChange(value => {
+          execution.model = value;
+        }));
+
+    new Setting(container)
+      .setName('Max turns')
+      .setDesc('Maximum Claude CLI turns (1–40).')
+      .addDropdown(dropdown => {
+        for (let turns = 1; turns <= 40; turns++) {
+          dropdown.addOption(String(turns), String(turns));
+        }
+        dropdown.setValue(String(execution.maxTurns));
+        dropdown.onChange(value => {
+          execution.maxTurns = Number(value);
+        });
+      });
+
+    new Setting(container)
+      .setName('Timeout')
+      .setDesc('Maximum runtime in minutes (1–60).')
+      .addDropdown(dropdown => {
+        for (let minutes = 1; minutes <= 60; minutes++) {
+          dropdown.addOption(String(minutes), String(minutes));
+        }
+        dropdown.setValue(String(execution.timeoutMinutes));
+        dropdown.onChange(value => {
+          execution.timeoutMinutes = Number(value);
+        });
+      });
+
+    new Setting(container)
+      .setName('Capability profile')
+      .setDesc('Vault read-only. The proposal cannot mutate the vault through Nexus.')
+      .addDropdown(dropdown => {
+        dropdown.addOption('vault-readonly', 'Vault read-only');
+        dropdown.setValue('vault-readonly');
+        dropdown.onChange(() => {
+          execution.capabilityProfile = 'vault-readonly';
+        });
+      });
+
+    new Setting(container)
+      .setName('Output schema')
+      .setDesc('The proposal must return a vault change plan.')
+      .addDropdown(dropdown => {
+        dropdown.addOption('vault-change-plan/v1', 'Vault-change-plan/v1');
+        dropdown.setValue('vault-change-plan/v1');
+        dropdown.onChange(() => {
+          execution.outputSchema = 'vault-change-plan/v1';
+        });
+      });
+
+    new Setting(container)
+      .setName('Approval')
+      .setDesc('Every proposal requires explicit approval before any change can be applied.');
+  }
+
+  private cloneExecution(execution: WorkflowExecutionConfig): WorkflowExecutionConfig {
+    return { ...execution };
+  }
+
+  private buildClaudeExecution(execution?: Partial<WorkflowExecutionConfig>): WorkflowExecutionConfig {
+    return {
+      backend: 'claude-cli',
+      model: execution?.model?.trim() || 'sonnet',
+      mode: 'proposal',
+      capabilityProfile: 'vault-readonly',
+      outputSchema: 'vault-change-plan/v1',
+      maxTurns: this.clampWorkflowLimit(execution?.maxTurns, 1, 40, 12),
+      timeoutMinutes: this.clampWorkflowLimit(execution?.timeoutMinutes, 1, 60, 10),
+      approvalRequired: true
+    };
+  }
+
+  private clampWorkflowLimit(value: unknown, minimum: number, maximum: number, fallback: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+    return Math.max(minimum, Math.min(maximum, Math.trunc(value)));
   }
 
   private cloneSchedule(schedule: WorkflowSchedule): WorkflowSchedule {

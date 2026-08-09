@@ -5,6 +5,19 @@
 
 export type WorkflowFrequency = 'hourly' | 'daily' | 'weekly' | 'monthly';
 export type WorkflowCatchUpPolicy = 'skip' | 'latest' | 'all';
+export type WorkflowExecutionBackend = 'chat' | 'claude-cli';
+export type WorkflowCapabilityProfile = 'vault-readonly';
+
+export interface WorkflowExecutionConfig {
+  backend: WorkflowExecutionBackend;
+  model?: string;
+  mode: 'proposal';
+  capabilityProfile: WorkflowCapabilityProfile;
+  outputSchema: 'vault-change-plan/v1';
+  maxTurns: number;
+  timeoutMinutes: number;
+  approvalRequired: true;
+}
 
 export interface WorkflowSchedule {
   enabled: boolean;
@@ -24,6 +37,7 @@ export interface WorkspaceWorkflow {
   steps: string;
   promptId?: string;
   promptName?: string;
+  execution?: WorkflowExecutionConfig;
   schedule?: WorkflowSchedule;
 }
 

@@ -2,9 +2,8 @@
  * WorkflowEditorRenderer Tests (Wave 3 PR4)
  *
  * PR4 ported the workflow editor onto the shared BoxedSection primitive:
- *   - Identity / Prompt / Steps / Schedule each wrapped in `new BoxedSection`
- *     (4 sections, unbounded), per the v3.1 mockup (the authoritative visual
- *     contract — team-lead confirmed the 4-section split is blessed).
+ *   - Identity / Prompt / Steps / Execution / Schedule each wrapped in
+ *     `new BoxedSection` (5 sections, unbounded).
  *   - The required 5th ctor param `component: Component` is threaded into
  *     EVERY BoxedSection construction (BoxedSection needs it for
  *     registerDomEvent-based cleanup).
@@ -16,7 +15,7 @@
  * Test strategy: jest.mock the BoxedSection module with a spy-class that records
  * (container, config, component) per construction and synchronously invokes the
  * toolbar/body callbacks against a children-tracking mock element. This lets us
- * assert the 4-section contract + the component threading + the schedule
+ * assert the 5-section contract + the component threading + the schedule
  * re-render side-effect without a real DOM (the project runs jest in a
  * jsdom-less `node` testEnvironment — see prior Wave-3 test memories).
  */
@@ -64,7 +63,7 @@ jest.mock('../../src/settings/components/BoxedSection', () => {
 });
 
 import { WorkflowEditorRenderer, Workflow } from '../../src/components/workspace/WorkflowEditorRenderer';
-import { Component } from 'obsidian';
+import { ButtonComponent, Component } from 'obsidian';
 
 // ============================================================================
 // Children-tracking mock element (richer than core.ts createMockElement —
@@ -179,6 +178,53 @@ function renderEditor(workflow: Workflow, isNew = false): {
   return { component, onSave, onCancel, onRunNow, container };
 }
 
+function claudeExecution(): NonNullable<Workflow['execution']> {
+  return {
+    backend: 'claude-cli',
+    model: 'sonnet',
+    mode: 'proposal',
+    capabilityProfile: 'vault-readonly',
+    outputSchema: 'vault-change-plan/v1',
+    maxTurns: 12,
+    timeoutMinutes: 10,
+    approvalRequired: true,
+  };
+}
+
+function saveRenderedWorkflow(execution: Workflow['execution']): Workflow {
+  const labels = new Map<ButtonComponent, string>();
+  const handlers = new Map<ButtonComponent, () => void>();
+  const setButtonText = jest.spyOn(ButtonComponent.prototype, 'setButtonText')
+    .mockImplementation(function (this: ButtonComponent, text: string): ButtonComponent {
+      labels.set(this, text);
+      return this;
+    });
+  const onClick = jest.spyOn(ButtonComponent.prototype, 'onClick')
+    .mockImplementation(function (this: ButtonComponent, callback: () => void): ButtonComponent {
+      handlers.set(this, callback);
+      return this;
+    });
+
+  try {
+    const component = makeSpiedComponent();
+    const onSave = jest.fn();
+    const renderer = new WorkflowEditorRenderer([], onSave, jest.fn(), jest.fn(), component);
+    renderer.render(createMockEl('root') as unknown as HTMLElement, makeWorkflow({ execution }), false);
+
+    const save = Array.from(handlers.entries())
+      .find(([button]) => labels.get(button) === 'Save workflow')?.[1];
+    if (!save) throw new Error('Save workflow handler was not registered');
+
+    save();
+
+    if (!onSave.mock.calls[0]?.[0]) throw new Error('Save workflow handler did not receive a workflow');
+    return onSave.mock.calls[0][0] as Workflow;
+  } finally {
+    setButtonText.mockRestore();
+    onClick.mockRestore();
+  }
+}
+
 function sectionByTitle(title: string): RecordedSection {
   const found = recordedSections.find(s => s.config.title === title);
   if (!found) throw new Error(`No BoxedSection rendered with title "${title}". Got: ${recordedSections.map(s => s.config.title).join(', ')}`);
@@ -194,16 +240,16 @@ describe('WorkflowEditorRenderer (PR4 BoxedSection port)', () => {
     recordedSections.length = 0;
   });
 
-  describe('section structure — exactly 4 BoxedSections', () => {
-    it('renders exactly 4 BoxedSections', () => {
+  describe('section structure — exactly 5 BoxedSections', () => {
+    it('renders exactly 5 BoxedSections', () => {
       renderEditor(makeWorkflow());
-      expect(recordedSections).toHaveLength(4);
+      expect(recordedSections).toHaveLength(5);
     });
 
-    it('renders Identity, Prompt, Steps, Schedule in that order', () => {
-      renderEditor(makeWorkflow());
+    it('renders Execution between Steps and Schedule', () => {
+      renderEditor(makeWorkflow({ execution: claudeExecution() }));
       const titles = recordedSections.map(s => s.config.title);
-      expect(titles).toEqual(['Identity', 'Prompt', 'Steps', 'Schedule']);
+      expect(titles).toEqual(['Identity', 'Prompt', 'Steps', 'Execution', 'Schedule']);
     });
 
     it('marks every section unbounded (form sections own their own flow)', () => {
@@ -223,9 +269,9 @@ describe('WorkflowEditorRenderer (PR4 BoxedSection port)', () => {
   });
 
   describe('component threading (the required 5th ctor param)', () => {
-    it('threads the same Component instance into all 4 BoxedSections', () => {
+    it('threads the same Component instance into all 5 BoxedSections', () => {
       const { component } = renderEditor(makeWorkflow());
-      expect(recordedSections).toHaveLength(4);
+      expect(recordedSections).toHaveLength(5);
       for (const section of recordedSections) {
         expect(section.component).toBe(component);
       }
@@ -369,6 +415,13 @@ describe('WorkflowEditorRenderer (PR4 BoxedSection port)', () => {
   });
 
   describe('validation', () => {
+    it('does not enable a write-capable profile', () => {
+      const saved = saveRenderedWorkflow({ backend: 'claude-cli' } as unknown as Workflow['execution']);
+
+      expect(saved.execution?.capabilityProfile).toBe('vault-readonly');
+      expect(saved.execution?.approvalRequired).toBe(true);
+    });
+
     it('getWorkflow returns a clone (mutating the returned object does not leak back)', () => {
       const renderer = new WorkflowEditorRenderer([], jest.fn(), jest.fn(), jest.fn(), new Component());
       const container = createMockEl('root');

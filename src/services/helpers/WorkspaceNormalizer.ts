@@ -5,7 +5,11 @@
 
 import { IndividualWorkspace } from '../../types/storage/StorageTypes';
 import * as HybridTypes from '../../types/storage/HybridStorageTypes';
-import type { WorkflowSchedule, WorkspaceWorkflow } from '../../database/types/workspace/WorkspaceTypes';
+import type {
+  WorkflowExecutionConfig,
+  WorkflowSchedule,
+  WorkspaceWorkflow
+} from '../../database/types/workspace/WorkspaceTypes';
 import { v4 as uuidv4 } from '../../utils/uuid';
 
 /**
@@ -55,7 +59,19 @@ export function normalizeWorkspaceContext(context: HybridTypes.WorkspaceContext)
       changed = true;
     }
 
-    return nextWorkflow;
+    if (nextWorkflow.execution !== undefined) {
+      const normalizedExecution = normalizeWorkflowExecution(nextWorkflow.execution);
+      if (normalizedExecution) {
+        nextWorkflow = { ...nextWorkflow, execution: normalizedExecution };
+      } else {
+        const workflowWithoutExecution = { ...nextWorkflow };
+        delete workflowWithoutExecution.execution;
+        nextWorkflow = workflowWithoutExecution;
+      }
+      changed = true;
+    }
+
+    return nextWorkflow as WorkspaceWorkflow;
   });
 
   return {
@@ -99,4 +115,47 @@ export function normalizeWorkflowSchedule(schedule?: WorkflowSchedule): Workflow
   }
 
   return normalized;
+}
+
+/**
+ * Normalize the supervised-execution contract without inferring a configuration
+ * for existing chat workflows. Invalid persisted blocks are discarded.
+ */
+export function normalizeWorkflowExecution(execution: unknown): WorkflowExecutionConfig | undefined {
+  if (!isExecutionRecord(execution)
+    || (execution.backend !== 'chat' && execution.backend !== 'claude-cli')
+    || execution.mode !== 'proposal'
+    || execution.capabilityProfile !== 'vault-readonly'
+    || execution.outputSchema !== 'vault-change-plan/v1'
+    || execution.approvalRequired !== true
+    || !isFiniteNumber(execution.maxTurns)
+    || !isFiniteNumber(execution.timeoutMinutes)
+    || (execution.model !== undefined && typeof execution.model !== 'string')) {
+    return undefined;
+  }
+
+  const model = execution.model?.trim();
+
+  return {
+    backend: execution.backend,
+    ...(model ? { model } : {}),
+    mode: 'proposal',
+    capabilityProfile: 'vault-readonly',
+    outputSchema: 'vault-change-plan/v1',
+    maxTurns: clampInteger(execution.maxTurns, 1, 40),
+    timeoutMinutes: clampInteger(execution.timeoutMinutes, 1, 60),
+    approvalRequired: true
+  };
+}
+
+function isExecutionRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function clampInteger(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, Math.trunc(value)));
 }
