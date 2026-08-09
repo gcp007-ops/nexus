@@ -314,29 +314,44 @@ function createService(
   service: AgentRunService;
   store: ReturnType<typeof createConversationStore>;
   backend: DeferredBackend;
-  applier: { apply: jest.Mock; reconcile: jest.Mock; effect: jest.Mock };
+  applier: { apply: jest.Mock; reconcile: jest.Mock; effect: jest.Mock; rollback: jest.Mock };
 } {
   let now = 1_000;
   const hashSnapshot = jest.fn()
     .mockResolvedValueOnce(PROMPT_HASH)
     .mockResolvedValueOnce(WORKFLOW_HASH);
   const effect = jest.fn();
+  const rollback = jest.fn();
   const applier = {
     apply: jest.fn(async (
       _plan: unknown,
       _request: ApprovalRequest,
       beforeEffects?: () => Promise<void>,
-      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>
+      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>,
+      beforeOperation?: (writeAhead: Record<string, unknown>) => Promise<void>
     ) => {
       await beforeEffects?.();
       for (const operation of applyResult.operations) {
+        await beforeOperation?.({
+          operationId: operation.operationId,
+          type: operation.type,
+          dependsOn: [],
+          startedAt: operation.startedAt,
+          expectedReadback: {
+            kind: 'setProperty',
+            path: 'note.md',
+            property: 'status',
+            value: 'done'
+          }
+        });
         effect(operation.operationId);
         await afterOperation?.(operation);
       }
       return applyResult;
     }),
     reconcile: jest.fn(async () => applyResult),
-    effect
+    effect,
+    rollback
   };
   return {
     service: new AgentRunService({
@@ -539,11 +554,15 @@ describe('AgentRunService', () => {
     expect(store.conversations.get('conversation-1')?.metadata).toMatchObject({
       unrelated: { keep: true },
       agentRunApplyReceipt: {
-        schema: 'agent-run-apply-receipt/v1',
+        schema: 'agent-run-apply-receipt/v2',
         runId: 'conversation-1',
         planHash: seeded.planHash,
         operationIds: ['op-1'],
-        operations: [applyResult.operations[0]]
+        operations: [expect.objectContaining({
+          operationId: 'op-1',
+          state: 'settled',
+          result: applyResult.operations[0]
+        })]
       }
     });
 
@@ -684,7 +703,7 @@ describe('AgentRunService', () => {
     releaseFirstAppend();
     const outcomes = await Promise.allSettled([first, second]);
 
-    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(2);
     const operationEvents = store.conversations.get('conversation-1')?.messages.filter(message =>
       (message.metadata?.agentRunEvent as { kind?: string } | undefined)?.kind === 'operation_result'
     );
@@ -692,7 +711,239 @@ describe('AgentRunService', () => {
     expect(terminalizations).toBe(1);
     expect(applier.apply).toHaveBeenCalledTimes(1);
     expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.reconcile).toHaveBeenCalledTimes(1);
     await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('checks recovery authority inside the same-run lock before readback, events, or terminal CAS', async () => {
+    const seeded = approvableConversation();
+    const operation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'succeeded' as const,
+      startedAt: 1_001,
+      finishedAt: 1_002,
+      readback: {
+        path: 'note.md',
+        property: 'status',
+        value: 'done',
+        contentHash: `sha256:${'d'.repeat(64)}`
+      }
+    };
+    seeded.value.metadata = {
+      ...seeded.value.metadata,
+      agentRun: { ...runMetadata('applying'), planHash: seeded.planHash },
+      agentRunApplyReceipt: {
+        schema: 'agent-run-apply-receipt/v1',
+        runId: 'conversation-1',
+        planHash: seeded.planHash,
+        operationIds: ['op-1'],
+        operations: [operation]
+      }
+    };
+    const store = createConversationStore([seeded.value]);
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [operation]
+    };
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    const authorize = jest.fn(() => {
+      throw new Error('Workflow authority device mismatch');
+    });
+    const reconcile = service.reconcileApplying.bind(service);
+
+    await expect(reconcile('conversation-1', authorize))
+      .rejects.toThrow('Workflow authority device mismatch');
+
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'conversation-1',
+      status: 'applying',
+      deviceId: 'device-a'
+    }));
+    expect(applier.reconcile).not.toHaveBeenCalled();
+    expect(store.addMessage).not.toHaveBeenCalled();
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+  });
+
+  it('recovers a simulated crash after an effect from durable write-ahead without retry or rollback', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const operation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'succeeded' as const,
+      startedAt: 1_001,
+      finishedAt: 1_001,
+      readback: {
+        path: 'note.md',
+        property: 'status',
+        value: 'done',
+        contentHash: `sha256:${'d'.repeat(64)}`
+      }
+    };
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1',
+      planHash: seeded.planHash,
+      status: 'completed',
+      operations: [operation]
+    };
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    const readback = jest.fn();
+    applier.apply.mockImplementation(async (
+      _plan: unknown,
+      _request: ApprovalRequest,
+      beforeEffects?: () => Promise<void>,
+      _afterOperation?: (result: typeof operation) => Promise<void>,
+      beforeOperation?: (writeAhead: Record<string, unknown>) => Promise<void>
+    ) => {
+      await beforeEffects?.();
+      await beforeOperation?.({
+        operationId: 'op-1',
+        type: 'setProperty',
+        dependsOn: [],
+        startedAt: 1_001,
+        expectedReadback: {
+          kind: 'setProperty', path: 'note.md', property: 'status', value: 'done'
+        }
+      });
+      applier.effect('op-1');
+      throw new Error('simulated process crash after effect');
+    });
+    applier.reconcile.mockImplementation(async (_plan: unknown, receipt: Record<string, unknown>) => {
+      expect(receipt).toMatchObject({
+        schema: 'agent-run-apply-receipt/v2',
+        operations: [expect.objectContaining({
+          operationId: 'op-1',
+          state: 'pending',
+          expectedReadback: expect.objectContaining({ kind: 'setProperty', path: 'note.md' })
+        })]
+      });
+      readback();
+      return applyResult;
+    });
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('simulated process crash after effect');
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(applyResult);
+
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.rollback).not.toHaveBeenCalled();
+    expect(readback).toHaveBeenCalledTimes(1);
+    expect(store.conversations.get('conversation-1')?.metadata?.agentRunApplyReceipt)
+      .toMatchObject({ operations: [expect.objectContaining({ state: 'settled', result: operation })] });
+  });
+
+  it('keeps applying when result receipt persistence rejects after the effect and reconciles by readback', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const operation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'succeeded' as const,
+      startedAt: 1_001,
+      finishedAt: 1_002,
+      readback: {
+        path: 'note.md', property: 'status', value: 'done', contentHash: `sha256:${'d'.repeat(64)}`
+      }
+    };
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1', planHash: seeded.planHash, status: 'completed', operations: [operation]
+    };
+    const mutate = store.mutateConversationMetadata.getMockImplementation();
+    if (!mutate) throw new Error('Expected metadata mutation implementation');
+    let rejectSettledReceipt = true;
+    store.mutateConversationMetadata.mockImplementation(async (runId, mutation) => {
+      const current = store.conversations.get(runId);
+      if (!current) throw new Error('missing conversation');
+      const candidate = mutation(current.metadata ?? {});
+      const receipt = candidate?.agentRunApplyReceipt as {
+        operations?: Array<{ state?: string }>;
+      } | undefined;
+      if (rejectSettledReceipt && receipt?.operations?.[0]?.state === 'settled') {
+        rejectSettledReceipt = false;
+        throw new Error('operation receipt storage rejected');
+      }
+      return mutate(runId, mutation);
+    });
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    const readback = jest.fn();
+    applier.reconcile.mockImplementation(async () => {
+      readback();
+      return applyResult;
+    });
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('operation receipt storage rejected');
+
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+    expect(store.conversations.get('conversation-1')?.metadata?.agentRunApplyReceipt)
+      .toMatchObject({ operations: [expect.objectContaining({ state: 'pending' })] });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(applyResult);
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.rollback).not.toHaveBeenCalled();
+    expect(readback).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not record failed when an effect rejects after changing state and recovers by authoritative readback', async () => {
+    const seeded = approvableConversation();
+    const store = createConversationStore([seeded.value]);
+    const operation = {
+      operationId: 'op-1',
+      type: 'setProperty' as const,
+      status: 'succeeded' as const,
+      startedAt: 1_001,
+      finishedAt: 1_001,
+      readback: {
+        path: 'note.md', property: 'status', value: 'done', contentHash: `sha256:${'d'.repeat(64)}`
+      }
+    };
+    const applyResult: VaultChangeApplyResult = {
+      runId: 'conversation-1', planHash: seeded.planHash, status: 'completed', operations: [operation]
+    };
+    const { service, applier } = createService(store, createDeferredBackend(), applyResult);
+    let authoritativeState = 'todo';
+    applier.apply.mockImplementation(async (
+      _plan: unknown,
+      _request: ApprovalRequest,
+      beforeEffects?: () => Promise<void>,
+      _afterOperation?: (result: typeof operation) => Promise<void>,
+      beforeOperation?: (writeAhead: Record<string, unknown>) => Promise<void>
+    ) => {
+      await beforeEffects?.();
+      await beforeOperation?.({
+        operationId: 'op-1',
+        type: 'setProperty',
+        dependsOn: [],
+        startedAt: 1_001,
+        expectedReadback: {
+          kind: 'setProperty', path: 'note.md', property: 'status', value: 'done'
+        }
+      });
+      authoritativeState = 'done';
+      applier.effect('op-1');
+      throw new Error('effect promise rejected after mutation');
+    });
+    applier.reconcile.mockImplementation(async () => {
+      expect(authoritativeState).toBe('done');
+      return applyResult;
+    });
+
+    await expect(service.approveAndApply(approvalRequest(seeded.planHash)))
+      .rejects.toThrow('effect promise rejected after mutation');
+
+    expect(store.conversations.get('conversation-1')?.metadata?.agentRunApplyReceipt)
+      .toMatchObject({ operations: [expect.objectContaining({ state: 'pending' })] });
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'applying' });
+
+    await expect(service.reconcileApplying('conversation-1')).resolves.toEqual(applyResult);
+    expect(applier.effect).toHaveBeenCalledTimes(1);
+    expect(applier.rollback).not.toHaveBeenCalled();
   });
 
   it('keeps reconciliation behind an in-flight approval and effect for the same run', async () => {
@@ -729,11 +980,21 @@ describe('AgentRunService', () => {
       _plan: unknown,
       _request: ApprovalRequest,
       beforeEffects?: () => Promise<void>,
-      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>
+      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>,
+      beforeOperation?: (writeAhead: Record<string, unknown>) => Promise<void>
     ) => {
       await beforeEffects?.();
       signalApplying();
       await effectRelease;
+      await beforeOperation?.({
+        operationId: 'op-1',
+        type: 'setProperty',
+        dependsOn: [],
+        startedAt: 1_001,
+        expectedReadback: {
+          kind: 'setProperty', path: 'note.md', property: 'status', value: 'done'
+        }
+      });
       applier.effect('op-1');
       await afterOperation?.(applyResult.operations[0]);
       return applyResult;
@@ -749,7 +1010,7 @@ describe('AgentRunService', () => {
     expect(applier.reconcile).not.toHaveBeenCalled();
     releaseEffect();
     await expect(approval).resolves.toEqual(applyResult);
-    await expect(reconciliation).rejects.toThrow('is not applying');
+    await expect(reconciliation).resolves.toEqual(applyResult);
 
     expect(applier.apply).toHaveBeenCalledTimes(1);
     expect(applier.effect).toHaveBeenCalledTimes(1);
@@ -913,13 +1174,19 @@ describe('AgentRunService', () => {
     expect(backend.request().prompt).not.toContain('Mutated after start was invoked.');
   });
 
-  it('fails a mismatched backend handle without awaiting its result or cancellation', async () => {
+  it('persists failed for a mismatched backend handle only after cancellation and result settlement', async () => {
     const store = createConversationStore();
     const backend = createDeferredBackend();
-    const cancel = jest.fn(() => new Promise<void>(() => undefined));
+    let resolveCancel!: () => void;
+    const cancelSettled = new Promise<void>(resolve => { resolveCancel = resolve; });
+    let rejectResult!: (error: Error) => void;
+    const resultSettled = new Promise<WorkflowExecutionResult>((_resolve, reject) => {
+      rejectResult = reject;
+    });
+    const cancel = jest.fn(() => cancelSettled);
     backend.start.mockImplementation(request => ({
       runId: 'different-run',
-      result: new Promise<WorkflowExecutionResult>(() => undefined),
+      result: resultSettled,
       cancel
     }));
     const { service } = createService(store, backend);
@@ -933,6 +1200,19 @@ describe('AgentRunService', () => {
     }
 
     expect(cancel).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe('pending');
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'queued' });
+
+    resolveCancel();
+    await Promise.resolve();
+    expect(outcome).toBe('pending');
+    await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'queued' });
+
+    rejectResult(new Error('mismatched process settled'));
+    for (let turn = 0; turn < 20 && outcome === 'pending'; turn += 1) {
+      await Promise.resolve();
+    }
+
     expect(outcome).toBe('failed');
     await expect(service.get('conversation-1')).resolves.toMatchObject({ status: 'failed' });
   });
@@ -1121,11 +1401,21 @@ describe('AgentRunService', () => {
       _plan: unknown,
       _request: ApprovalRequest,
       beforeEffects?: () => Promise<void>,
-      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>
+      afterOperation?: (operation: VaultChangeApplyResult['operations'][number]) => Promise<void>,
+      beforeOperation?: (writeAhead: Record<string, unknown>) => Promise<void>
     ) => {
       await beforeEffects?.();
       signalApplying();
       await effectRelease;
+      await beforeOperation?.({
+        operationId: 'op-1',
+        type: 'setProperty',
+        dependsOn: [],
+        startedAt: 1_001,
+        expectedReadback: {
+          kind: 'setProperty', path: 'note.md', property: 'status', value: 'done'
+        }
+      });
       applier.effect('op-1');
       await afterOperation?.(applyResult.operations[0]);
       return applyResult;

@@ -148,6 +148,34 @@ describe('Agent runs UI', () => {
     expect(buildAgentRunPresentation(awaitingApprovalRun()).canCancel).toBe(true);
     expect(buildAgentRunPresentation(awaitingApprovalRun()).canApprove).toBe(true);
     expect(buildAgentRunPresentation({ ...awaitingApprovalRun(), status: 'completed' }).canCancel).toBe(false);
+    expect(buildAgentRunPresentation({ ...awaitingApprovalRun(), status: 'applying' }).canReconcile).toBe(true);
+    expect(buildAgentRunPresentation(awaitingApprovalRun()).canReconcile).toBe(false);
+  });
+
+  it('renders Reconcile application only for applying runs', () => {
+    const component = new Component();
+    const onReconcile = jest.fn();
+    const renderer = new AgentRunDetailRenderer({
+      app: new App(),
+      component,
+      onCancel: jest.fn(),
+      onApprove: jest.fn(),
+      onReconcile
+    } as ConstructorParameters<typeof AgentRunDetailRenderer>[0]);
+
+    const applying = renderer.render(
+      element() as unknown as HTMLElement,
+      { ...awaitingApprovalRun(), status: 'applying' }
+    );
+    const awaiting = renderer.render(
+      element() as unknown as HTMLElement,
+      awaitingApprovalRun()
+    );
+
+    expect(applying.reconcileButton?.textContent).toBe('Reconcile application');
+    expect(applying.reconcileButton?.disabled).toBe(false);
+    expect(applying.reconcileButton?.getAttribute('aria-label')).toBe('Reconcile application by authoritative readback');
+    expect(awaiting.reconcileButton).toBeNull();
   });
 
   it('renders accessible actions and registers every native interaction for cleanup', () => {
@@ -157,7 +185,8 @@ describe('Agent runs UI', () => {
       app: new App(),
       component,
       onCancel: jest.fn(),
-      onApprove: jest.fn()
+      onApprove: jest.fn(),
+      onReconcile: jest.fn()
     });
     const root = element();
 
@@ -177,7 +206,8 @@ describe('Agent runs UI', () => {
       app: new App(),
       component,
       onCancel: jest.fn(),
-      onApprove: jest.fn()
+      onApprove: jest.fn(),
+      onReconcile: jest.fn()
     });
     const rejected = {
       ...awaitingApprovalRun(),

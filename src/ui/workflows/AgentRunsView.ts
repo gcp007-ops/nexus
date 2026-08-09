@@ -182,6 +182,11 @@ export class AgentRunsView extends ItemView {
           }
         });
         await this.refresh();
+      },
+      onReconcile: async runId => {
+        if (!this.service) return;
+        await this.service.reconcileApplying(runId);
+        await this.refresh();
       }
     }).render(detail, selected);
   }

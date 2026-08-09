@@ -131,6 +131,7 @@ export interface SupervisedRun {
   } | null;
   application: {
     operationIds: string[];
+    pendingOperationIds: string[];
     operations: SupervisedApplicationOperation[];
   } | null;
   trace: SupervisedRunTraceEvent[];
@@ -139,7 +140,10 @@ export interface SupervisedRun {
 export interface SupervisedWorkflowServiceDependencies {
   workspaceService: Pick<WorkspaceService, 'getAllWorkspaces' | 'getWorkspace'>;
   workflowRunService: Pick<WorkflowRunService, 'start'>;
-  agentRunService: Pick<AgentRunService, 'get' | 'list' | 'cancel' | 'approveAndApply'>;
+  agentRunService: Pick<
+    AgentRunService,
+    'get' | 'list' | 'cancel' | 'approveAndApply' | 'reconcileApplying'
+  >;
   conversationService: Pick<ConversationService, 'getConversation'>;
   authorityService: Pick<WorkflowAuthorityService, 'assertCanRun'>;
   getBackendPreflight(): Promise<ClaudeHeadlessPreflightResult>;
@@ -265,6 +269,14 @@ export class SupervisedWorkflowService {
     return this.getRun(input.runId);
   }
 
+  async reconcileApplying(runId: string): Promise<SupervisedRun> {
+    await this.dependencies.agentRunService.reconcileApplying(
+      runId,
+      run => this.assertReconciliationAuthority(run)
+    );
+    return this.getRun(runId);
+  }
+
   async openRun(runId: string): Promise<void> {
     await this.dependencies.openRun(runId);
   }
@@ -298,6 +310,20 @@ export class SupervisedWorkflowService {
   private assertCompatible(workflow: WorkspaceWorkflow): void {
     if (!isCompatibleWorkflow(workflow)) {
       throw new Error(`Workflow is not a compatible supervised Claude workflow: ${workflow.id}`);
+    }
+  }
+
+  private async assertReconciliationAuthority(run: AgentRunRecord): Promise<void> {
+    const workspace = await this.dependencies.workspaceService.getWorkspace(run.workspaceId);
+    const workflow = workspace?.context?.workflows?.find(item => item.id === run.workflowId);
+    if (!workspace || !workflow) {
+      throw new Error(`Workflow not found for applying run: ${run.workflowId}`);
+    }
+    this.assertCompatible(workflow);
+    const execution = workflow.execution!;
+    const currentDeviceId = this.dependencies.authorityService.assertCanRun(execution);
+    if (run.authorityScope !== execution.authorityScope || run.deviceId !== currentDeviceId) {
+      throw new Error('Workflow authority device mismatch');
     }
   }
 
@@ -434,16 +460,40 @@ function readApproval(conversation: RunConversation): SupervisedRun['approval'] 
 function readApplication(conversation: RunConversation): SupervisedRun['application'] {
   const value = conversation.metadata?.agentRunApplyReceipt;
   if (!isRecord(value)
-    || value.schema !== 'agent-run-apply-receipt/v1'
+    || (value.schema !== 'agent-run-apply-receipt/v1'
+      && value.schema !== 'agent-run-apply-receipt/v2')
     || !Array.isArray(value.operationIds)
     || value.operationIds.some(item => typeof item !== 'string')
     || !Array.isArray(value.operations)) {
     return null;
   }
-  const operations = value.operations.map(projectOperationResult);
+  const rawOperations = value.schema === 'agent-run-apply-receipt/v1'
+    ? value.operations
+    : value.operations.flatMap(entry => {
+      if (!isRecord(entry) || typeof entry.operationId !== 'string') return [null];
+      if (entry.state === 'settled') return [entry.result];
+      if (entry.state === 'selected' || entry.state === 'pending') return [];
+      return [null];
+    });
+  const receiptEntryIds = value.operations.map(entry =>
+    isRecord(entry) && typeof entry.operationId === 'string' ? entry.operationId : null);
+  if (receiptEntryIds.some(entry => entry === null)
+    || receiptEntryIds.length !== value.operationIds.length
+    || value.operationIds.some((operationId, index) => operationId !== receiptEntryIds[index])) {
+    return null;
+  }
+  const operations = rawOperations.map(projectOperationResult);
   if (operations.some(operation => operation === null)) return null;
   return {
     operationIds: value.operationIds.map(String),
+    pendingOperationIds: value.schema === 'agent-run-apply-receipt/v2'
+      ? value.operations.flatMap(entry =>
+        isRecord(entry)
+          && typeof entry.operationId === 'string'
+          && (entry.state === 'selected' || entry.state === 'pending')
+          ? [entry.operationId]
+          : [])
+      : [],
     operations: operations.filter((operation): operation is SupervisedApplicationOperation => operation !== null)
   };
 }

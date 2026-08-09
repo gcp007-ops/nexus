@@ -53,7 +53,7 @@ export interface VaultChangeApplyResult {
   operations: VaultOperationResult[];
 }
 
-export interface VaultChangeApplyReceipt {
+export interface LegacyVaultChangeApplyReceipt {
   schema: 'agent-run-apply-receipt/v1';
   runId: string;
   planHash: string;
@@ -61,7 +61,67 @@ export interface VaultChangeApplyReceipt {
   operations: VaultOperationResult[];
 }
 
+export type VaultOperationExpectedReadback =
+  | {
+    kind: 'rename';
+    sourcePath: string;
+    destinationPath: string;
+  }
+  | {
+    kind: 'setProperty';
+    path: string;
+    property: string;
+    value: unknown;
+  }
+  | {
+    kind: 'contentHash';
+    path: string;
+    contentHash: string;
+  };
+
+export interface VaultOperationWriteAhead {
+  operationId: string;
+  type: VaultChangeOperation['type'];
+  dependsOn: string[];
+  startedAt: number;
+  expectedReadback: VaultOperationExpectedReadback;
+}
+
+interface VaultOperationReceiptBase {
+  operationId: string;
+  type: VaultChangeOperation['type'];
+  dependsOn: string[];
+  selectedAt: number;
+}
+
+export type VaultOperationApplyReceipt =
+  | (VaultOperationReceiptBase & { state: 'selected' })
+  | (VaultOperationReceiptBase & {
+    state: 'pending';
+    startedAt: number;
+    expectedReadback: VaultOperationExpectedReadback;
+  })
+  | (VaultOperationReceiptBase & {
+    state: 'settled';
+    result: VaultOperationResult;
+    startedAt?: number;
+    expectedReadback?: VaultOperationExpectedReadback;
+  });
+
+export interface DurableVaultChangeApplyReceipt {
+  schema: 'agent-run-apply-receipt/v2';
+  runId: string;
+  planHash: string;
+  operationIds: string[];
+  operations: VaultOperationApplyReceipt[];
+}
+
+export type VaultChangeApplyReceipt =
+  | LegacyVaultChangeApplyReceipt
+  | DurableVaultChangeApplyReceipt;
+
 export interface PreparedVaultEffect {
+  expectedReadback: VaultOperationExpectedReadback;
   apply(): Promise<void>;
   readback(): Promise<Record<string, unknown>>;
   rollback(): Promise<void>;
@@ -106,7 +166,8 @@ export class VaultChangeApplier {
     plan: VaultChangePlan,
     request: ApprovalRequest,
     beforeEffects: () => Promise<void> = () => Promise.resolve(),
-    afterOperation: (result: VaultOperationResult) => Promise<void> = () => Promise.resolve()
+    afterOperation: (result: VaultOperationResult) => Promise<void> = () => Promise.resolve(),
+    beforeOperation?: (writeAhead: VaultOperationWriteAhead) => Promise<void>
   ): Promise<VaultChangeApplyResult> {
     const operations = this.validateSelection(plan, request);
     await beforeEffects();
@@ -133,7 +194,7 @@ export class VaultChangeApplier {
         continue;
       }
 
-      const result = await this.applyOne(plan.runId, operation);
+      const result = await this.applyOne(plan.runId, operation, beforeOperation);
       results.push(result);
       byId.set(operation.operationId, result);
       await afterOperation(result);
@@ -154,6 +215,9 @@ export class VaultChangeApplier {
     receipt: VaultChangeApplyReceipt
   ): Promise<VaultChangeApplyResult> {
     this.validateReceipt(plan, receipt);
+    if (receipt.schema === 'agent-run-apply-receipt/v2') {
+      return this.reconcileDurableReceipt(plan, receipt);
+    }
     const operationById = new Map(plan.operations.map(operation => [operation.operationId, operation]));
     for (const result of receipt.operations) {
       const operation = operationById.get(result.operationId);
@@ -226,7 +290,8 @@ export class VaultChangeApplier {
   }
 
   private validateReceipt(plan: VaultChangePlan, receipt: VaultChangeApplyReceipt): void {
-    if (receipt.schema !== 'agent-run-apply-receipt/v1'
+    if ((receipt.schema !== 'agent-run-apply-receipt/v1'
+        && receipt.schema !== 'agent-run-apply-receipt/v2')
       || receipt.runId !== plan.runId
       || receipt.planHash !== hashVaultChangePlan(plan)) {
       throw new Error('apply receipt does not match the immutable plan');
@@ -259,6 +324,214 @@ export class VaultChangeApplier {
           );
         }
       }
+    }
+    if (receipt.schema === 'agent-run-apply-receipt/v1') {
+      return;
+    }
+
+    let foundUnsettled = false;
+    let pendingCount = 0;
+    for (let index = 0; index < receipt.operations.length; index += 1) {
+      const entry = receipt.operations[index];
+      const operation = plan.operations.find(item => item.operationId === entry.operationId);
+      if (!operation
+        || entry.type !== operation.type
+        || !stringArraysEqual(entry.dependsOn, operation.dependsOn)
+        || typeof entry.selectedAt !== 'number'
+        || !Number.isFinite(entry.selectedAt)) {
+        throw new Error(`invalid durable receipt identity for ${entry.operationId}`);
+      }
+      if (entry.state === 'selected') {
+        assertOnlyKeys(entry as unknown as Record<string, unknown>, [
+          'operationId', 'type', 'dependsOn', 'selectedAt', 'state'
+        ]);
+        foundUnsettled = true;
+        continue;
+      }
+      if (entry.state === 'pending') {
+        assertOnlyKeys(entry as unknown as Record<string, unknown>, [
+          'operationId', 'type', 'dependsOn', 'selectedAt', 'state', 'startedAt', 'expectedReadback'
+        ]);
+        if (foundUnsettled || pendingCount > 0
+          || typeof entry.startedAt !== 'number'
+          || !Number.isFinite(entry.startedAt)) {
+          throw new Error('durable receipt contains an invalid pending operation order');
+        }
+        pendingCount += 1;
+        foundUnsettled = true;
+        this.assertExpectedReadback(operation, entry.expectedReadback);
+        continue;
+      }
+      assertOnlyKeys(entry as unknown as Record<string, unknown>, [
+        'operationId', 'type', 'dependsOn', 'selectedAt', 'state', 'result',
+        'startedAt', 'expectedReadback'
+      ]);
+      if (foundUnsettled) {
+        throw new Error('durable receipt contains a settled operation after an unsettled predecessor');
+      }
+      if (!isVaultOperationResult(entry.result)
+        || entry.result.operationId !== entry.operationId
+        || entry.result.type !== entry.type) {
+        throw new Error(`invalid durable receipt result for ${entry.operationId}`);
+      }
+      if (entry.expectedReadback !== undefined) {
+        if (typeof entry.startedAt !== 'number' || !Number.isFinite(entry.startedAt)) {
+          throw new Error(`durable receipt lacks write-ahead time for ${entry.operationId}`);
+        }
+        this.assertExpectedReadback(operation, entry.expectedReadback);
+      } else if (entry.startedAt !== undefined) {
+        throw new Error(`durable receipt has a write-ahead time without descriptor for ${entry.operationId}`);
+      }
+    }
+  }
+
+  private async reconcileDurableReceipt(
+    plan: VaultChangePlan,
+    receipt: DurableVaultChangeApplyReceipt
+  ): Promise<VaultChangeApplyResult> {
+    const operationById = new Map(plan.operations.map(operation => [operation.operationId, operation]));
+    const results: VaultOperationResult[] = [];
+    const byId = new Map<string, VaultOperationResult>();
+    for (const entry of receipt.operations) {
+      const operation = operationById.get(entry.operationId);
+      if (!operation) {
+        throw new Error(`receipt contains unknown operationId: ${entry.operationId}`);
+      }
+      let result: VaultOperationResult;
+      if (entry.state === 'settled') {
+        result = cloneJson(entry.result);
+        await this.assertReceiptReadback(operation, result);
+      } else if (entry.state === 'pending') {
+        try {
+          const recovery = await this.readExpectedState(entry.expectedReadback);
+          result = {
+            operationId: entry.operationId,
+            type: entry.type,
+            status: recovery.matches ? 'succeeded' : 'readback_failed',
+            startedAt: entry.startedAt,
+            finishedAt: entry.startedAt,
+            readback: recovery.readback,
+            ...(recovery.matches ? {} : {
+              error: 'Authoritative recovery readback found unresolved or drifted state.'
+            })
+          };
+        } catch (error) {
+          result = {
+            operationId: entry.operationId,
+            type: entry.type,
+            status: 'readback_failed',
+            startedAt: entry.startedAt,
+            finishedAt: entry.startedAt,
+            error: `Authoritative recovery readback is unavailable: ${errorMessage(error)}`
+          };
+        }
+      } else {
+        const blocked = entry.dependsOn.some(dependency => byId.get(dependency)?.status !== 'succeeded');
+        result = {
+          operationId: entry.operationId,
+          type: entry.type,
+          status: blocked ? 'blocked_dependency' : 'failed',
+          startedAt: entry.selectedAt,
+          finishedAt: entry.selectedAt,
+          error: blocked
+            ? 'A selected dependency was unresolved during recovery.'
+            : 'Application stopped before this effect was write-ahead persisted.'
+        };
+      }
+      results.push(result);
+      byId.set(result.operationId, result);
+    }
+    return {
+      runId: receipt.runId,
+      planHash: receipt.planHash,
+      status: results.every(result => result.status === 'succeeded')
+        ? 'completed'
+        : 'completed_with_issues',
+      operations: results
+    };
+  }
+
+  private async readExpectedState(expected: VaultOperationExpectedReadback): Promise<{
+    matches: boolean;
+    readback: Record<string, unknown>;
+  }> {
+    if (expected.kind === 'rename') {
+      const readback = {
+        sourcePath: expected.sourcePath,
+        sourceExists: this.dependencies.app.vault.getAbstractFileByPath(expected.sourcePath) !== null,
+        destinationPath: expected.destinationPath,
+        destinationExists: this.dependencies.app.vault.getAbstractFileByPath(expected.destinationPath) !== null
+      };
+      return {
+        matches: !readback.sourceExists && readback.destinationExists,
+        readback
+      };
+    }
+    if (expected.kind === 'setProperty') {
+      const file = requireFile(this.dependencies.app, expected.path);
+      const content = await this.dependencies.app.vault.read(file);
+      const frontmatter = readFrontmatter(content);
+      const valuePresent = Object.prototype.hasOwnProperty.call(frontmatter, expected.property);
+      const readback = {
+        path: expected.path,
+        property: expected.property,
+        valuePresent,
+        ...(valuePresent ? { value: frontmatter[expected.property] } : {}),
+        contentHash: await this.dependencies.preconditions.hashExactContent(content)
+      };
+      return {
+        matches: valuePresent && jsonEqual(readback.value, expected.value),
+        readback
+      };
+    }
+    const contentHash = await this.dependencies.preconditions.readContentHash(expected.path);
+    return {
+      matches: contentHash === expected.contentHash,
+      readback: { path: expected.path, contentHash }
+    };
+  }
+
+  private assertExpectedReadback(
+    operation: VaultChangeOperation,
+    expected: VaultOperationExpectedReadback
+  ): void {
+    if (!isRecord(expected)) {
+      throw new Error(`invalid durable readback descriptor for ${operation.operationId}`);
+    }
+    if (operation.type === 'move' || operation.type === 'archive') {
+      assertOnlyKeys(expected, ['kind', 'sourcePath', 'destinationPath']);
+      if (expected.kind !== 'rename') {
+        throw new Error(`durable rename descriptor mismatch for ${operation.operationId}`);
+      }
+      const sourcePath = this.dependencies.preconditions.resolveModelPath(
+        operation.type === 'move' ? operation.sourcePath : operation.path
+      );
+      const destinationPath = operation.type === 'move'
+        ? this.dependencies.preconditions.resolveModelPath(operation.destinationPath)
+        : typeof expected.destinationPath === 'string'
+          ? this.dependencies.preconditions.resolveGeneratedArchivePath(expected.destinationPath)
+          : '';
+      if (expected.sourcePath !== sourcePath
+        || expected.destinationPath !== destinationPath) {
+        throw new Error(`durable rename descriptor mismatch for ${operation.operationId}`);
+      }
+      return;
+    }
+    if (operation.type === 'setProperty') {
+      assertOnlyKeys(expected, ['kind', 'path', 'property', 'value']);
+      if (expected.kind !== 'setProperty'
+        || expected.path !== this.dependencies.preconditions.resolveModelPath(operation.path)
+        || expected.property !== operation.property
+        || !jsonEqual(expected.value, operation.value)) {
+        throw new Error(`durable property descriptor mismatch for ${operation.operationId}`);
+      }
+      return;
+    }
+    assertOnlyKeys(expected, ['kind', 'path', 'contentHash']);
+    if (expected.kind !== 'contentHash'
+      || expected.path !== this.dependencies.preconditions.resolveModelPath(operation.path)
+      || !/^sha256:[a-f0-9]{64}$/.test(expected.contentHash)) {
+      throw new Error(`durable content descriptor mismatch for ${operation.operationId}`);
     }
   }
 
@@ -313,13 +586,52 @@ export class VaultChangeApplier {
 
   private async applyOne(
     runId: string,
-    operation: VaultChangeOperation
+    operation: VaultChangeOperation,
+    beforeOperation?: (writeAhead: VaultOperationWriteAhead) => Promise<void>
   ): Promise<VaultOperationResult> {
     const startedAt = this.now();
     let effect: PreparedVaultEffect;
     try {
       effect = await this.prepare(operation, { runId, operationId: operation.operationId });
       await this.dependencies.preconditions.assertCurrent(operation.preconditions);
+    } catch (error) {
+      return {
+        operationId: operation.operationId,
+        type: operation.type,
+        status: 'failed',
+        startedAt,
+        finishedAt: this.now(),
+        error: errorMessage(error)
+      };
+    }
+
+    if (beforeOperation) {
+      await beforeOperation({
+        operationId: operation.operationId,
+        type: operation.type,
+        dependsOn: [...operation.dependsOn],
+        startedAt,
+        expectedReadback: cloneJson(effect.expectedReadback)
+      });
+      try {
+        await effect.apply();
+        const readback = await effect.readback();
+        return {
+          operationId: operation.operationId,
+          type: operation.type,
+          status: 'succeeded',
+          startedAt,
+          finishedAt: this.now(),
+          readback
+        };
+      } catch (error) {
+        throw new Error(
+          `Vault operation outcome is unknown after durable write-ahead for ${operation.operationId}: ${errorMessage(error)}`
+        );
+      }
+    }
+
+    try {
       await effect.apply();
     } catch (error) {
       return {
@@ -425,6 +737,7 @@ export class VaultChangeApplier {
       destinationExists: app.vault.getAbstractFileByPath(destinationPath) !== null
     });
     return Promise.resolve({
+      expectedReadback: { kind: 'rename', sourcePath, destinationPath },
       apply: async () => {
         const source = app.vault.getAbstractFileByPath(sourcePath);
         if (!(source instanceof TFile) && !(source instanceof TFolder)) {
@@ -483,6 +796,12 @@ export class VaultChangeApplier {
       };
     };
     return {
+      expectedReadback: {
+        kind: 'setProperty',
+        path,
+        property: operation.property,
+        value: cloneJson(operation.value)
+      },
       apply: async () => {
         if (await app.vault.read(file) !== original) {
           throw new Error(`file changed after preparation: ${path}`);
@@ -529,6 +848,11 @@ export class VaultChangeApplier {
       };
     };
     return {
+      expectedReadback: {
+        kind: 'contentHash',
+        path,
+        contentHash: await this.dependencies.preconditions.hashExactContent(expected)
+      },
       apply: async () => {
         await app.vault.process(file, current => {
           if (current !== original) {
@@ -655,6 +979,44 @@ function findLineBlocks(lines: string[], anchor: string): Array<{ start: number;
 
 function normalizeCrlf(value: string): string {
   return value.replace(/\r\n/g, '\n');
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): void {
+  const allowedKeys = new Set(allowed);
+  const unknown = Object.keys(value).find(key => !allowedKeys.has(key));
+  if (unknown) {
+    throw new Error(`durable apply receipt contains unknown field: ${unknown}`);
+  }
+}
+
+function isVaultOperationResult(value: unknown): value is VaultOperationResult {
+  return isRecord(value)
+    && typeof value.operationId === 'string'
+    && (value.type === 'move'
+      || value.type === 'archive'
+      || value.type === 'setProperty'
+      || value.type === 'replaceAnchored')
+    && (value.status === 'succeeded'
+      || value.status === 'failed'
+      || value.status === 'blocked_dependency'
+      || value.status === 'readback_failed'
+      || value.status === 'rolled_back'
+      || value.status === 'rollback_failed')
+    && typeof value.startedAt === 'number'
+    && Number.isFinite(value.startedAt)
+    && typeof value.finishedAt === 'number'
+    && Number.isFinite(value.finishedAt)
+    && (value.readback === undefined || isRecord(value.readback))
+    && (value.error === undefined || typeof value.error === 'string')
+    && (value.rollbackError === undefined || typeof value.rollbackError === 'string');
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {

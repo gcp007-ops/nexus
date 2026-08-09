@@ -367,6 +367,189 @@ describe('VaultChangeApplier', () => {
     expect(vault.process).toHaveBeenCalledTimes(effectCalls);
   });
 
+  it('recovers a durable pending effect by authoritative readback when the effect rejects after mutation', async () => {
+    const { applier, vault } = createHarness({
+      'replace.md': 'Before\nSTART\nold\nEND\nAfter'
+    });
+    const value = plan([operation('replaceAnchored')]);
+    let receipt: VaultChangeApplyReceipt = {
+      schema: 'agent-run-apply-receipt/v2',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-1'],
+      operations: [{
+        operationId: 'op-1',
+        type: 'replaceAnchored',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'selected'
+      }]
+    };
+    const beforeOperation = jest.fn(async writeAhead => {
+      expect(vault.process).not.toHaveBeenCalled();
+      receipt = {
+        ...receipt,
+        schema: 'agent-run-apply-receipt/v2',
+        operations: [{ ...writeAhead, selectedAt: 900, state: 'pending' }]
+      };
+    });
+    vault.process.mockImplementationOnce(async (
+      file: TFile,
+      transform: (content: string) => string
+    ) => {
+      const entry = vault.files.get(file.path);
+      if (!entry) throw new Error(`missing file: ${file.path}`);
+      entry.content = transform(entry.content);
+      throw new Error('effect promise rejected after mutation');
+    });
+
+    await expect(applier.apply(
+      value,
+      approvalFor(value, 'op-1'),
+      async () => undefined,
+      async () => undefined,
+      beforeOperation
+    )).rejects.toThrow('outcome is unknown after durable write-ahead');
+
+    expect(beforeOperation).toHaveBeenCalledTimes(1);
+    const effectCalls = vault.process.mock.calls.length;
+    await expect(applier.reconcile(value, receipt)).resolves.toMatchObject({
+      status: 'completed',
+      operations: [expect.objectContaining({ operationId: 'op-1', status: 'succeeded' })]
+    });
+    expect(vault.process).toHaveBeenCalledTimes(effectCalls);
+  });
+
+  it('never runs later effects during recovery and blocks dependents of an unresolved predecessor', async () => {
+    const { applier, vault, fileManager } = createHarness({
+      'first.md': 'START\nold\nEND',
+      'second.md': 'START\nold\nEND',
+      'third.md': 'START\nold\nEND'
+    });
+    const value = plan([
+      operation('replaceAnchored', {
+        operationId: 'op-0', path: 'first.md', preconditions: [{ path: 'first.md', exists: true }]
+      }),
+      operation('replaceAnchored', {
+        operationId: 'op-1', path: 'second.md', dependsOn: ['op-0'],
+        preconditions: [{ path: 'second.md', exists: true }]
+      }),
+      operation('replaceAnchored', {
+        operationId: 'op-2', path: 'third.md', preconditions: [{ path: 'third.md', exists: true }]
+      })
+    ]);
+    const receipt: VaultChangeApplyReceipt = {
+      schema: 'agent-run-apply-receipt/v2',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-0', 'op-1', 'op-2'],
+      operations: [{
+        operationId: 'op-0',
+        type: 'replaceAnchored',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'pending',
+        startedAt: 901,
+        expectedReadback: {
+          kind: 'contentHash', path: 'first.md', contentHash: `sha256:${'f'.repeat(64)}`
+        }
+      }, {
+        operationId: 'op-1',
+        type: 'replaceAnchored',
+        dependsOn: ['op-0'],
+        selectedAt: 900,
+        state: 'selected'
+      }, {
+        operationId: 'op-2',
+        type: 'replaceAnchored',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'selected'
+      }]
+    };
+
+    await expect(applier.reconcile(value, receipt)).resolves.toMatchObject({
+      status: 'completed_with_issues',
+      operations: [
+        expect.objectContaining({ operationId: 'op-0', status: 'readback_failed' }),
+        expect.objectContaining({ operationId: 'op-1', status: 'blocked_dependency' }),
+        expect.objectContaining({ operationId: 'op-2', status: 'failed' })
+      ]
+    });
+    expect(vault.process).not.toHaveBeenCalled();
+    expect(fileManager.renameFile).not.toHaveBeenCalled();
+    expect(fileManager.processFrontMatter).not.toHaveBeenCalled();
+  });
+
+  it('persists an unresolved recovery result when authoritative readback itself is unavailable', async () => {
+    const { applier, vault } = createHarness({
+      'replace.md': 'START\nold\nEND'
+    });
+    const value = plan([operation('replaceAnchored')]);
+    const receipt: VaultChangeApplyReceipt = {
+      schema: 'agent-run-apply-receipt/v2',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-1'],
+      operations: [{
+        operationId: 'op-1',
+        type: 'replaceAnchored',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'pending',
+        startedAt: 901,
+        expectedReadback: {
+          kind: 'contentHash', path: 'replace.md', contentHash: `sha256:${'f'.repeat(64)}`
+        }
+      }]
+    };
+    vault.files.delete('replace.md');
+
+    await expect(applier.reconcile(value, receipt)).resolves.toMatchObject({
+      status: 'completed_with_issues',
+      operations: [expect.objectContaining({
+        operationId: 'op-1',
+        status: 'readback_failed',
+        error: expect.stringContaining('unavailable')
+      })]
+    });
+    expect(vault.process).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for old incomplete and non-closed durable receipts', async () => {
+    const { applier, vault } = createHarness({
+      'replace.md': 'Before\nSTART\nold\nEND\nAfter'
+    });
+    const value = plan([operation('replaceAnchored')]);
+    const incomplete = {
+      schema: 'agent-run-apply-receipt/v1',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-1'],
+      operations: []
+    } as VaultChangeApplyReceipt;
+    const nonClosed = {
+      schema: 'agent-run-apply-receipt/v2',
+      runId: value.runId,
+      planHash: hashVaultChangePlan(value),
+      operationIds: ['op-1'],
+      operations: [{
+        operationId: 'op-1',
+        type: 'replaceAnchored',
+        dependsOn: [],
+        selectedAt: 900,
+        state: 'selected',
+        capabilityToken: 'must-not-persist'
+      }]
+    } as unknown as VaultChangeApplyReceipt;
+
+    await expect(applier.reconcile(value, incomplete))
+      .rejects.toThrow('incomplete or out of order');
+    await expect(applier.reconcile(value, nonClosed))
+      .rejects.toThrow('unknown field');
+    expect(vault.process).not.toHaveBeenCalled();
+  });
+
   it.each(['.hidden/note.md', '_Base/Dados/note.md', '_Base/PluginsSync/note.md'])(
     'rejects protected model path %s before approval', async path => {
       const { applier, vault } = createHarness({ [path]: 'START\nold\nEND' });

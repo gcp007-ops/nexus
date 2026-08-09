@@ -23,12 +23,14 @@ export interface AgentRunPresentation {
   details: string;
   canCancel: boolean;
   canApprove: boolean;
+  canReconcile: boolean;
 }
 
 export interface AgentRunRenderResult {
   cancelButton: HTMLButtonElement;
   approveButton: HTMLButtonElement | null;
   operationInputs: HTMLInputElement[];
+  reconcileButton: HTMLButtonElement | null;
 }
 
 interface AgentRunDetailRendererDependencies {
@@ -36,6 +38,7 @@ interface AgentRunDetailRendererDependencies {
   component: Component;
   onCancel(runId: string): Promise<void> | void;
   onApprove(run: SupervisedRun, operationIds: string[]): Promise<void> | void;
+  onReconcile(runId: string): Promise<void> | void;
 }
 
 export function buildAgentRunPresentation(run: SupervisedRun): AgentRunPresentation {
@@ -59,7 +62,8 @@ export function buildAgentRunPresentation(run: SupervisedRun): AgentRunPresentat
       || run.status === 'awaiting_approval',
     canApprove: run.status === 'awaiting_approval'
       && run.planValidation.status === 'valid'
-      && run.plan !== null
+      && run.plan !== null,
+    canReconcile: run.status === 'applying'
   };
 }
 
@@ -146,7 +150,23 @@ export class AgentRunDetailRenderer {
       });
     }
 
-    return { cancelButton, approveButton, operationInputs };
+    let reconcileButton: HTMLButtonElement | null = null;
+    if (presentation.canReconcile) {
+      reconcileButton = actions.createEl('button', {
+        text: 'Reconcile application',
+        cls: 'nexus-agent-run-button mod-cta',
+        attr: { 'aria-label': 'Reconcile application by authoritative readback' }
+      });
+      this.dependencies.component.registerDomEvent(reconcileButton, 'click', () => {
+        reconcileButton!.disabled = true;
+        void Promise.resolve(this.dependencies.onReconcile(run.runId)).catch(error => {
+          reconcileButton!.disabled = false;
+          new Notice(`Failed to reconcile application: ${errorMessage(error)}`);
+        });
+      });
+    }
+
+    return { cancelButton, approveButton, operationInputs, reconcileButton };
   }
 
   private renderPlan(container: HTMLElement, run: SupervisedRun): HTMLInputElement[] {

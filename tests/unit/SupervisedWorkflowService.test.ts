@@ -95,6 +95,7 @@ function makeDependencies(): SupervisedWorkflowServiceDependencies & {
     list: jest.Mock;
     cancel: jest.Mock;
     approveAndApply: jest.Mock;
+    reconcileApplying: jest.Mock;
   };
   openRun: jest.Mock;
   openWorkflow: jest.Mock;
@@ -142,7 +143,8 @@ function makeDependencies(): SupervisedWorkflowServiceDependencies & {
     cancel: jest.fn().mockResolvedValue(run('cancelled')),
     approveAndApply: jest.fn().mockResolvedValue({
       runId: 'run-1', planHash: PLAN_HASH, status: 'completed', operations: []
-    })
+    }),
+    reconcileApplying: jest.fn()
   };
   return {
     workspaceService: {
@@ -254,11 +256,15 @@ describe('SupervisedWorkflowService', () => {
     stored.metadata = {
       ...stored.metadata,
       agentRunApplyReceipt: {
-        schema: 'agent-run-apply-receipt/v1',
+        schema: 'agent-run-apply-receipt/v2',
         runId: 'run-1',
         planHash: PLAN_HASH,
-        operationIds: ['archive-1', 'property-1', 'replace-1'],
+        operationIds: ['archive-1', 'property-1', 'replace-1', 'pending-1'],
         operations: [{
+          state: 'settled',
+          selectedAt: 150,
+          dependsOn: [],
+          result: {
           operationId: 'archive-1',
           type: 'archive',
           status: 'succeeded',
@@ -277,7 +283,14 @@ describe('SupervisedWorkflowService', () => {
           },
           capabilityToken: 'must-never-leak',
           childHandle: { pid: 123 }
+          },
+          operationId: 'archive-1',
+          type: 'archive'
         }, {
+          state: 'settled',
+          selectedAt: 150,
+          dependsOn: [],
+          result: {
           operationId: 'property-1',
           type: 'setProperty',
           status: 'rolled_back',
@@ -292,7 +305,14 @@ describe('SupervisedWorkflowService', () => {
             configPath: '/private/config.json'
           },
           error: 'Authoritative readback failed.'
+          },
+          operationId: 'property-1',
+          type: 'setProperty'
         }, {
+          state: 'settled',
+          selectedAt: 150,
+          dependsOn: [],
+          result: {
           operationId: 'replace-1',
           type: 'replaceAnchored',
           status: 'rollback_failed',
@@ -305,6 +325,22 @@ describe('SupervisedWorkflowService', () => {
           },
           error: 'Readback failed.',
           rollbackError: 'Rollback failed.'
+          },
+          operationId: 'replace-1',
+          type: 'replaceAnchored'
+        }, {
+          state: 'pending',
+          selectedAt: 150,
+          startedAt: 151,
+          dependsOn: [],
+          operationId: 'pending-1',
+          type: 'move',
+          expectedReadback: {
+            kind: 'rename',
+            sourcePath: 'Inbox/Pending.md',
+            destinationPath: 'Archive/Pending.md',
+            capabilityToken: 'pending-secret'
+          }
         }]
       }
     };
@@ -314,6 +350,7 @@ describe('SupervisedWorkflowService', () => {
 
     const result = await service.getRun('run-1');
 
+    expect(result.application?.pendingOperationIds).toEqual(['pending-1']);
     expect(result.application?.operations).toEqual([{
       operationId: 'archive-1',
       type: 'archive',
@@ -359,6 +396,7 @@ describe('SupervisedWorkflowService', () => {
     expect(JSON.stringify(result)).not.toContain('/private/');
     expect(JSON.stringify(result)).not.toContain('nested-env-secret');
     expect(JSON.stringify(result)).not.toContain('must-not-cross');
+    expect(JSON.stringify(result)).not.toContain('pending-secret');
   });
 
   it('filters active runs without inventing another lifecycle', async () => {
@@ -392,6 +430,57 @@ describe('SupervisedWorkflowService', () => {
     expect(dependencies.agentRunService.cancel).toHaveBeenCalledWith('run-1');
     expect(dependencies.agentRunService.approveAndApply).toHaveBeenCalledWith(approval);
     expect(dependencies.agentRunService.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('authority-gates applying reconciliation against both workflow and immutable run device', async () => {
+    const dependencies = makeDependencies();
+    dependencies.agentRunService.get.mockResolvedValue(run('completed'));
+    dependencies.agentRunService.reconcileApplying.mockImplementation(async (
+      _runId: string,
+      assertAuthority: (record: AgentRunRecord) => Promise<void>
+    ) => {
+      await assertAuthority(run('applying'));
+      return { runId: 'run-1', planHash: PLAN_HASH, status: 'completed', operations: [] };
+    });
+    const service = new SupervisedWorkflowService(dependencies) as SupervisedWorkflowService & {
+      reconcileApplying(runId: string): Promise<unknown>;
+    };
+
+    const result = await service.reconcileApplying('run-1');
+
+    expect(dependencies.authorityService.assertCanRun).toHaveBeenCalledWith(
+      expect.objectContaining({ authorityDeviceId: 'private-device-id' })
+    );
+    expect(dependencies.agentRunService.reconcileApplying).toHaveBeenCalledWith(
+      'run-1', expect.any(Function)
+    );
+    expect(result).toMatchObject({ runId: 'run-1', status: 'completed' });
+    expect(JSON.stringify(result)).not.toContain('private-device-id');
+  });
+
+  it('denies non-authority reconciliation before AgentRunService readback or persistence', async () => {
+    const dependencies = makeDependencies();
+    dependencies.authorityService.assertCanRun.mockImplementation(() => {
+      throw new Error('Workflow authority device mismatch');
+    });
+    const readback = jest.fn();
+    dependencies.agentRunService.reconcileApplying.mockImplementation(async (
+      _runId: string,
+      assertAuthority: (record: AgentRunRecord) => Promise<void>
+    ) => {
+      await assertAuthority(run('applying'));
+      readback();
+      return { runId: 'run-1', planHash: PLAN_HASH, status: 'completed', operations: [] };
+    });
+    const service = new SupervisedWorkflowService(dependencies) as SupervisedWorkflowService & {
+      reconcileApplying(runId: string): Promise<unknown>;
+    };
+
+    await expect(service.reconcileApplying('run-1'))
+      .rejects.toThrow('Workflow authority device mismatch');
+
+    expect(readback).not.toHaveBeenCalled();
+    expect(dependencies.agentRunService.get).not.toHaveBeenCalled();
   });
 
   it('returns authoritative rejected readback after cancelling an awaiting proposal', async () => {

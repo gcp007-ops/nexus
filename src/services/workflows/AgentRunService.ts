@@ -22,8 +22,12 @@ import type {
 } from './types';
 import type {
   ApprovalRequest,
+  DurableVaultChangeApplyReceipt,
   VaultChangeApplyReceipt,
   VaultChangeApplyResult,
+  VaultOperationApplyReceipt,
+  VaultOperationExpectedReadback,
+  VaultOperationWriteAhead,
   VaultOperationResult,
   VaultChangeApplier
 } from './VaultChangeApplier';
@@ -251,7 +255,7 @@ export class AgentRunService {
     }
 
     if (handle.runId !== request.conversationId) {
-      this.cancelDetached(handle);
+      await this.terminateRetainedHandle(handle);
       const failed = transitionAgentRun(queued, 'failed', { finishedAt: this.now() });
       const applied = await this.persistTransition(request.conversationId, ['queued'], failed);
       return this.record(request.conversationId, applied ? failed : await this.requireRun(request.conversationId));
@@ -350,14 +354,20 @@ export class AgentRunService {
 
         const applying = transitionAgentRun(current, 'applying', {});
         const selectedIds = new Set(request.operationIds);
-        const initialReceipt: VaultChangeApplyReceipt = {
-          schema: 'agent-run-apply-receipt/v1',
+        const selectedOperations = plan.operations
+          .filter(operation => selectedIds.has(operation.operationId));
+        const initialReceipt: DurableVaultChangeApplyReceipt = {
+          schema: 'agent-run-apply-receipt/v2',
           runId: request.runId,
           planHash: request.planHash,
-          operationIds: plan.operations
-            .filter(operation => selectedIds.has(operation.operationId))
-            .map(operation => operation.operationId),
-          operations: []
+          operationIds: selectedOperations.map(operation => operation.operationId),
+          operations: selectedOperations.map(operation => ({
+            operationId: operation.operationId,
+            type: operation.type,
+            dependsOn: [...operation.dependsOn],
+            selectedAt: request.approval.confirmedAt,
+            state: 'selected'
+          }))
         };
         const result = await this.dependencies.applier.apply(plan, request, async () => {
           await this.appendResultMessage(
@@ -379,6 +389,8 @@ export class AgentRunService {
           }
         }, async operation => {
           await this.persistOperationReceipt(request.runId, initialReceipt, operation);
+        }, async writeAhead => {
+          await this.persistOperationWriteAhead(request.runId, initialReceipt, writeAhead);
         });
 
         await this.appendMissingOperationEvents(request.runId, result);
@@ -387,11 +399,20 @@ export class AgentRunService {
     );
   }
 
-  async reconcileApplying(runId: string): Promise<VaultChangeApplyResult> {
-    return this.applyLocks.acquire(runId, () => this.reconcileApplyingExclusive(runId));
+  async reconcileApplying(
+    runId: string,
+    assertAuthority?: (run: AgentRunRecord) => Promise<void> | void
+  ): Promise<VaultChangeApplyResult> {
+    return this.applyLocks.acquire(
+      runId,
+      () => this.reconcileApplyingExclusive(runId, assertAuthority)
+    );
   }
 
-  private async reconcileApplyingExclusive(runId: string): Promise<VaultChangeApplyResult> {
+  private async reconcileApplyingExclusive(
+    runId: string,
+    assertAuthority?: (run: AgentRunRecord) => Promise<void> | void
+  ): Promise<VaultChangeApplyResult> {
     const conversation = await this.dependencies.conversations.getConversation(runId);
     if (!conversation) {
       throw new Error(`Conversation not found: ${runId}`);
@@ -401,7 +422,10 @@ export class AgentRunService {
       throw new Error(`Agent run not found: ${runId}`);
     }
     const current = normalizeAgentRunMetadata(currentValue);
-    if (current.status !== 'applying') {
+    await assertAuthority?.(this.record(runId, current));
+    if (current.status !== 'applying'
+      && current.status !== 'completed'
+      && current.status !== 'completed_with_issues') {
       throw new Error(`Agent run ${runId} is not applying`);
     }
 
@@ -421,8 +445,16 @@ export class AgentRunService {
     if (receipt.runId !== runId || receipt.planHash !== planHash) {
       throw new Error('Apply receipt does not match the applying run');
     }
+    if (current.status === 'completed' || current.status === 'completed_with_issues') {
+      return this.resultFromReceipt(receipt, current.status);
+    }
 
     const result = await this.dependencies.applier.reconcile(plan, receipt);
+    if (receipt.schema === 'agent-run-apply-receipt/v2') {
+      for (const operation of result.operations) {
+        await this.persistOperationReceipt(runId, receipt, operation);
+      }
+    }
     await this.appendMissingOperationEvents(runId, result);
     const finalStatus = result.status;
     const completed = transitionAgentRun(current, finalStatus, { finishedAt: this.now() });
@@ -431,6 +463,27 @@ export class AgentRunService {
       throw new Error(`Agent run completion transition lost: ${runId}`);
     }
     return result;
+  }
+
+  private resultFromReceipt(
+    receipt: VaultChangeApplyReceipt,
+    status: 'completed' | 'completed_with_issues'
+  ): VaultChangeApplyResult {
+    const operations = receipt.schema === 'agent-run-apply-receipt/v1'
+      ? receipt.operations
+      : receipt.operations.map(entry => entry.state === 'settled' ? entry.result : null);
+    if (receipt.operationIds.length !== operations.length
+      || operations.some(operation => operation === null)
+      || receipt.operationIds.some((operationId, index) =>
+        operationId !== operations[index]?.operationId)) {
+      throw new Error('Terminal applying receipt is incomplete or out of order');
+    }
+    return {
+      runId: receipt.runId,
+      planHash: receipt.planHash,
+      status,
+      operations: operations.map(operation => cloneJson(operation!))
+    };
   }
 
   async cancel(runId: string): Promise<AgentRunRecord> {
@@ -632,7 +685,7 @@ export class AgentRunService {
 
   private async persistOperationReceipt(
     runId: string,
-    identity: VaultChangeApplyReceipt,
+    identity: DurableVaultChangeApplyReceipt,
     operation: VaultOperationResult
   ): Promise<void> {
     const result = await this.dependencies.conversations.mutateConversationMetadata(
@@ -642,30 +695,113 @@ export class AgentRunService {
           return null;
         }
         const receipt = this.requireApplyReceipt(current.agentRunApplyReceipt);
-        if (receipt.runId !== identity.runId
+        if (receipt.schema !== 'agent-run-apply-receipt/v2'
+          || receipt.runId !== identity.runId
           || receipt.planHash !== identity.planHash
           || !stringArraysEqual(receipt.operationIds, identity.operationIds)) {
           return null;
         }
-        const existing = receipt.operations.find(item => item.operationId === operation.operationId);
-        if (existing) {
-          return jsonEqual(existing, operation) ? current : null;
-        }
-        const expectedOperationId = receipt.operationIds[receipt.operations.length];
-        if (expectedOperationId !== operation.operationId) {
+        const index = receipt.operations.findIndex(item => item.operationId === operation.operationId);
+        const existing = receipt.operations[index];
+        if (!existing) {
           return null;
         }
+        if (existing.state === 'settled') {
+          return jsonEqual(existing.result, operation) ? current : null;
+        }
+        if (existing.type !== operation.type
+          || (existing.state === 'selected'
+            && operation.status !== 'failed'
+            && operation.status !== 'blocked_dependency')) {
+          return null;
+        }
+        const settled: VaultOperationApplyReceipt = {
+          operationId: existing.operationId,
+          type: existing.type,
+          dependsOn: [...existing.dependsOn],
+          selectedAt: existing.selectedAt,
+          state: 'settled',
+          result: cloneJson(operation),
+          ...(existing.state === 'pending' ? {
+            startedAt: existing.startedAt,
+            expectedReadback: cloneJson(existing.expectedReadback)
+          } : {})
+        };
         return {
           ...current,
           agentRunApplyReceipt: {
             ...receipt,
-            operations: [...receipt.operations, operation]
+            operations: receipt.operations.map((entry, entryIndex) =>
+              entryIndex === index ? settled : entry)
           }
         };
       }
     );
     if (!result.applied) {
       throw new Error(`Agent run operation receipt persistence lost: ${operation.operationId}`);
+    }
+  }
+
+  private async persistOperationWriteAhead(
+    runId: string,
+    identity: DurableVaultChangeApplyReceipt,
+    writeAhead: VaultOperationWriteAhead
+  ): Promise<void> {
+    const result = await this.dependencies.conversations.mutateConversationMetadata(
+      runId,
+      current => {
+        if (!isAgentRunMetadata(current.agentRun) || current.agentRun.status !== 'applying') {
+          return null;
+        }
+        const receipt = this.requireApplyReceipt(current.agentRunApplyReceipt);
+        if (receipt.schema !== 'agent-run-apply-receipt/v2'
+          || receipt.runId !== identity.runId
+          || receipt.planHash !== identity.planHash
+          || !stringArraysEqual(receipt.operationIds, identity.operationIds)) {
+          return null;
+        }
+        const index = receipt.operations.findIndex(entry => entry.operationId === writeAhead.operationId);
+        const existing = receipt.operations[index];
+        if (!existing
+          || existing.type !== writeAhead.type
+          || !stringArraysEqual(existing.dependsOn, writeAhead.dependsOn)
+          || receipt.operations.slice(0, index).some(entry => entry.state !== 'settled')) {
+          return null;
+        }
+        if (existing.state === 'pending') {
+          const persisted = {
+            operationId: existing.operationId,
+            type: existing.type,
+            dependsOn: existing.dependsOn,
+            startedAt: existing.startedAt,
+            expectedReadback: existing.expectedReadback
+          };
+          return jsonEqual(persisted, writeAhead) ? current : null;
+        }
+        if (existing.state !== 'selected') {
+          return null;
+        }
+        const pending: VaultOperationApplyReceipt = {
+          operationId: existing.operationId,
+          type: existing.type,
+          dependsOn: [...existing.dependsOn],
+          selectedAt: existing.selectedAt,
+          state: 'pending',
+          startedAt: writeAhead.startedAt,
+          expectedReadback: cloneJson(writeAhead.expectedReadback)
+        };
+        return {
+          ...current,
+          agentRunApplyReceipt: {
+            ...receipt,
+            operations: receipt.operations.map((entry, entryIndex) =>
+              entryIndex === index ? pending : entry)
+          }
+        };
+      }
+    );
+    if (!result.applied) {
+      throw new Error(`Agent run operation write-ahead persistence lost: ${writeAhead.operationId}`);
     }
   }
 
@@ -707,7 +843,8 @@ export class AgentRunService {
 
   private requireApplyReceipt(value: unknown): VaultChangeApplyReceipt {
     if (!isRecord(value)
-      || value.schema !== 'agent-run-apply-receipt/v1'
+      || (value.schema !== 'agent-run-apply-receipt/v1'
+        && value.schema !== 'agent-run-apply-receipt/v2')
       || typeof value.runId !== 'string'
       || typeof value.planHash !== 'string'
       || !Array.isArray(value.operationIds)
@@ -715,7 +852,17 @@ export class AgentRunService {
       || !Array.isArray(value.operations)) {
       throw new Error('Applying run lacks a valid durable receipt');
     }
-    const operations = value.operations.map(operation => this.requireOperationResult(operation));
+    if (value.schema === 'agent-run-apply-receipt/v2') {
+      assertOnlyKeys(value, ['schema', 'runId', 'planHash', 'operationIds', 'operations']);
+      return {
+        schema: 'agent-run-apply-receipt/v2',
+        runId: value.runId,
+        planHash: value.planHash,
+        operationIds: value.operationIds.map(operationId => String(operationId)),
+        operations: value.operations.map(operation => this.requireOperationApplyReceipt(operation))
+      };
+    }
+    const operations = value.operations.map(operation => this.requireOperationResult(operation, false));
     return {
       schema: 'agent-run-apply-receipt/v1',
       runId: value.runId,
@@ -725,7 +872,104 @@ export class AgentRunService {
     };
   }
 
-  private requireOperationResult(value: unknown): VaultOperationResult {
+  private requireOperationApplyReceipt(value: unknown): VaultOperationApplyReceipt {
+    if (!isRecord(value)
+      || typeof value.operationId !== 'string'
+      || !isVaultOperationType(value.type)
+      || !Array.isArray(value.dependsOn)
+      || value.dependsOn.some(dependency => typeof dependency !== 'string')
+      || typeof value.selectedAt !== 'number'
+      || !Number.isFinite(value.selectedAt)) {
+      throw new Error('Applying run contains an invalid operation write-ahead receipt');
+    }
+    const base = {
+      operationId: value.operationId,
+      type: value.type,
+      dependsOn: value.dependsOn.map(String),
+      selectedAt: value.selectedAt
+    };
+    if (value.state === 'selected') {
+      assertOnlyKeys(value, ['operationId', 'type', 'dependsOn', 'selectedAt', 'state']);
+      return { ...base, state: 'selected' };
+    }
+    if (value.state === 'pending') {
+      assertOnlyKeys(value, [
+        'operationId', 'type', 'dependsOn', 'selectedAt', 'state', 'startedAt', 'expectedReadback'
+      ]);
+      if (typeof value.startedAt !== 'number' || !Number.isFinite(value.startedAt)) {
+        throw new Error('Applying run contains an invalid pending operation time');
+      }
+      return {
+        ...base,
+        state: 'pending',
+        startedAt: value.startedAt,
+        expectedReadback: this.requireExpectedReadback(value.expectedReadback)
+      };
+    }
+    if (value.state === 'settled') {
+      assertOnlyKeys(value, [
+        'operationId', 'type', 'dependsOn', 'selectedAt', 'state', 'result',
+        'startedAt', 'expectedReadback'
+      ]);
+      const result = this.requireOperationResult(value.result, true);
+      const hasWriteAhead = value.startedAt !== undefined || value.expectedReadback !== undefined;
+      if (hasWriteAhead
+        && (typeof value.startedAt !== 'number'
+          || !Number.isFinite(value.startedAt)
+          || value.expectedReadback === undefined)) {
+        throw new Error('Applying run contains an incomplete settled write-ahead receipt');
+      }
+      return {
+        ...base,
+        state: 'settled',
+        result,
+        ...(hasWriteAhead ? {
+          startedAt: value.startedAt as number,
+          expectedReadback: this.requireExpectedReadback(value.expectedReadback)
+        } : {})
+      };
+    }
+    throw new Error('Applying run contains an invalid operation receipt state');
+  }
+
+  private requireExpectedReadback(value: unknown): VaultOperationExpectedReadback {
+    if (!isRecord(value) || typeof value.kind !== 'string') {
+      throw new Error('Applying run contains an invalid expected readback descriptor');
+    }
+    if (value.kind === 'rename') {
+      assertOnlyKeys(value, ['kind', 'sourcePath', 'destinationPath']);
+      if (typeof value.sourcePath !== 'string' || typeof value.destinationPath !== 'string') {
+        throw new Error('Applying run contains an invalid rename descriptor');
+      }
+      return {
+        kind: 'rename',
+        sourcePath: value.sourcePath,
+        destinationPath: value.destinationPath
+      };
+    }
+    if (value.kind === 'setProperty') {
+      assertOnlyKeys(value, ['kind', 'path', 'property', 'value']);
+      if (typeof value.path !== 'string' || typeof value.property !== 'string') {
+        throw new Error('Applying run contains an invalid property descriptor');
+      }
+      return {
+        kind: 'setProperty',
+        path: value.path,
+        property: value.property,
+        value: cloneJson(value.value)
+      };
+    }
+    if (value.kind === 'contentHash') {
+      assertOnlyKeys(value, ['kind', 'path', 'contentHash']);
+      if (typeof value.path !== 'string' || typeof value.contentHash !== 'string') {
+        throw new Error('Applying run contains an invalid content descriptor');
+      }
+      return { kind: 'contentHash', path: value.path, contentHash: value.contentHash };
+    }
+    throw new Error('Applying run contains an unknown expected readback descriptor');
+  }
+
+  private requireOperationResult(value: unknown, closed = false): VaultOperationResult {
     if (!isRecord(value)
       || typeof value.operationId !== 'string'
       || !isVaultOperationType(value.type)
@@ -738,6 +982,12 @@ export class AgentRunService {
       || (value.error !== undefined && typeof value.error !== 'string')
       || (value.rollbackError !== undefined && typeof value.rollbackError !== 'string')) {
       throw new Error('Applying run contains an invalid operation receipt');
+    }
+    if (closed) {
+      assertOnlyKeys(value, [
+        'operationId', 'type', 'status', 'startedAt', 'finishedAt',
+        'readback', 'error', 'rollbackError'
+      ]);
     }
     return {
       operationId: value.operationId,
@@ -941,10 +1191,6 @@ export class AgentRunService {
     return result.securityBlocked;
   }
 
-  private cancelDetached(handle: WorkflowExecutionHandle): void {
-    void handle.cancel().catch(() => undefined);
-  }
-
   private async terminateRetainedHandle(handle: WorkflowExecutionHandle): Promise<void> {
     try {
       await handle.cancel();
@@ -1026,6 +1272,18 @@ function isAgentRunMetadata(value: unknown): value is AgentRunMetadata {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): void {
+  const allowedKeys = new Set(allowed);
+  const unknown = Object.keys(value).find(key => !allowedKeys.has(key));
+  if (unknown) {
+    throw new Error(`Applying run receipt contains unknown field: ${unknown}`);
+  }
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function isVaultOperationType(value: unknown): value is VaultOperationResult['type'] {
