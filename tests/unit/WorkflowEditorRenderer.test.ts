@@ -181,6 +181,8 @@ function renderEditor(workflow: Workflow, isNew = false): {
 function claudeExecution(): NonNullable<Workflow['execution']> {
   return {
     backend: 'claude-cli',
+    authorityScope: 'vault-synced',
+    authorityDeviceId: 'device-a',
     model: 'sonnet',
     mode: 'proposal',
     capabilityProfile: 'vault-readonly',
@@ -416,10 +418,92 @@ describe('WorkflowEditorRenderer (PR4 BoxedSection port)', () => {
 
   describe('validation', () => {
     it('does not enable a write-capable profile', () => {
-      const saved = saveRenderedWorkflow({ backend: 'claude-cli' } as unknown as Workflow['execution']);
+      const saved = saveRenderedWorkflow({
+        ...claudeExecution(),
+        capabilityProfile: 'vault-write'
+      } as unknown as Workflow['execution']);
 
       expect(saved.execution?.capabilityProfile).toBe('vault-readonly');
       expect(saved.execution?.approvalRequired).toBe(true);
+    });
+
+    it('copies the explicit local device into a vault-synced draft', () => {
+      const labels = new Map<ButtonComponent, string>();
+      const handlers = new Map<ButtonComponent, () => void>();
+      const setButtonText = jest.spyOn(ButtonComponent.prototype, 'setButtonText')
+        .mockImplementation(function (this: ButtonComponent, text: string): ButtonComponent {
+          labels.set(this, text);
+          return this;
+        });
+      const onClick = jest.spyOn(ButtonComponent.prototype, 'onClick')
+        .mockImplementation(function (this: ButtonComponent, callback: () => void): ButtonComponent {
+          handlers.set(this, callback);
+          return this;
+        });
+
+      try {
+        const renderer = new WorkflowEditorRenderer(
+          [],
+          jest.fn(),
+          jest.fn(),
+          jest.fn(),
+          makeSpiedComponent(),
+          'device-local'
+        );
+        renderer.render(
+          createMockEl('root') as unknown as HTMLElement,
+          makeWorkflow({ execution: { ...claudeExecution(), authorityDeviceId: undefined } }),
+          false
+        );
+
+        const useThisDevice = Array.from(handlers.entries())
+          .find(([button]) => labels.get(button) === 'Use this device')?.[1];
+        expect(useThisDevice).toBeDefined();
+        useThisDevice?.();
+
+        expect(renderer.getWorkflow().execution).toMatchObject({
+          authorityScope: 'vault-synced',
+          authorityDeviceId: 'device-local'
+        });
+      } finally {
+        setButtonText.mockRestore();
+        onClick.mockRestore();
+      }
+    });
+
+    it('does not save a supervised workflow without an authority device', () => {
+      const labels = new Map<ButtonComponent, string>();
+      const handlers = new Map<ButtonComponent, () => void>();
+      const setButtonText = jest.spyOn(ButtonComponent.prototype, 'setButtonText')
+        .mockImplementation(function (this: ButtonComponent, text: string): ButtonComponent {
+          labels.set(this, text);
+          return this;
+        });
+      const onClick = jest.spyOn(ButtonComponent.prototype, 'onClick')
+        .mockImplementation(function (this: ButtonComponent, callback: () => void): ButtonComponent {
+          handlers.set(this, callback);
+          return this;
+        });
+      const onSave = jest.fn();
+
+      try {
+        const renderer = new WorkflowEditorRenderer([], onSave, jest.fn(), jest.fn(), makeSpiedComponent());
+        renderer.render(
+          createMockEl('root') as unknown as HTMLElement,
+          makeWorkflow({ execution: { ...claudeExecution(), authorityDeviceId: undefined } }),
+          false
+        );
+        const save = Array.from(handlers.entries())
+          .find(([button]) => labels.get(button) === 'Save workflow')?.[1];
+        expect(save).toBeDefined();
+
+        save?.();
+
+        expect(onSave).not.toHaveBeenCalled();
+      } finally {
+        setButtonText.mockRestore();
+        onClick.mockRestore();
+      }
     });
 
     it('getWorkflow returns a clone (mutating the returned object does not leak back)', () => {

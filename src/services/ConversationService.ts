@@ -151,6 +151,17 @@ export class ConversationService {
     );
   }
 
+  async getConversationIdsSnapshot(): Promise<string[]> {
+    return withReadableBackend(
+      this.storageAdapterOrGetter,
+      async adapter => adapter.getConversationIdsSnapshot(),
+      async () => {
+        const index = await this.indexManager.loadConversationIndex();
+        return Object.keys(index.conversations).sort((left, right) => left.localeCompare(right));
+      }
+    );
+  }
+
   /**
    * Get full conversation with messages (loads individual file or queries from adapter)
    *

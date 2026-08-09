@@ -503,6 +503,31 @@ describe('ClaudeCliWorkflowBackend', () => {
     expect(artifacts.cleanupCount).toBe(1);
   });
 
+  it('returns a structured securityBlocked result after a denied valid grant', async () => {
+    const processHandle = createDeferredProcess();
+    const { backend, policy, started } = createHarness(processHandle);
+    const handle = backend.start(makeRequest());
+    await started;
+    const grant = policy.resolve('secret-agent-token');
+    if (!grant) throw new Error('Expected issued capability grant');
+
+    expect(policy.allows(grant, 'contentManager', 'write')).toBe(false);
+    processHandle.finish({
+      stdout: '',
+      stderr: '',
+      exitCode: 1,
+      stdoutTruncated: true,
+      stderrTruncated: false
+    });
+
+    await expect(handle.result).resolves.toMatchObject({
+      status: 'failed',
+      securityBlocked: true,
+      stdout: '',
+      stdoutTruncated: true
+    });
+  });
+
   it('terminates a retained process when its result rejects before cleanup', async () => {
     const processHandle = createDeferredProcess();
     const { backend, artifacts, policy, started } = createHarness(processHandle);

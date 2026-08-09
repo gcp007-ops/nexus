@@ -59,6 +59,7 @@ function createSecureToken(): string {
 export class AgentCapabilityPolicyService {
   private readonly grantsByToken = new Map<string, AgentCapabilityGrant>();
   private readonly tokensByGrant = new Map<AgentCapabilityGrant, string>();
+  private readonly deniedTokens = new Set<string>();
 
   constructor(
     private readonly tokenFactory: TokenFactory = createSecureToken,
@@ -96,17 +97,20 @@ export class AgentCapabilityPolicyService {
     if (this.now() >= grant.expiresAt) {
       this.grantsByToken.delete(token);
       this.tokensByGrant.delete(grant);
+      this.deniedTokens.delete(token);
       return undefined;
     }
     return grant;
   }
 
-  revoke(token: string): void {
+  revoke(token: string): boolean {
     const grant = this.grantsByToken.get(token);
+    const denied = this.deniedTokens.delete(token);
     this.grantsByToken.delete(token);
     if (grant) {
       this.tokensByGrant.delete(grant);
     }
+    return denied;
   }
 
   allows(grant: AgentCapabilityGrant, agent: string, tool: string): boolean {
@@ -117,9 +121,14 @@ export class AgentCapabilityPolicyService {
     if (this.now() >= grant.expiresAt || grant.profile !== 'vault-readonly') {
       this.grantsByToken.delete(token);
       this.tokensByGrant.delete(grant);
+      this.deniedTokens.delete(token);
       return false;
     }
-    return VAULT_READONLY_TOOLS.has(`${agent}:${tool}`);
+    const allowed = VAULT_READONLY_TOOLS.has(`${agent}:${tool}`);
+    if (!allowed) {
+      this.deniedTokens.add(token);
+    }
+    return allowed;
   }
 
   private createUniqueToken(): string {

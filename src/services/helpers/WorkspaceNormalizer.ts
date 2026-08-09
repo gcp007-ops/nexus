@@ -135,9 +135,14 @@ export function normalizeWorkflowExecution(execution: unknown): WorkflowExecutio
   }
 
   const model = execution.model?.trim();
+  const authorityDeviceId = typeof execution.authorityDeviceId === 'string'
+    ? execution.authorityDeviceId.trim()
+    : '';
 
   return {
     backend: execution.backend,
+    authorityScope: execution.authorityScope === 'machine-local' ? 'machine-local' : 'vault-synced',
+    ...(authorityDeviceId ? { authorityDeviceId } : {}),
     ...(model ? { model } : {}),
     mode: 'proposal',
     capabilityProfile: 'vault-readonly',

@@ -13,6 +13,12 @@
 
 import { ConversationData, CreateConversationParams, ToolCall } from '../../types/chat/ChatTypes';
 import { generateSessionId } from '../../utils/sessionUtils';
+import { NamedLocks } from '../../utils/AsyncLock';
+
+export interface ConversationMetadataMutationResult {
+  applied: boolean;
+  metadata?: NonNullable<ConversationData['metadata']>;
+}
 
 /** Streaming options for message generation */
 interface StreamingOptions {
@@ -41,6 +47,7 @@ interface ConversationServiceLike {
     limit?: number,
     page?: number
   ) => Promise<Array<{ id: string }>>;
+  getConversationIdsSnapshot: () => Promise<string[]>;
   addMessage: (params: { conversationId: string; role: string; content: string; id?: string }) => Promise<unknown>;
   updateConversation: (id: string, updates: Partial<ConversationData>) => Promise<void>;
   createConversation: (data: unknown) => Promise<ConversationData>;
@@ -57,6 +64,8 @@ export interface ConversationManagerDependencies {
 }
 
 export class ConversationManager {
+  private readonly metadataLocks = new NamedLocks();
+
   constructor(
     private dependencies: ConversationManagerDependencies,
     private vaultName: string
@@ -158,29 +167,11 @@ export class ConversationManager {
    * need to inspect run state must hydrate each conversation before filtering.
    */
   async listConversationsWithMetadata(): Promise<ConversationData[]> {
-    const pageSize = 100;
-    const conversations: ConversationData[] = [];
-
-    for (let page = 0; ; page += 1) {
-      const entries = await this.dependencies.conversationService.listConversations(
-        undefined,
-        pageSize,
-        page
-      );
-      const records = await Promise.all(
-        entries.map(entry => this.dependencies.conversationService.getConversation(entry.id))
-      );
-
-      conversations.push(
-        ...records.filter((record): record is ConversationData => record !== null)
-      );
-
-      if (entries.length < pageSize) {
-        break;
-      }
-    }
-
-    return conversations;
+    const ids = await this.dependencies.conversationService.getConversationIdsSnapshot();
+    const records = await Promise.all(
+      ids.map(id => this.dependencies.conversationService.getConversation(id))
+    );
+    return records.filter((record): record is ConversationData => record !== null);
   }
 
   /**
@@ -190,16 +181,32 @@ export class ConversationManager {
     conversationId: string,
     metadata: Record<string, unknown>
   ): Promise<void> {
-    const conversation = await this.dependencies.conversationService.getConversation(conversationId);
-    if (!conversation) {
-      throw new Error(`Conversation ${conversationId} not found`);
-    }
+    await this.mutateConversationMetadata(conversationId, current => ({
+      ...current,
+      ...metadata
+    }));
+  }
 
-    await this.updateConversation(conversationId, {
-      metadata: {
-        ...conversation.metadata,
-        ...metadata
+  async mutateConversationMetadata(
+    conversationId: string,
+    mutate: (
+      current: Readonly<NonNullable<ConversationData['metadata']>>
+    ) => NonNullable<ConversationData['metadata']> | null
+  ): Promise<ConversationMetadataMutationResult> {
+    return this.metadataLocks.acquire(conversationId, async () => {
+      const conversation = await this.dependencies.conversationService.getConversation(conversationId);
+      if (!conversation) {
+        throw new Error(`Conversation ${conversationId} not found`);
       }
+
+      const current = Object.freeze({ ...(conversation.metadata ?? {}) });
+      const metadata = mutate(current);
+      if (metadata === null) {
+        return { applied: false };
+      }
+
+      await this.updateConversation(conversationId, { metadata });
+      return { applied: true, metadata };
     });
   }
 

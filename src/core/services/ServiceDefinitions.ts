@@ -29,6 +29,9 @@ import type { CustomPromptStorageService } from '../../agents/promptManager/serv
 import type { AgentManager } from '../../services/AgentManager';
 import type { WorkflowRunService } from '../../services/workflows/WorkflowRunService';
 import type { AgentRunService } from '../../services/workflows/AgentRunService';
+import type { ConversationService } from '../../services/ConversationService';
+import type { WorkflowAuthorityService } from '../../services/workflows/WorkflowAuthorityService';
+import type { WorkflowRunReservationService } from '../../services/workflows/WorkflowRunReservationService';
 
 export interface ServiceDefinition {
     name: string;
@@ -52,6 +55,22 @@ const defineService = (create: (context: ServiceCreationContext) => Promise<unkn
  * Note: Events are handled via Obsidian's built-in Events API (plugin.on/trigger)
  */
 export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
+    {
+        name: 'workflowAuthorityService',
+        create: defineService(async (context) => {
+            const { WorkflowAuthorityService } = await import('../../services/workflows/WorkflowAuthorityService');
+            return new WorkflowAuthorityService(context.app);
+        })
+    },
+
+    {
+        name: 'workflowRunReservationService',
+        create: defineService(async () => {
+            const { WorkflowRunReservationService } = await import('../../services/workflows/WorkflowRunReservationService');
+            return new WorkflowRunReservationService();
+        })
+    },
+
     // Ephemeral, in-memory bearer grants for supervised workflow MCP calls.
     {
         name: 'agentCapabilityPolicyService',
@@ -502,13 +521,24 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
 
     {
         name: 'workflowRunService',
-        dependencies: ['chatService', 'workspaceService', 'customPromptStorageService', 'agentRunService'],
+        dependencies: [
+            'chatService',
+            'conversationService',
+            'workspaceService',
+            'customPromptStorageService',
+            'agentRunService',
+            'workflowAuthorityService',
+            'workflowRunReservationService'
+        ],
         create: defineService(async (context) => {
             const { WorkflowRunService } = await import('../../services/workflows/WorkflowRunService');
             const chatService = await context.serviceManager.getService<ChatService>('chatService');
             const workspaceService = await context.serviceManager.getService<WorkspaceService>('workspaceService');
             const customPromptStorage = await context.serviceManager.getService<CustomPromptStorageService>('customPromptStorageService');
             const agentRunService = await context.serviceManager.getService<AgentRunService>('agentRunService');
+            const conversationService = await context.serviceManager.getService<ConversationService>('conversationService');
+            const authorityService = await context.serviceManager.getService<WorkflowAuthorityService>('workflowAuthorityService');
+            const reservationService = await context.serviceManager.getService<WorkflowRunReservationService>('workflowRunReservationService');
 
             return new WorkflowRunService({
                 app: context.app,
@@ -516,26 +546,29 @@ export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
                 chatService,
                 workspaceService,
                 customPromptStorage,
-                agentRunService
+                agentRunService,
+                conversationService,
+                authorityService,
+                reservationService
             });
         })
     },
 
     {
         name: 'workflowScheduleService',
-        dependencies: ['workspaceService', 'conversationService', 'workflowRunService'],
+        dependencies: ['workspaceService', 'workflowRunService', 'workflowAuthorityService'],
         create: defineService(async (context) => {
             const { WorkflowScheduleService } = await import('../../services/workflows/WorkflowScheduleService');
             const workspaceService = await context.serviceManager.getService<WorkspaceService>('workspaceService');
-            const conversationService = await context.serviceManager.getService<import('../../services/ConversationService').ConversationService>('conversationService');
             const workflowRunService = await context.serviceManager.getService<WorkflowRunService>('workflowRunService');
+            const authorityService = await context.serviceManager.getService<WorkflowAuthorityService>('workflowAuthorityService');
 
             return new WorkflowScheduleService({
                 plugin: context.plugin,
                 settings: context.settings,
                 workspaceService,
-                conversationService,
-                workflowRunService
+                workflowRunService,
+                authorityService
             });
         })
     }

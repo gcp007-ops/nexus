@@ -17,6 +17,7 @@ export interface WorkflowExecutionRequest {
 export interface WorkflowExecutionResult {
   runId: string;
   status: WorkflowExecutionStatus;
+  securityBlocked: boolean;
   stdout: string;
   stderr: string;
   stdoutTruncated: boolean;

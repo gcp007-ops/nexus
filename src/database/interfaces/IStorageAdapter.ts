@@ -403,6 +403,9 @@ export interface IStorageAdapter {
    */
   getConversations(options?: QueryOptions): Promise<PaginatedResult<ConversationMetadata>>;
 
+  /** Return a stable, complete conversation ID snapshot for reconciliation. */
+  getConversationIdsSnapshot(): Promise<string[]>;
+
   /**
    * Create a new conversation
    *

@@ -198,6 +198,7 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     let stderrTruncated = false;
     let exitCode: number | null = null;
     let workflowProcessStarted = false;
+    let securityBlocked = false;
 
     try {
       const validationError = this.validateRequest(request);
@@ -307,7 +308,7 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
 
     if (token) {
       try {
-        this.dependencies.capabilityPolicy.revoke(token);
+        securityBlocked = this.dependencies.capabilityPolicy.revoke(token);
       } catch (error) {
         stderr = this.appendDiagnostic(stderr, this.errorMessage(error));
         if (status === 'completed') {
@@ -339,6 +340,7 @@ export class ClaudeCliWorkflowBackend implements WorkflowExecutionBackend {
     return {
       runId: request.runId,
       status,
+      securityBlocked,
       stdout: this.redactToken(stdout, token),
       stderr: this.redactToken(stderr, token),
       stdoutTruncated,

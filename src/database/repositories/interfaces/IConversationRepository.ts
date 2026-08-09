@@ -39,6 +39,9 @@ export interface IConversationRepository {
    */
   getConversations(options?: QueryOptions): Promise<PaginatedResult<ConversationMetadata>>;
 
+  /** Snapshot all authoritative conversation IDs in immutable order. */
+  getConversationIdsSnapshot(): Promise<string[]>;
+
   /**
    * Create a new conversation
    */

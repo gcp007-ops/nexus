@@ -4,11 +4,17 @@ import { ModelSelectionUtility } from '../../ui/chat/utils/ModelSelectionUtility
 import { WorkspaceIntegrationService } from '../../ui/chat/services/WorkspaceIntegrationService';
 import { SystemPromptBuilder } from '../../ui/chat/services/SystemPromptBuilder';
 import type { ChatService } from '../chat/ChatService';
+import type { ConversationService } from '../ConversationService';
 import type { WorkspaceService } from '../WorkspaceService';
 import type { CustomPromptStorageService } from '../../agents/promptManager/services/CustomPromptStorageService';
 import type { CustomPrompt } from '../../types';
 import type { WorkspaceWorkflow } from '../../database/types/workspace/WorkspaceTypes';
 import type { AgentRunService } from './AgentRunService';
+import type { WorkflowAuthorityService } from './WorkflowAuthorityService';
+import {
+  WorkflowRunConflictError,
+  type WorkflowRunReservationService
+} from './WorkflowRunReservationService';
 import {
   buildWorkflowKickoffMessage,
   buildWorkflowRunTitle,
@@ -23,6 +29,9 @@ export interface WorkflowRunServiceDeps {
   workspaceService: WorkspaceService;
   customPromptStorage?: CustomPromptStorageService | null;
   agentRunService: AgentRunService;
+  conversationService: Pick<ConversationService, 'hasRunKey'>;
+  authorityService: WorkflowAuthorityService;
+  reservationService: WorkflowRunReservationService;
 }
 
 interface WorkflowModelOption {
@@ -67,50 +76,62 @@ export class WorkflowRunService {
     const sessionId = generateSessionId();
     const prompt = this.resolvePrompt(workflow.promptId);
 
-    if (workflow.execution?.backend === 'claude-cli') {
-      const systemPrompt = await this.buildSystemPrompt({
-        sessionId,
-        workspaceId: request.workspaceId,
-        customPrompt: prompt?.prompt ?? null,
-        loadedWorkspaceData
-      });
-      const result = await this.deps.chatService.createConversation(
-        buildWorkflowRunTitle(workspace.name, workflow.name, scheduledFor),
-        undefined,
-        {
-          model: workflow.execution.model,
-          systemPrompt: systemPrompt || undefined,
-          workspaceId: request.workspaceId,
-          sessionId,
-          promptId: workflow.promptId,
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-          runTrigger,
-          scheduledFor,
-          runKey
-        }
-      );
-
-      if (!result.success || !result.conversationId) {
-        throw new Error(result.error || 'Failed to create workflow run conversation');
+    const execution = workflow.execution;
+    if (execution?.backend === 'claude-cli') {
+      const deviceId = this.deps.authorityService.assertCanRun(execution);
+      if (await this.deps.conversationService.hasRunKey(runKey)) {
+        throw new WorkflowRunConflictError('persisted', runKey);
       }
 
-      const started = await this.deps.agentRunService.start({
-        conversationId: result.conversationId,
-        workspaceId: request.workspaceId,
-        workflow,
-        execution: workflow.execution,
-        resolvedPrompt: systemPrompt || '',
-        runTrigger,
-        scheduledFor,
-        runKey
-      });
+      return this.deps.reservationService.runExclusive(runKey, async () => {
+        if (await this.deps.conversationService.hasRunKey(runKey)) {
+          throw new WorkflowRunConflictError('persisted', runKey);
+        }
 
-      return {
-        conversationId: result.conversationId,
-        sessionId: result.sessionId,
-        runId: started.runId
-      };
+        const systemPrompt = await this.buildSystemPrompt({
+          sessionId,
+          workspaceId: request.workspaceId,
+          customPrompt: prompt?.prompt ?? null,
+          loadedWorkspaceData
+        });
+        const result = await this.deps.chatService.createConversation(
+          buildWorkflowRunTitle(workspace.name, workflow.name, scheduledFor),
+          undefined,
+          {
+            model: execution.model,
+            workspaceId: request.workspaceId,
+            sessionId,
+            promptId: workflow.promptId,
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            runTrigger,
+            scheduledFor,
+            runKey
+          }
+        );
+
+        if (!result.success || !result.conversationId) {
+          throw new Error(result.error || 'Failed to create workflow run conversation');
+        }
+
+        const started = await this.deps.agentRunService.start({
+          conversationId: result.conversationId,
+          workspaceId: request.workspaceId,
+          workflow,
+          execution,
+          resolvedPrompt: systemPrompt || '',
+          runTrigger,
+          scheduledFor,
+          runKey,
+          deviceId
+        });
+
+        return {
+          conversationId: result.conversationId,
+          sessionId: result.sessionId,
+          runId: started.runId
+        };
+      });
     }
 
     const model = await this.resolveDefaultModel();

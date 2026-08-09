@@ -67,6 +67,7 @@ function executionResult(
   return {
     runId,
     status,
+    securityBlocked: false,
     stdout: '',
     stderr: '',
     stdoutTruncated: false,
@@ -80,8 +81,9 @@ function createConversationStore(
   initial: ConversationData[] = [conversation('conversation-1')]
 ): AgentRunConversationStore & {
   conversations: Map<string, ConversationData>;
+  getConversation: jest.Mock;
   addMessage: jest.Mock;
-  updateConversationMetadata: jest.Mock;
+  mutateConversationMetadata: jest.Mock;
   listConversationsWithMetadata: jest.Mock;
 } {
   const conversations = new Map(initial.map(item => [item.id, item]));
@@ -104,27 +106,32 @@ function createConversationStore(
       metadata: params.metadata
     });
   });
-  const updateConversationMetadata = jest.fn(async (
+  const getConversation = jest.fn(async (id: string) => conversations.get(id) ?? null);
+  const mutateConversationMetadata = jest.fn(async (
     conversationId: string,
-    metadata: NonNullable<ConversationData['metadata']>
+    mutate: (
+      current: Readonly<NonNullable<ConversationData['metadata']>>
+    ) => NonNullable<ConversationData['metadata']> | null
   ) => {
     const current = conversations.get(conversationId);
     if (!current) {
       throw new Error('missing conversation');
     }
-    current.metadata = {
-      ...current.metadata,
-      ...metadata
-    };
+    const metadata = mutate(current.metadata ?? {});
+    if (metadata === null) {
+      return { applied: false };
+    }
+    current.metadata = metadata;
+    return { applied: true, metadata };
   });
   const listConversationsWithMetadata = jest.fn(async () => Array.from(conversations.values()));
 
   return {
     conversations,
-    getConversation: async id => conversations.get(id) ?? null,
+    getConversation,
     listConversationsWithMetadata,
     addMessage,
-    updateConversationMetadata
+    mutateConversationMetadata
   };
 }
 
@@ -146,6 +153,8 @@ function conversation(id: string, agentRun?: AgentRunMetadata): ConversationData
 function startRequest(overrides: Partial<AgentRunStartRequest> = {}): AgentRunStartRequest {
   const execution = {
     backend: 'claude-cli' as const,
+    authorityScope: 'vault-synced' as const,
+    authorityDeviceId: 'device-a',
     model: 'sonnet',
     mode: 'proposal' as const,
     capabilityProfile: 'vault-readonly' as const,
@@ -171,6 +180,7 @@ function startRequest(overrides: Partial<AgentRunStartRequest> = {}): AgentRunSt
     runTrigger: 'manual',
     scheduledFor: 123,
     runKey: 'workspace-1:workflow-1:123',
+    deviceId: 'device-a',
     ...overrides
   };
 }
@@ -178,6 +188,8 @@ function startRequest(overrides: Partial<AgentRunStartRequest> = {}): AgentRunSt
 function runMetadata(status: AgentRunMetadata['status']): AgentRunMetadata {
   return {
     backend: 'claude-cli',
+    authorityScope: 'vault-synced',
+    deviceId: 'device-a',
     status,
     trigger: 'manual',
     model: 'sonnet',
@@ -291,9 +303,7 @@ describe('AgentRunService', () => {
     expect(store.conversations.get('conversation-1')?.metadata?.agentRun).not.toHaveProperty(
       'conversationId'
     );
-    for (const call of store.updateConversationMetadata.mock.calls) {
-      expect(Object.keys(call[1])).toEqual(['agentRun']);
-    }
+    expect(store.mutateConversationMetadata).toHaveBeenCalled();
   });
 
   it('returns before the backend result settles', async () => {
@@ -308,6 +318,34 @@ describe('AgentRunService', () => {
       conversation('conversation-1', runMetadata('running'))
     ]);
     const { service, backend } = createService(store);
+
+    await expect(service.start(startRequest())).rejects.toThrow(
+      'Agent run already exists: conversation-1'
+    );
+    expect(backend.start).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite malformed authoritative run metadata during initial CAS', async () => {
+    const store = createConversationStore();
+    const backend = createDeferredBackend();
+    store.mutateConversationMetadata.mockImplementation(async (
+      conversationId: string,
+      mutate: (
+        current: Readonly<NonNullable<ConversationData['metadata']>>
+      ) => NonNullable<ConversationData['metadata']> | null
+    ) => {
+      const current = store.conversations.get(conversationId);
+      if (!current) throw new Error('missing conversation');
+      current.metadata = {
+        ...current.metadata,
+        agentRun: { status: 'running' } as unknown as AgentRunMetadata
+      };
+      const metadata = mutate(current.metadata);
+      if (metadata === null) return { applied: false };
+      current.metadata = metadata;
+      return { applied: true, metadata };
+    });
+    const { service } = createService(store, backend);
 
     await expect(service.start(startRequest())).rejects.toThrow(
       'Agent run already exists: conversation-1'
@@ -469,7 +507,7 @@ describe('AgentRunService', () => {
     expect(store.addMessage.mock.calls[1][0].content).toBe('append failed');
   });
 
-  it('fails closed as security_blocked on the canonical capability rejection', async () => {
+  it('does not infer a security denial from untrusted output text', async () => {
     const { service, backend } = createService();
     await service.start(startRequest());
 
@@ -478,8 +516,45 @@ describe('AgentRunService', () => {
       stderr: 'Tool "contentManager_write" is not allowed by capability profile vault-readonly'
     });
 
+    await expect(waitForStatus(service, 'conversation-1', 'failed')).resolves.toMatchObject({
+      status: 'failed'
+    });
+  });
+
+  it('fails closed from the structured security denial even without usable output', async () => {
+    const { service, backend } = createService();
+    await service.start(startRequest());
+
+    backend.resolve({
+      status: 'failed',
+      securityBlocked: true,
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: true
+    });
+
     await expect(waitForStatus(service, 'conversation-1', 'security_blocked')).resolves.toMatchObject({
-      status: 'security_blocked'
+      status: 'security_blocked',
+      stdoutTruncated: true
+    });
+  });
+
+  it.each([
+    { stdoutTruncated: true, stderrTruncated: false },
+    { stdoutTruncated: false, stderrTruncated: true }
+  ])('rejects completed output when a stream is truncated: %o', async flags => {
+    const { service, backend } = createService();
+    await service.start(startRequest());
+
+    backend.resolve({
+      status: 'completed',
+      stdout: validPlanText(),
+      ...flags
+    });
+
+    await expect(waitForStatus(service, 'conversation-1', 'invalid_output')).resolves.toMatchObject({
+      status: 'invalid_output',
+      ...flags
     });
   });
 
@@ -501,33 +576,100 @@ describe('AgentRunService', () => {
     const queued = new Promise<void>(resolve => {
       reportQueued = resolve;
     });
-    store.updateConversationMetadata.mockImplementation(async (
+    store.mutateConversationMetadata.mockImplementation(async (
       conversationId: string,
-      metadata: NonNullable<ConversationData['metadata']>
+      mutate: (
+        current: Readonly<NonNullable<ConversationData['metadata']>>
+      ) => NonNullable<ConversationData['metadata']> | null
     ) => {
       const current = store.conversations.get(conversationId);
       if (!current) {
         throw new Error('missing conversation');
       }
-      current.metadata = { ...current.metadata, ...metadata };
+      const metadata = mutate(current.metadata ?? {});
+      if (metadata === null) {
+        return { applied: false };
+      }
+      current.metadata = metadata;
       if (metadata.agentRun?.status === 'queued') {
         reportQueued?.();
         await new Promise<void>(resolve => {
           releaseQueued = resolve;
         });
       }
+      return { applied: true, metadata };
     });
     const { service } = createService(store, backend);
 
     const start = service.start(startRequest());
     await queued;
-    const cancelled = await service.cancel('conversation-1');
+    const cancel = service.cancel('conversation-1');
     releaseQueued?.();
+    const cancelled = await cancel;
     const startResult = await start;
 
     expect(cancelled.status).toBe('cancelled');
     expect(startResult.status).toBe('cancelled');
     expect(backend.start).not.toHaveBeenCalled();
+  });
+
+  it('cancels a start requested before queued metadata exists', async () => {
+    const store = createConversationStore();
+    const backend = createDeferredBackend();
+    let releaseConversationRead!: () => void;
+    let reportConversationRead!: () => void;
+    const conversationRead = new Promise<void>(resolve => { reportConversationRead = resolve; });
+    const conversationRelease = new Promise<void>(resolve => { releaseConversationRead = resolve; });
+    store.getConversation.mockImplementationOnce(async (id: string) => {
+      reportConversationRead();
+      await conversationRelease;
+      return store.conversations.get(id) ?? null;
+    });
+    const { service } = createService(store, backend);
+
+    const start = service.start(startRequest());
+    await conversationRead;
+    const cancel = service.cancel('conversation-1');
+    releaseConversationRead();
+
+    await expect(cancel).resolves.toMatchObject({ status: 'cancelled' });
+    await expect(start).resolves.toMatchObject({ status: 'cancelled' });
+    expect(backend.start).not.toHaveBeenCalled();
+  });
+
+  it('terminates the retained handle before surfacing running persistence failure', async () => {
+    const store = createConversationStore();
+    const backend = createDeferredBackend();
+    let releaseResult!: (result: WorkflowExecutionResult) => void;
+    const result = new Promise<WorkflowExecutionResult>(resolve => { releaseResult = resolve; });
+    const cancel = jest.fn(async () => undefined);
+    backend.start.mockImplementation(request => ({ runId: request.runId, result, cancel }));
+    store.mutateConversationMetadata.mockImplementation(async (
+      conversationId: string,
+      mutate: (
+        current: Readonly<NonNullable<ConversationData['metadata']>>
+      ) => NonNullable<ConversationData['metadata']> | null
+    ) => {
+      const current = store.conversations.get(conversationId);
+      if (!current) throw new Error('missing conversation');
+      const metadata = mutate(current.metadata ?? {});
+      if (metadata === null) return { applied: false };
+      if (metadata.agentRun?.status === 'running') throw new Error('disk');
+      current.metadata = metadata;
+      return { applied: true, metadata };
+    });
+    const { service } = createService(store, backend);
+    let settled = false;
+
+    const start = service.start(startRequest()).finally(() => { settled = true; });
+    for (let turn = 0; turn < 20 && cancel.mock.calls.length === 0; turn += 1) {
+      await Promise.resolve();
+    }
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    releaseResult(executionResult('conversation-1', 'cancelled'));
+    await expect(start).rejects.toThrow('disk');
   });
 
   it('marks persisted non-terminal conversations interrupted on restart', async () => {
@@ -547,6 +689,21 @@ describe('AgentRunService', () => {
       unrelated: { keep: true },
       agentRun: { status: 'interrupted' }
     });
+  });
+
+  it('does not overwrite a concurrently completed run during reconciliation', async () => {
+    const store = createConversationStore([
+      conversation('conversation-1', runMetadata('running'))
+    ]);
+    store.mutateConversationMetadata.mockResolvedValue({ applied: false });
+    const { service } = createService(store);
+
+    await service.reconcileInterrupted();
+
+    const mutate = store.mutateConversationMetadata.mock.calls[0]?.[1] as (
+      current: Readonly<NonNullable<ConversationData['metadata']>>
+    ) => NonNullable<ConversationData['metadata']> | null;
+    expect(mutate({ agentRun: runMetadata('completed') })).toBeNull();
   });
 
   it('rejects invalid state transitions in one pure transition function', () => {
@@ -597,8 +754,13 @@ describe('agent run conversation persistence', () => {
         limit = 100,
         page = 0
       ) => conversations.slice(page * limit, (page + 1) * limit).map(item => ({ id: item.id }))),
+      getConversationIdsSnapshot: jest.fn(async () => conversations.map(item => item.id)),
       addMessage: jest.fn(async () => undefined),
-      updateConversation: jest.fn(async () => undefined),
+      updateConversation: jest.fn(async (id: string, updates: Partial<ConversationData>) => {
+        const current = byId.get(id);
+        if (!current) throw new Error('missing conversation');
+        Object.assign(current, updates);
+      }),
       createConversation: jest.fn(async () => conversation('created')),
       deleteConversation: jest.fn(async () => undefined)
     };
@@ -619,9 +781,10 @@ describe('agent run conversation persistence', () => {
     };
     const { manager, conversationService } = createPersistentManager([current]);
 
-    await manager.updateConversationMetadata('conversation-1', {
+    await manager.mutateConversationMetadata('conversation-1', metadata => ({
+      ...metadata,
       agentRun: runMetadata('running')
-    });
+    }));
 
     expect(conversationService.updateConversation).toHaveBeenCalledWith('conversation-1', {
       metadata: {
@@ -630,6 +793,42 @@ describe('agent run conversation persistence', () => {
         agentRun: runMetadata('running')
       }
     });
+  });
+
+  it('serializes metadata mutations and rereads sibling fields at commit time', async () => {
+    const current = conversation('conversation-1');
+    const { manager, conversationService } = createPersistentManager([current]);
+    let releaseFirstWrite!: () => void;
+    let reportFirstWrite!: () => void;
+    const firstWrite = new Promise<void>(resolve => { reportFirstWrite = resolve; });
+    const firstRelease = new Promise<void>(resolve => { releaseFirstWrite = resolve; });
+    conversationService.updateConversation.mockImplementationOnce(async (
+      id: string,
+      updates: Partial<ConversationData>
+    ) => {
+      reportFirstWrite();
+      await firstRelease;
+      Object.assign(current, updates);
+    });
+
+    const first = manager.mutateConversationMetadata('conversation-1', metadata => ({
+      ...metadata,
+      agentRun: runMetadata('queued')
+    }));
+    await firstWrite;
+    const second = manager.mutateConversationMetadata('conversation-1', metadata => ({
+      ...metadata,
+      chatSettings: { ...metadata.chatSettings, sessionId: 'concurrent-session' }
+    }));
+    releaseFirstWrite();
+    await Promise.all([first, second]);
+
+    expect(current.metadata).toMatchObject({
+      agentRun: { status: 'queued' },
+      chatSettings: { sessionId: 'concurrent-session' },
+      unrelated: { keep: true }
+    });
+    expect(conversationService.getConversation).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a storage result that reports a failed authoritative message append', async () => {
@@ -648,26 +847,24 @@ describe('agent run conversation persistence', () => {
     })).rejects.toThrow('authoritative append failed');
   });
 
-  it('loads every authoritative conversation record through bounded index pages', async () => {
+  it('hydrates every member of one stable 101-record ID snapshot', async () => {
     const conversations = Array.from({ length: 101 }, (_value, index) =>
       conversation(`conversation-${index}`)
     );
     const { manager, conversationService } = createPersistentManager(conversations);
+    conversationService.getConversation.mockImplementation(async (id: string) => {
+      const current = conversations.find(item => item.id === id) ?? null;
+      if (id === 'conversation-0') {
+        conversations[100].updated = Date.now();
+      }
+      return current;
+    });
 
     const loaded = await manager.listConversationsWithMetadata();
 
     expect(loaded).toHaveLength(101);
-    expect(conversationService.listConversations).toHaveBeenNthCalledWith(
-      1,
-      undefined,
-      100,
-      0
-    );
-    expect(conversationService.listConversations).toHaveBeenNthCalledWith(
-      2,
-      undefined,
-      100,
-      1
-    );
+    expect(new Set(loaded.map(item => item.id)).size).toBe(101);
+    expect(conversationService.getConversationIdsSnapshot).toHaveBeenCalledTimes(1);
+    expect(conversationService.listConversations).not.toHaveBeenCalled();
   });
 });

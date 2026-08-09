@@ -89,4 +89,13 @@ describe('AgentCapabilityPolicyService', () => {
     now = 1_050;
     expect(policy.allows(issued.grant, 'contentManager', 'read')).toBe(false);
   });
+
+  it('returns a structured denial bit when revoking a denied valid grant', () => {
+    const policy = new AgentCapabilityPolicyService(() => 'token-1');
+    const issued = policy.issue('run-1', 'vault-readonly');
+
+    expect(policy.allows(issued.grant, 'contentManager', 'write')).toBe(false);
+    expect(policy.revoke(issued.token)).toBe(true);
+    expect(policy.revoke(issued.token)).toBe(false);
+  });
 });

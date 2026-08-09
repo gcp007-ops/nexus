@@ -31,6 +31,8 @@ import { NamedLocks } from '../../utils/AsyncLock';
 import { VaultEventStore } from './vaultRoot/VaultEventStore';
 import { StorageRouter } from './StorageRouter';
 
+export const NEXUS_DEVICE_ID_STORAGE_KEY = 'claudesidian-device-id';
+
 /**
  * Configuration options for JSONLWriter
  */
@@ -91,7 +93,6 @@ export class JSONLWriter {
   private deviceId: string;
   private router: StorageRouter;
   private beforeWriteHook?: JSONLWriterBeforeWriteHook;
-  private readonly deviceIdStorageKey = 'claudesidian-device-id';
 
   constructor(options: JSONLWriterOptions) {
     this.app = options.app;
@@ -171,13 +172,13 @@ export class JSONLWriter {
    * @returns Persistent device UUID
    */
   private getOrCreateDeviceId(): string {
-    const storedDeviceId = this.app.loadLocalStorage(this.deviceIdStorageKey) as unknown;
+    const storedDeviceId = this.app.loadLocalStorage(NEXUS_DEVICE_ID_STORAGE_KEY) as unknown;
     if (typeof storedDeviceId === 'string' && storedDeviceId.length > 0) {
       return storedDeviceId;
     }
 
     const deviceId = uuidv4();
-    this.app.saveLocalStorage(this.deviceIdStorageKey, deviceId);
+    this.app.saveLocalStorage(NEXUS_DEVICE_ID_STORAGE_KEY, deviceId);
     return deviceId;
   }
 

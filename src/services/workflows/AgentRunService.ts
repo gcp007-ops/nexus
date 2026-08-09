@@ -27,7 +27,6 @@ const NO_WRITE_CONTRACT = [
   'Inspect evidence, return exactly one vault-change-plan/v1 JSON document, and perform no mutation.',
   'Do not apply, approve, retry, or bypass a rejected tool call.'
 ].join(' ');
-const CAPABILITY_REJECTION = /not allowed by capability profile vault-readonly/iu;
 
 const ALLOWED_TRANSITIONS: Record<AgentRunStatus, ReadonlySet<AgentRunStatus>> = {
   queued: new Set(['running', 'preflight_failed', 'cancelled', 'interrupted', 'failed']),
@@ -64,6 +63,7 @@ export interface AgentRunStartRequest extends WorkflowRunMetadata {
   runTrigger: 'manual' | 'scheduled' | 'catch_up';
   scheduledFor: number;
   runKey: string;
+  deviceId: string;
 }
 
 export interface AgentRunConversationStore {
@@ -75,10 +75,12 @@ export interface AgentRunConversationStore {
     content: string;
     metadata?: Record<string, unknown>;
   }): Promise<unknown>;
-  updateConversationMetadata(
+  mutateConversationMetadata(
     conversationId: string,
-    metadata: NonNullable<ConversationData['metadata']>
-  ): Promise<unknown>;
+    mutate: (
+      current: Readonly<NonNullable<ConversationData['metadata']>>
+    ) => NonNullable<ConversationData['metadata']> | null
+  ): Promise<{ applied: boolean; metadata?: NonNullable<ConversationData['metadata']> }>;
 }
 
 export interface AgentRunServiceDependencies {
@@ -89,6 +91,13 @@ export interface AgentRunServiceDependencies {
 }
 
 type AgentRunPatch = Partial<Omit<AgentRunMetadata, 'status'>>;
+
+interface StartEntry {
+  cancelRequested: boolean;
+  settled: Promise<AgentRunMetadata>;
+  resolve(value: AgentRunMetadata): void;
+  reject(error: unknown): void;
+}
 
 /** Pure lifecycle gate shared by runtime and the later approval stage. */
 export function transitionAgentRun(
@@ -109,6 +118,8 @@ export function transitionAgentRun(
 function normalizeAgentRunMetadata(value: AgentRunMetadata): AgentRunMetadata {
   return {
     backend: value.backend,
+    authorityScope: value.authorityScope,
+    deviceId: value.deviceId,
     status: value.status,
     trigger: value.trigger,
     model: value.model,
@@ -136,8 +147,7 @@ function normalizeAgentRunMetadata(value: AgentRunMetadata): AgentRunMetadata {
 export class AgentRunService {
   private readonly now: () => number;
   private readonly hashSnapshot: (snapshot: string) => Promise<string>;
-  private readonly starting = new Set<string>();
-  private readonly queuedCancellations = new Map<string, Promise<AgentRunMetadata>>();
+  private readonly starts = new Map<string, StartEntry>();
   private readonly handles = new Map<string, WorkflowExecutionHandle>();
   private readonly completions = new Map<string, Promise<void>>();
 
@@ -151,20 +161,25 @@ export class AgentRunService {
       throw new Error('AgentRunService accepts only the claude-cli backend');
     }
     const frozenRequest = this.captureStartRequest(request);
-    if (this.starting.has(request.conversationId) || this.handles.has(request.conversationId)) {
+    if (this.starts.has(request.conversationId) || this.handles.has(request.conversationId)) {
       throw new Error(`Agent run is already active: ${request.conversationId}`);
     }
 
-    this.starting.add(request.conversationId);
+    const entry = createStartEntry();
+    this.starts.set(request.conversationId, entry);
     try {
-      return await this.startReserved(frozenRequest);
+      const record = await this.startReserved(frozenRequest, entry);
+      entry.resolve(record);
+      return record;
+    } catch (error) {
+      entry.reject(error);
+      throw error;
     } finally {
-      this.starting.delete(request.conversationId);
-      this.queuedCancellations.delete(request.conversationId);
+      this.starts.delete(request.conversationId);
     }
   }
 
-  private async startReserved(request: AgentRunStartRequest): Promise<AgentRunRecord> {
+  private async startReserved(request: AgentRunStartRequest, entry: StartEntry): Promise<AgentRunRecord> {
     const conversation = await this.dependencies.conversations.getConversation(request.conversationId);
     if (!conversation) {
       throw new Error(`Conversation not found: ${request.conversationId}`);
@@ -177,6 +192,8 @@ export class AgentRunService {
     const model = request.execution.model?.trim() || 'sonnet';
     const queued: AgentRunMetadata = {
       backend: 'claude-cli',
+      authorityScope: request.execution.authorityScope,
+      deviceId: request.deviceId,
       status: 'queued',
       trigger: request.runTrigger === 'manual' ? 'manual' : 'schedule',
       model,
@@ -193,10 +210,15 @@ export class AgentRunService {
       workflowHash,
       queuedAt: this.now()
     };
-    await this.persistAgentRun(request.conversationId, queued);
-    const queuedCancellation = this.queuedCancellations.get(request.conversationId);
-    if (queuedCancellation) {
-      return this.record(request.conversationId, await queuedCancellation);
+    const queuedApplied = await this.persistTransition(request.conversationId, [undefined], queued);
+    if (!queuedApplied) {
+      throw new Error(`Agent run already exists: ${request.conversationId}`);
+    }
+    if (entry.cancelRequested) {
+      return this.record(
+        request.conversationId,
+        await this.cancelBeforeDispatch(request.conversationId, queued)
+      );
     }
 
     let handle: WorkflowExecutionHandle;
@@ -214,23 +236,33 @@ export class AgentRunService {
         finishedAt: this.now()
       });
       await this.appendResultMessage(request.conversationId, this.errorMessage(error), 'preflight_failed');
-      await this.persistAgentRun(request.conversationId, failed);
-      return this.record(request.conversationId, failed);
+      const applied = await this.persistTransition(request.conversationId, ['queued'], failed);
+      return this.record(request.conversationId, applied ? failed : await this.requireRun(request.conversationId));
     }
 
     if (handle.runId !== request.conversationId) {
       this.cancelDetached(handle);
       const failed = transitionAgentRun(queued, 'failed', { finishedAt: this.now() });
-      await this.persistAgentRun(request.conversationId, failed);
-      return this.record(request.conversationId, failed);
+      const applied = await this.persistTransition(request.conversationId, ['queued'], failed);
+      return this.record(request.conversationId, applied ? failed : await this.requireRun(request.conversationId));
     }
 
     this.handles.set(request.conversationId, handle);
     const running = transitionAgentRun(queued, 'running', { startedAt: this.now() });
     try {
-      await this.persistAgentRun(request.conversationId, running);
+      const applied = await this.persistTransition(request.conversationId, ['queued'], running);
+      if (!applied) {
+        throw new Error(`Agent run queued-to-running transition lost: ${request.conversationId}`);
+      }
     } catch (error) {
-      this.cancelDetached(handle);
+      await this.terminateRetainedHandle(handle);
+      const failed = transitionAgentRun(queued, 'failed', { finishedAt: this.now() });
+      try {
+        await this.persistTransition(request.conversationId, ['queued', 'running'], failed);
+      } catch {
+        // The original persistence failure remains authoritative after the
+        // backend process is confirmed settled.
+      }
       this.handles.delete(request.conversationId);
       throw error;
     }
@@ -247,6 +279,12 @@ export class AgentRunService {
     });
     this.completions.set(request.conversationId, completion);
     void completion.catch(() => undefined);
+
+    if (entry.cancelRequested) {
+      await handle.cancel();
+      await completion;
+      return this.record(request.conversationId, await this.requireRun(request.conversationId));
+    }
 
     return this.record(request.conversationId, running);
   }
@@ -265,13 +303,10 @@ export class AgentRunService {
   }
 
   async cancel(runId: string): Promise<AgentRunRecord> {
-    if (this.starting.has(runId) && !this.handles.has(runId)) {
-      let cancellation = this.queuedCancellations.get(runId);
-      if (!cancellation) {
-        cancellation = this.cancelQueuedStart(runId);
-        this.queuedCancellations.set(runId, cancellation);
-      }
-      return this.record(runId, await cancellation);
+    const start = this.starts.get(runId);
+    if (start) {
+      start.cancelRequested = true;
+      return this.record(runId, await start.settled);
     }
 
     const current = await this.requireRun(runId);
@@ -282,8 +317,8 @@ export class AgentRunService {
     const handle = this.handles.get(runId);
     if (!handle) {
       const interrupted = transitionAgentRun(current, 'interrupted', { finishedAt: this.now() });
-      await this.persistAgentRun(runId, interrupted);
-      return this.record(runId, interrupted);
+      const applied = await this.persistTransition(runId, ['queued', 'running'], interrupted);
+      return this.record(runId, applied ? interrupted : await this.requireRun(runId));
     }
 
     await handle.cancel();
@@ -291,14 +326,10 @@ export class AgentRunService {
     return this.record(runId, await this.requireRun(runId));
   }
 
-  private async cancelQueuedStart(runId: string): Promise<AgentRunMetadata> {
-    const current = await this.requireRun(runId);
-    if (current.status !== 'queued') {
-      throw new Error(`Agent run ${runId} is not cancellable before dispatch from ${current.status}`);
-    }
-    const cancelled = transitionAgentRun(current, 'cancelled', { finishedAt: this.now() });
-    await this.persistAgentRun(runId, cancelled);
-    return cancelled;
+  private async cancelBeforeDispatch(runId: string, queued: AgentRunMetadata): Promise<AgentRunMetadata> {
+    const cancelled = transitionAgentRun(queued, 'cancelled', { finishedAt: this.now() });
+    const applied = await this.persistTransition(runId, ['queued'], cancelled);
+    return applied ? cancelled : await this.requireRun(runId);
   }
 
   async reconcileInterrupted(): Promise<void> {
@@ -306,11 +337,11 @@ export class AgentRunService {
     for (const run of runs) {
       if (
         (run.status === 'queued' || run.status === 'running')
-        && !this.starting.has(run.runId)
+        && !this.starts.has(run.runId)
         && !this.handles.has(run.runId)
       ) {
         const interrupted = transitionAgentRun(run, 'interrupted', { finishedAt: this.now() });
-        await this.persistAgentRun(run.runId, interrupted);
+        await this.persistTransition(run.runId, ['queued', 'running'], interrupted);
       }
     }
   }
@@ -337,7 +368,7 @@ export class AgentRunService {
         // The lifecycle state remains authoritative even when a diagnostic
         // message cannot be appended.
       }
-      await this.persistAgentRun(runId, transitionAgentRun(current, 'failed', {
+      await this.persistTransition(runId, ['running'], transitionAgentRun(current, 'failed', {
         finishedAt: this.now()
       }));
     }
@@ -361,31 +392,57 @@ export class AgentRunService {
 
     if (this.isSecurityBlocked(result)) {
       await this.appendExecutionOutput(runId, result, 'security_blocked');
-      await this.persistAgentRun(runId, transitionAgentRun(current, 'security_blocked', resultPatch));
+      await this.persistTransition(
+        runId,
+        ['running'],
+        transitionAgentRun(current, 'security_blocked', resultPatch)
+      );
       return;
     }
 
     if (result.status === 'completed') {
+      if (result.stdoutTruncated || result.stderrTruncated) {
+        await this.appendExecutionOutput(runId, result, 'invalid_output');
+        await this.persistTransition(
+          runId,
+          ['running'],
+          transitionAgentRun(current, 'invalid_output', resultPatch)
+        );
+        return;
+      }
+
       let plan: ReturnType<typeof parseVaultChangePlan>;
       try {
         plan = parseVaultChangePlan(result.stdout, expectedIdentity);
       } catch {
         await this.appendExecutionOutput(runId, result, 'invalid_output');
-        await this.persistAgentRun(runId, transitionAgentRun(current, 'invalid_output', resultPatch));
+        await this.persistTransition(
+          runId,
+          ['running'],
+          transitionAgentRun(current, 'invalid_output', resultPatch)
+        );
         return;
       }
 
       const planHash = hashVaultChangePlan(plan);
       await this.appendResultMessage(runId, result.stdout, 'plan', { planHash });
-      await this.persistAgentRun(runId, transitionAgentRun(current, 'awaiting_approval', {
-        ...resultPatch,
-        planHash
-      }));
+      await this.persistTransition(
+        runId,
+        ['running'],
+        transitionAgentRun(current, 'awaiting_approval', {
+          ...resultPatch,
+          planHash
+        })
+      );
       return;
     }
 
     await this.appendExecutionOutput(runId, result, result.status);
-    await this.persistAgentRun(runId, transitionAgentRun(current, result.status, resultPatch));
+    await this.persistTransition(
+      runId,
+      ['running'],
+      transitionAgentRun(current, result.status, resultPatch)
+    );
   }
 
   private async appendExecutionOutput(
@@ -424,11 +481,29 @@ export class AgentRunService {
     this.assertSuccessfulStoreResult(result, 'append agent run message');
   }
 
-  private async persistAgentRun(runId: string, agentRun: AgentRunMetadata): Promise<void> {
-    const result = await this.dependencies.conversations.updateConversationMetadata(runId, {
-      agentRun
-    });
-    this.assertSuccessfulStoreResult(result, 'update agent run metadata');
+  private async persistTransition(
+    runId: string,
+    expectedStatuses: readonly (AgentRunStatus | undefined)[],
+    next: AgentRunMetadata
+  ): Promise<boolean> {
+    const result = await this.dependencies.conversations.mutateConversationMetadata(
+      runId,
+      current => {
+        const currentRun = current.agentRun;
+        if (currentRun !== undefined && !isAgentRunMetadata(currentRun)) {
+          return null;
+        }
+        const currentStatus = isAgentRunMetadata(currentRun) ? currentRun.status : undefined;
+        if (!expectedStatuses.includes(currentStatus)) {
+          return null;
+        }
+        return {
+          ...current,
+          agentRun: normalizeAgentRunMetadata(next)
+        };
+      }
+    );
+    return result.applied;
   }
 
   private readRecord(conversation: ConversationData): AgentRunRecord | null {
@@ -491,6 +566,8 @@ export class AgentRunService {
       request.workflow.steps,
       request.workflow.promptId ?? null,
       request.execution.backend,
+      request.execution.authorityScope,
+      request.deviceId,
       request.execution.model?.trim() || 'sonnet',
       request.execution.mode,
       request.execution.capabilityProfile,
@@ -538,11 +615,24 @@ export class AgentRunService {
   }
 
   private isSecurityBlocked(result: WorkflowExecutionResult): boolean {
-    return CAPABILITY_REJECTION.test(`${result.stdout}\n${result.stderr}`);
+    return result.securityBlocked;
   }
 
   private cancelDetached(handle: WorkflowExecutionHandle): void {
     void handle.cancel().catch(() => undefined);
+  }
+
+  private async terminateRetainedHandle(handle: WorkflowExecutionHandle): Promise<void> {
+    try {
+      await handle.cancel();
+    } catch {
+      // Settlement below remains mandatory even if cancellation reports an error.
+    }
+    try {
+      await handle.result;
+    } catch {
+      // A rejected result is still a settled, non-orphaned handle.
+    }
   }
 
   private assertSuccessfulStoreResult(result: unknown, action: string): void {
@@ -557,6 +647,22 @@ export class AgentRunService {
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+function createStartEntry(): StartEntry {
+  let resolve!: (value: AgentRunMetadata) => void;
+  let reject!: (error: unknown) => void;
+  const settled = new Promise<AgentRunMetadata>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  void settled.catch(() => undefined);
+  return {
+    cancelRequested: false,
+    settled,
+    resolve,
+    reject
+  };
 }
 
 async function hashSnapshot(snapshot: string): Promise<string> {
@@ -575,6 +681,8 @@ function isAgentRunMetadata(value: unknown): value is AgentRunMetadata {
     return false;
   }
   return value.backend === 'claude-cli'
+    && (value.authorityScope === 'vault-synced' || value.authorityScope === 'machine-local')
+    && typeof value.deviceId === 'string'
     && typeof value.status === 'string'
     && Object.prototype.hasOwnProperty.call(ALLOWED_TRANSITIONS, value.status)
     && (value.trigger === 'manual' || value.trigger === 'schedule')

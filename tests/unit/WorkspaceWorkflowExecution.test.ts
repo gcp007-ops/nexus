@@ -49,6 +49,7 @@ describe('workflow execution normalization', () => {
 
     expect(firstWorkflow(workspace).execution).toEqual({
       backend: 'claude-cli',
+      authorityScope: 'vault-synced',
       model: 'sonnet',
       mode: 'proposal',
       capabilityProfile: 'vault-readonly',
@@ -57,6 +58,27 @@ describe('workflow execution normalization', () => {
       timeoutMinutes: 1,
       approvalRequired: true,
     });
+  });
+
+  it('preserves an explicitly assigned vault authority device', () => {
+    const workspace = makeWorkspace({
+      backend: 'claude-cli',
+      authorityScope: 'vault-synced',
+      authorityDeviceId: ' device-a ',
+      mode: 'proposal',
+      capabilityProfile: 'vault-readonly',
+      outputSchema: 'vault-change-plan/v1',
+      maxTurns: 12,
+      timeoutMinutes: 10,
+      approvalRequired: true,
+    });
+
+    normalizeWorkspaceData(workspace);
+
+    expect(firstWorkflow(workspace).execution).toEqual(expect.objectContaining({
+      authorityScope: 'vault-synced',
+      authorityDeviceId: 'device-a',
+    }));
   });
 
   it('drops an invalid execution block instead of converting a legacy workflow', () => {

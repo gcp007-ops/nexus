@@ -1,17 +1,18 @@
 import type { Plugin } from 'obsidian';
 import type { Settings } from '../../settings';
-import type { ConversationService } from '../ConversationService';
 import type { WorkspaceService } from '../WorkspaceService';
 import type { WorkflowSchedule } from '../../database/types/workspace/WorkspaceTypes';
 import type { WorkflowRunService } from './WorkflowRunService';
+import type { WorkflowAuthorityService } from './WorkflowAuthorityService';
+import { WorkflowRunConflictError } from './WorkflowRunReservationService';
 import type { WorkflowRunRequest } from './types';
 
 export interface WorkflowScheduleServiceDeps {
   plugin: Plugin;
   settings: Settings;
   workspaceService: WorkspaceService;
-  conversationService: ConversationService;
   workflowRunService: WorkflowRunService;
+  authorityService: WorkflowAuthorityService;
 }
 
 export class WorkflowScheduleService {
@@ -65,23 +66,34 @@ export class WorkflowScheduleService {
             continue;
           }
 
+          if (workflow.execution?.backend === 'claude-cli') {
+            try {
+              this.deps.authorityService.assertCanRun(workflow.execution);
+            } catch {
+              continue;
+            }
+          }
+
           const dueSlots = this.computeDueSlots(schedule, lastCheckAt, now);
           const runSlots = isStartup ? this.applyCatchUpPolicy(dueSlots, schedule) : dueSlots;
 
           for (const scheduledFor of runSlots) {
             const runKey = `${workspace.id}:${workflow.id}:${scheduledFor}`;
-            if (await this.deps.conversationService.hasRunKey(runKey)) {
-              continue;
+            try {
+              await this.dispatchDueRun({
+                workspaceId: workspace.id,
+                workflowId: workflow.id,
+                runTrigger: isStartup && lastCheckAt ? 'catch_up' : 'scheduled',
+                scheduledFor,
+                runKey,
+                openInChat: false
+              });
+            } catch (error) {
+              if (error instanceof WorkflowRunConflictError) {
+                continue;
+              }
+              throw error;
             }
-
-            await this.dispatchDueRun({
-              workspaceId: workspace.id,
-              workflowId: workflow.id,
-              runTrigger: isStartup && lastCheckAt ? 'catch_up' : 'scheduled',
-              scheduledFor,
-              runKey,
-              openInChat: false
-            });
           }
         }
       }

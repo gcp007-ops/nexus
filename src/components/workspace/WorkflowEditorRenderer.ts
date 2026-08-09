@@ -1,4 +1,4 @@
-import { ButtonComponent, Component, Notice, Setting } from 'obsidian';
+import { ButtonComponent, Component, Notice, Setting, TextComponent } from 'obsidian';
 import type {
   WorkflowExecutionConfig,
   WorkflowCatchUpPolicy,
@@ -45,7 +45,8 @@ export class WorkflowEditorRenderer {
     private onSave: SaveOrRunHandler,
     private onCancel: () => void,
     private onRunNow: SaveOrRunHandler,
-    private component: Component
+    private component: Component,
+    private currentDeviceId?: string
   ) {}
 
   render(container: HTMLElement, workflow: Workflow, isNew: boolean, options?: { showBackButton?: boolean }): void {
@@ -348,6 +349,14 @@ export class WorkflowEditorRenderer {
       return null;
     }
 
+    if (
+      this.workflow.execution?.backend === 'claude-cli'
+      && !this.workflow.execution.authorityDeviceId?.trim()
+    ) {
+      new Notice('Workflow authority device is required');
+      return null;
+    }
+
     const prompt = this.workflow.promptId
       ? this.availablePrompts.find(item => item.id === this.workflow.promptId)
       : undefined;
@@ -384,6 +393,34 @@ export class WorkflowEditorRenderer {
     }
 
     const execution = this.workflow.execution;
+
+    new Setting(container)
+      .setName('Authority scope')
+      .setDesc('Vault synced');
+
+    let authorityInput: TextComponent | undefined;
+    new Setting(container)
+      .setName('Authority device')
+      .setDesc('Only this Nexus device may run the synchronized workflow.')
+      .addText(text => {
+        authorityInput = text;
+        text
+          .setPlaceholder('Device ID')
+          .setValue(execution.authorityDeviceId || '')
+          .onChange(value => {
+            execution.authorityDeviceId = value;
+          });
+      })
+      .addButton(button => button
+        .setButtonText('Use this device')
+        .setDisabled(!this.currentDeviceId)
+        .onClick(() => {
+          if (!this.currentDeviceId) {
+            return;
+          }
+          execution.authorityDeviceId = this.currentDeviceId;
+          authorityInput?.setValue(this.currentDeviceId);
+        }));
 
     new Setting(container)
       .setName('Model')
@@ -455,6 +492,10 @@ export class WorkflowEditorRenderer {
   private buildClaudeExecution(execution?: Partial<WorkflowExecutionConfig>): WorkflowExecutionConfig {
     return {
       backend: 'claude-cli',
+      authorityScope: 'vault-synced',
+      ...(execution?.authorityDeviceId?.trim()
+        ? { authorityDeviceId: execution.authorityDeviceId.trim() }
+        : {}),
       model: execution?.model?.trim() || 'sonnet',
       mode: 'proposal',
       capabilityProfile: 'vault-readonly',

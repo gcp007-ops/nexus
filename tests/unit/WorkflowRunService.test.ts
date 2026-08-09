@@ -1,5 +1,6 @@
 import type { App, Plugin } from 'obsidian';
 import { WorkflowRunService } from '../../src/services/workflows/WorkflowRunService';
+import { WorkflowRunReservationService } from '../../src/services/workflows/WorkflowRunReservationService';
 import { buildWorkflowKickoffMessage } from '../../src/services/workflows/types';
 import type {
   WorkflowExecutionConfig,
@@ -15,6 +16,8 @@ jest.mock('../../src/ui/chat/utils/ModelSelectionUtility', () => ({
 
 const claudeExecution: WorkflowExecutionConfig = {
   backend: 'claude-cli',
+  authorityScope: 'vault-synced',
+  authorityDeviceId: 'device-a',
   model: 'sonnet',
   mode: 'proposal',
   capabilityProfile: 'vault-readonly',
@@ -35,9 +38,19 @@ function workflow(execution?: WorkflowExecutionConfig): WorkspaceWorkflow {
   };
 }
 
-function createHarness(execution?: WorkflowExecutionConfig) {
+interface HarnessOverrides {
+  chatService?: {
+    createConversation: jest.Mock;
+    sendMessage: jest.Mock;
+  };
+  conversationService?: { hasRunKey: jest.Mock };
+  authorityService?: { assertCanRun: jest.Mock };
+  reservationService?: WorkflowRunReservationService;
+}
+
+function createHarness(execution?: WorkflowExecutionConfig, overrides: HarnessOverrides = {}) {
   const selectedWorkflow = workflow(execution);
-  const chatService = {
+  const chatService = overrides.chatService ?? {
     createConversation: jest.fn(async () => ({
       success: true,
       conversationId: 'conversation-1',
@@ -48,6 +61,13 @@ function createHarness(execution?: WorkflowExecutionConfig) {
   const agentRunService = {
     start: jest.fn(async () => ({ runId: 'conversation-1', status: 'running' }))
   };
+  const conversationService = overrides.conversationService ?? {
+    hasRunKey: jest.fn(async () => false)
+  };
+  const authorityService = overrides.authorityService ?? {
+    assertCanRun: jest.fn(() => 'device-a')
+  };
+  const reservationService = overrides.reservationService ?? new WorkflowRunReservationService();
   const workspaceService = {
     getWorkspace: jest.fn(async () => ({
       id: 'workspace-1',
@@ -72,7 +92,10 @@ function createHarness(execution?: WorkflowExecutionConfig) {
     chatService: chatService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['chatService'],
     workspaceService: workspaceService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['workspaceService'],
     customPromptStorage: customPromptStorage as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['customPromptStorage'],
-    agentRunService: agentRunService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['agentRunService']
+    agentRunService: agentRunService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['agentRunService'],
+    conversationService: conversationService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['conversationService'],
+    authorityService: authorityService as unknown as ConstructorParameters<typeof WorkflowRunService>[0]['authorityService'],
+    reservationService
   });
   const internals = service as unknown as {
     workspaceIntegration: {
@@ -89,7 +112,15 @@ function createHarness(execution?: WorkflowExecutionConfig) {
     build: jest.fn(async () => 'Resolved CLAUDE.md, workspace, and saved prompt instructions.')
   };
 
-  return { service, chatService, agentRunService, selectedWorkflow };
+  return {
+    service,
+    chatService,
+    agentRunService,
+    selectedWorkflow,
+    conversationService,
+    authorityService,
+    reservationService
+  };
 }
 
 describe('WorkflowRunService', () => {
@@ -120,6 +151,13 @@ describe('WorkflowRunService', () => {
         provider: 'provider-1',
         model: 'model-1',
         workspaceId: 'workspace-1'
+      })
+    );
+    expect(chatService.createConversation).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      expect.objectContaining({
+        systemPrompt: 'Resolved CLAUDE.md, workspace, and saved prompt instructions.'
       })
     );
     expect(agentRunService.start).not.toHaveBeenCalled();
@@ -161,7 +199,100 @@ describe('WorkflowRunService', () => {
       resolvedPrompt: 'Resolved CLAUDE.md, workspace, and saved prompt instructions.',
       runTrigger: 'scheduled',
       scheduledFor: 456,
-      runKey: 'scheduled-run'
+      runKey: 'scheduled-run',
+      deviceId: 'device-a'
     });
+  });
+
+  it('keeps the resolved Claude prompt out of persisted chat settings', async () => {
+    const { service, chatService, agentRunService } = createHarness(claudeExecution);
+
+    await service.start({
+      workspaceId: 'workspace-1',
+      workflowId: 'workflow-1',
+      runTrigger: 'manual',
+      scheduledFor: 456,
+      runKey: 'manual-run'
+    });
+
+    const persistedOptions = chatService.createConversation.mock.calls[0]?.[2];
+    expect(persistedOptions).not.toEqual(expect.objectContaining({
+      systemPrompt: expect.any(String)
+    }));
+    expect(JSON.stringify(persistedOptions)).not.toContain('Resolved CLAUDE.md');
+    expect(agentRunService.start).toHaveBeenCalledWith(expect.objectContaining({
+      resolvedPrompt: 'Resolved CLAUDE.md, workspace, and saved prompt instructions.'
+    }));
+  });
+
+  it('rejects a vault-synced run on a non-authority device before persistence', async () => {
+    const authorityService = {
+      assertCanRun: jest.fn(() => {
+        throw new Error('Workflow authority device mismatch');
+      })
+    };
+    const { service, chatService, agentRunService, conversationService } = createHarness(
+      claudeExecution,
+      { authorityService }
+    );
+
+    await expect(service.start({
+      workspaceId: 'workspace-1',
+      workflowId: 'workflow-1',
+      runTrigger: 'manual',
+      scheduledFor: 456,
+      runKey: 'manual-run'
+    })).rejects.toThrow('Workflow authority device mismatch');
+
+    expect(conversationService.hasRunKey).not.toHaveBeenCalled();
+    expect(chatService.createConversation).not.toHaveBeenCalled();
+    expect(agentRunService.start).not.toHaveBeenCalled();
+  });
+
+  it('reserves one runKey across concurrent services in this Nexus instance', async () => {
+    const reservationService = new WorkflowRunReservationService();
+    let conversationExists = false;
+    let releaseCreate!: () => void;
+    let markEntered!: () => void;
+    const createEntered = new Promise<void>(resolve => { markEntered = resolve; });
+    const createReleased = new Promise<void>(resolve => { releaseCreate = resolve; });
+    const conversationService = {
+      hasRunKey: jest.fn(async () => conversationExists)
+    };
+    const chatService = {
+      createConversation: jest.fn(async () => {
+        markEntered();
+        await createReleased;
+        conversationExists = true;
+        return {
+          success: true,
+          conversationId: 'conversation-1',
+          sessionId: 'session-created'
+        };
+      }),
+      sendMessage: jest.fn(async () => ({ success: true }))
+    };
+    const shared = { reservationService, conversationService, chatService };
+    const first = createHarness(claudeExecution, shared);
+    const second = createHarness(claudeExecution, shared);
+    const request = {
+      workspaceId: 'workspace-1',
+      workflowId: 'workflow-1',
+      runTrigger: 'scheduled' as const,
+      scheduledFor: 456,
+      runKey: 'slot-1',
+      openInChat: false
+    };
+
+    const firstStart = first.service.start(request);
+    await createEntered;
+    await expect(second.service.start(request))
+      .rejects.toThrow('Workflow run is already reserved: slot-1');
+    releaseCreate();
+    await firstStart;
+
+    expect(chatService.createConversation).toHaveBeenCalledTimes(1);
+    expect(first.agentRunService.start).toHaveBeenCalledTimes(1);
+    expect(second.agentRunService.start).not.toHaveBeenCalled();
   });
 });

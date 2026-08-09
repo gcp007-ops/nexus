@@ -7,9 +7,12 @@ export type WorkflowFrequency = 'hourly' | 'daily' | 'weekly' | 'monthly';
 export type WorkflowCatchUpPolicy = 'skip' | 'latest' | 'all';
 export type WorkflowExecutionBackend = 'chat' | 'claude-cli';
 export type WorkflowCapabilityProfile = 'vault-readonly';
+export type WorkflowAuthorityScope = 'vault-synced' | 'machine-local';
 
 export interface WorkflowExecutionConfig {
   backend: WorkflowExecutionBackend;
+  authorityScope: WorkflowAuthorityScope;
+  authorityDeviceId?: string;
   model?: string;
   mode: 'proposal';
   capabilityProfile: WorkflowCapabilityProfile;

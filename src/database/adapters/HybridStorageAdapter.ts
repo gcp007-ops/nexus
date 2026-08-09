@@ -893,6 +893,11 @@ export class HybridStorageAdapter implements IStorageAdapter {
     return this.conversationRepo.getConversations(options);
   };
 
+  getConversationIdsSnapshot = async (): Promise<string[]> => {
+    await this.ensureInitialized();
+    return this.conversationRepo.getConversationIdsSnapshot();
+  };
+
   createConversation = async (params: Omit<ConversationMetadata, 'id' | 'messageCount'>): Promise<string> => {
     await this.ensureInitialized();
     return this.conversationRepo.create(params);

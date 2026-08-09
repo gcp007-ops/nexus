@@ -1,4 +1,5 @@
 import type {
+  WorkflowAuthorityScope,
   WorkflowCapabilityProfile,
   WorkflowExecutionBackend,
   WorkflowSchedule,
@@ -25,6 +26,8 @@ export type AgentRunTrigger = 'manual' | 'schedule';
 
 export interface AgentRunMetadata {
   backend: Extract<WorkflowExecutionBackend, 'claude-cli'>;
+  authorityScope: WorkflowAuthorityScope;
+  deviceId: string;
   status: AgentRunStatus;
   trigger: AgentRunTrigger;
   model: string;

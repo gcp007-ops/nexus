@@ -171,6 +171,13 @@ export class ConversationRepository
     };
   }
 
+  async getConversationIdsSnapshot(): Promise<string[]> {
+    const rows = await this.sqliteCache.query<{ id: string }>(
+      'SELECT id FROM conversations ORDER BY id ASC'
+    );
+    return rows.map(row => row.id);
+  }
+
   /**
    * Search conversations by title using FTS
    */

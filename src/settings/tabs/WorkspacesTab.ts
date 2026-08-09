@@ -29,6 +29,7 @@ import type { WorkflowRunService } from '../../services/workflows/WorkflowRunSer
 import type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
 import type { ExternalSyncEvent, HybridStorageAdapter } from '../../database/adapters/HybridStorageAdapter';
 import type { MemoryService } from '../../agents/memoryManager/services/MemoryService';
+import { NEXUS_DEVICE_ID_STORAGE_KEY } from '../../database/storage/JSONLWriter';
 
 export interface WorkspacesTabServices {
     app: App;
@@ -664,7 +665,8 @@ export class WorkspacesTab {
                 this.render();
             },
             async (workflowToRun) => { await this.runWorkflowFromEditor(workflowToRun); },
-            this.services.component
+            this.services.component,
+            this.getCurrentDeviceId()
         );
 
         this.workflowRenderer.render(contentContainer, workflow, isNew, { showBackButton: false });
@@ -843,6 +845,11 @@ export class WorkspacesTab {
         return this.services.customPromptStorage.getAllPrompts();
     }
 
+    private getCurrentDeviceId(): string | undefined {
+        const stored = this.services.app.loadLocalStorage(NEXUS_DEVICE_ID_STORAGE_KEY) as unknown;
+        return typeof stored === 'string' && stored.trim().length > 0 ? stored : undefined;
+    }
+
     private renderBreadcrumbs(items: BreadcrumbNavItem[]): void {
         new BreadcrumbNav(this.container, items, this.services.component);
     }
@@ -887,4 +894,3 @@ export class WorkspacesTab {
         this.detailRenderer.destroyForm();
     }
 }
-

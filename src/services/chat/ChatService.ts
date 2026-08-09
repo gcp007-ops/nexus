@@ -13,6 +13,7 @@ import type { ToolEventCallback } from './ToolCallService';
 import { CostTrackingService } from './CostTrackingService';
 import { ConversationQueryService } from './ConversationQueryService';
 import { ConversationManager } from './ConversationManager';
+import type { ConversationMetadataMutationResult } from './ConversationManager';
 import { StreamingResponseService } from './StreamingResponseService';
 import { ChatTraceService } from './ChatTraceService';
 import type { DirectToolExecutor } from './DirectToolExecutor';
@@ -89,6 +90,7 @@ interface ConversationServiceDependency {
     vault_name?: string;
     message_count?: number;
   }>>;
+  getConversationIdsSnapshot: () => Promise<string[]>;
   searchConversations: (query: string, limit?: number) => Promise<Array<{
     id: string;
     title: string;
@@ -434,6 +436,15 @@ export class ChatService {
         error: getErrorMessage(error)
       };
     }
+  }
+
+  async mutateConversationMetadata(
+    conversationId: string,
+    mutate: (
+      current: Readonly<NonNullable<ConversationData['metadata']>>
+    ) => NonNullable<ConversationData['metadata']> | null
+  ): Promise<ConversationMetadataMutationResult> {
+    return this.conversationManager.mutateConversationMetadata(conversationId, mutate);
   }
 
   /** Return authoritative records for persisted agent-run reconciliation. */

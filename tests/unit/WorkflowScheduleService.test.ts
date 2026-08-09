@@ -1,6 +1,7 @@
 import type { Plugin } from 'obsidian';
 import { BackgroundProcessor } from '../../src/core/background/BackgroundProcessor';
 import { WorkflowScheduleService } from '../../src/services/workflows/WorkflowScheduleService';
+import { WorkflowRunConflictError } from '../../src/services/workflows/WorkflowRunReservationService';
 import type { WorkflowRunRequest } from '../../src/services/workflows/types';
 
 const NOW = new Date(2026, 7, 9, 2, 0, 0, 0).getTime();
@@ -33,6 +34,8 @@ function createHarness(startImplementation: (request: WorkflowRunRequest) => Pro
           steps: 'Inspect and propose.',
           execution: {
             backend: 'claude-cli',
+            authorityScope: 'vault-synced',
+            authorityDeviceId: 'device-a',
             model: 'sonnet',
             mode: 'proposal',
             capabilityProfile: 'vault-readonly',
@@ -55,13 +58,16 @@ function createHarness(startImplementation: (request: WorkflowRunRequest) => Pro
   const conversationService = {
     hasRunKey: jest.fn(async () => false)
   };
+  const authorityService = {
+    assertCanRun: jest.fn(() => 'device-a')
+  };
   const service = new WorkflowScheduleService({
     plugin,
     settings: settings as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['settings'],
     workspaceService: workspaceService as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['workspaceService'],
-    conversationService: conversationService as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['conversationService'],
-    workflowRunService: workflowRunService as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['workflowRunService']
-  });
+    workflowRunService: workflowRunService as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]['workflowRunService'],
+    authorityService
+  } as unknown as ConstructorParameters<typeof WorkflowScheduleService>[0]);
 
   return {
     service,
@@ -69,7 +75,8 @@ function createHarness(startImplementation: (request: WorkflowRunRequest) => Pro
     settings,
     workflowRunService,
     workspaceService,
-    conversationService
+    conversationService,
+    authorityService
   };
 }
 
@@ -130,18 +137,55 @@ describe('WorkflowScheduleService', () => {
     expect(workflowRunService.approveAndApply).not.toHaveBeenCalled();
   });
 
-  it('preserves runKey deduplication before dispatch', async () => {
+  it('delegates runKey reservation to WorkflowRunService without a scheduler precheck', async () => {
     const { service, workflowRunService, conversationService } = createHarness(async () => ({
       conversationId: 'conversation-1'
     }));
-    conversationService.hasRunKey.mockResolvedValue(true);
 
     await service.scanDueWorkflows(false);
 
-    expect(conversationService.hasRunKey).toHaveBeenCalledWith(
-      `workspace-1:workflow-1:${DUE_SLOT}`
-    );
+    expect(conversationService.hasRunKey).not.toHaveBeenCalled();
+    expect(workflowRunService.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not calculate or dispatch a synchronized schedule on a non-authority device', async () => {
+    const { service, workflowRunService, authorityService } = createHarness(async () => ({
+      conversationId: 'conversation-1'
+    }));
+    authorityService.assertCanRun.mockImplementation(() => {
+      throw new Error('Workflow authority device mismatch');
+    });
+
+    await service.scanDueWorkflows(false);
+
+    expect(authorityService.assertCanRun).toHaveBeenCalledTimes(1);
     expect(workflowRunService.start).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a synchronized schedule on its configured authority device', async () => {
+    const { service, workflowRunService, authorityService } = createHarness(async () => ({
+      conversationId: 'conversation-1'
+    }));
+
+    await service.scanDueWorkflows(false);
+
+    expect(authorityService.assertCanRun).toHaveBeenCalledTimes(1);
+    expect(workflowRunService.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a reserved slot and continues scanning later due slots', async () => {
+    let attempt = 0;
+    const { service, workflowRunService } = createHarness(async request => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new WorkflowRunConflictError('reserved', request.runKey ?? 'missing');
+      }
+      return { conversationId: 'conversation-2' };
+    });
+
+    await expect(service.scanDueWorkflows(false)).resolves.toBeUndefined();
+
+    expect(workflowRunService.start).toHaveBeenCalledTimes(2);
   });
 });
 
