@@ -277,38 +277,27 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
     }
 
     try {
-      // Use EmbeddingService.semanticSearch()
-      const semanticResults = await embeddingService.semanticSearch(searchParams.query, searchParams.limit * 2); // Get extra for path filtering
+      const hasPathScope = searchParams.paths.length > 0;
+      const allowedNotePaths = hasPathScope
+        ? this.filterMarkdownFilesByPaths(searchParams.paths).map(file => file.path)
+        : undefined;
+
+      // Scoped retrieval ranks only the allowed population. Keep the existing
+      // unscoped over-fetch unchanged for backwards-compatible ranking.
+      const semanticResults = hasPathScope
+        ? await embeddingService.semanticSearch(searchParams.query, searchParams.limit, allowedNotePaths)
+        : await embeddingService.semanticSearch(searchParams.query, searchParams.limit * 2);
 
       if (semanticResults.length === 0) {
+        if (hasPathScope) {
+          return this.prepareResult(true, { results: [] });
+        }
         return this.prepareResult(false, undefined, 'Semantic search returned no results. This may indicate an issue with the vector database. Please check the console for errors.');
-      }
-
-      // Filter by paths if specified
-      let filteredResults = semanticResults;
-      if (searchParams.paths.length > 0) {
-        const globPatterns = searchParams.paths
-          .filter(p => isGlobPattern(p))
-          .map(p => globToRegex(p));
-
-        const literalPaths = searchParams.paths
-          .filter(p => !isGlobPattern(p))
-          .map(p => normalizePath(p));
-
-        filteredResults = semanticResults.filter(result => {
-          const matchesLiteral = literalPaths.some(path => {
-            // Empty path (from "/") matches everything
-            if (path === '') return true;
-            return result.notePath.startsWith(path);
-          });
-          const matchesGlob = globPatterns.some(regex => regex.test(result.notePath));
-          return matchesLiteral || matchesGlob;
-        });
       }
 
       // Convert to lean result format (just filePath + frontmatter)
       const results: ContentSearchResult['results'] = [];
-      for (const result of filteredResults.slice(0, searchParams.limit)) {
+      for (const result of semanticResults.slice(0, searchParams.limit)) {
         const file = this.plugin.app.vault.getAbstractFileByPath(result.notePath);
         if (file instanceof TFile) {
           // Get frontmatter only
@@ -352,28 +341,9 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
     startTime: number
   ): Promise<ContentSearchResult> {
     // Get all markdown files
-    let allFiles = this.plugin.app.vault.getMarkdownFiles();
-
-    // Filter by paths if specified
-    if (searchParams.paths.length > 0) {
-      const globPatterns = searchParams.paths
-        .filter(p => isGlobPattern(p))
-        .map(p => globToRegex(p));
-
-      const literalPaths = searchParams.paths
-        .filter(p => !isGlobPattern(p))
-        .map(p => normalizePath(p));
-
-      allFiles = allFiles.filter(file => {
-        const matchesLiteral = literalPaths.some(path => {
-          // Empty path (from "/") matches everything
-          if (path === '') return true;
-          return file.path.startsWith(path);
-        });
-        const matchesGlob = globPatterns.some(regex => regex.test(file.path));
-        return matchesLiteral || matchesGlob;
-      });
-    }
+    const allFiles = searchParams.paths.length > 0
+      ? this.filterMarkdownFilesByPaths(searchParams.paths)
+      : this.plugin.app.vault.getMarkdownFiles();
 
     // Perform combined fuzzy + keyword search
     const searchResults = await this.performCombinedSearch(
@@ -388,6 +358,27 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
 
     return this.prepareResult(true, {
       results: searchResults
+    });
+  }
+
+  /** Resolve the tool's existing literal-prefix and glob scope semantics. */
+  private filterMarkdownFilesByPaths(paths: string[]): TFile[] {
+    const globPatterns = paths
+      .filter(path => isGlobPattern(path))
+      .map(path => globToRegex(path));
+
+    const literalPaths = paths
+      .filter(path => !isGlobPattern(path))
+      .map(path => normalizePath(path));
+
+    return this.plugin.app.vault.getMarkdownFiles().filter(file => {
+      const matchesLiteral = literalPaths.some(path => {
+        // Empty path (from "/") matches everything.
+        if (path === '') return true;
+        return file.path.startsWith(path);
+      });
+      const matchesGlob = globPatterns.some(regex => regex.test(file.path));
+      return matchesLiteral || matchesGlob;
     });
   }
 

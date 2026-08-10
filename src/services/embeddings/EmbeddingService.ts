@@ -117,9 +117,13 @@ export class EmbeddingService {
     return this.noteService.findSimilarNotes(notePath, limit);
   }
 
-  async semanticSearch(query: string, limit = 10): Promise<SimilarNote[]> {
+  async semanticSearch(
+    query: string,
+    limit = 10,
+    allowedNotePaths?: readonly string[]
+  ): Promise<SimilarNote[]> {
     if (!this.isEnabled) return [];
-    return this.noteService.semanticSearch(query, limit);
+    return this.noteService.semanticSearch(query, limit, allowedNotePaths);
   }
 
   async removeEmbedding(notePath: string): Promise<void> {
