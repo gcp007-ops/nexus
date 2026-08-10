@@ -19,7 +19,10 @@
 
 import { AgentExecutionManager } from '../../src/server/execution/AgentExecutionManager';
 import { AgentRegistry } from '../../src/server/services/AgentRegistry';
-import { SessionContextManager } from '../../src/services/SessionContextManager';
+import {
+  AmbiguousSessionHandleError,
+  SessionContextManager
+} from '../../src/services/SessionContextManager';
 import type { IAgent } from '../../src/agents/interfaces/IAgent';
 import type { ITool } from '../../src/agents/interfaces/ITool';
 
@@ -60,6 +63,40 @@ function makeRegistry(agent: IAgent): AgentRegistry {
 }
 
 describe('AgentExecutionManager.executeAgentTool — sessionIdCorrection semantic', () => {
+  it('fails closed when an omitted friendly handle is ambiguous', async () => {
+    const agent = makeAgent('runStub', () => ({ success: true, data: { ok: true } }));
+    const registry = makeRegistry(agent);
+    const sessionContextManager = new SessionContextManager();
+    sessionContextManager.setSessionService({
+      getSession: jest.fn().mockResolvedValue(null),
+      getAllSessions: jest.fn().mockResolvedValue([]),
+      createSession: jest.fn(),
+      updateSession: jest.fn()
+    });
+    await sessionContextManager.validateSessionId('planning chat', undefined, 'ws-engineering');
+    await sessionContextManager.validateSessionId('planning chat', undefined, 'ws-research');
+    const aem = new AgentExecutionManager(registry, sessionContextManager);
+
+    await expect(aem.executeAgentTool('stubAgent', 'runStub', {
+      sessionId: 'planning chat'
+    })).rejects.toBeInstanceOf(AmbiguousSessionHandleError);
+    expect(agent.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('keeps using original parameters when validation fails for a non-ambiguous reason', async () => {
+    const agent = makeAgent('runStub', () => ({ success: true, data: { ok: true } }));
+    const registry = makeRegistry(agent);
+    const sessionContextManager = new SessionContextManager();
+    sessionContextManager.validateSessionId = jest.fn().mockRejectedValue(
+      new Error('temporary validation failure')
+    );
+    const aem = new AgentExecutionManager(registry, sessionContextManager);
+
+    await expect(aem.executeAgentTool('stubAgent', 'runStub', {
+      sessionId: 'planning chat'
+    })).resolves.toEqual({ success: true, data: { ok: true } });
+  });
+
   it('sets correctedId to the original human-readable handle and surfaces the keep-using-handle message', async () => {
     const agent = makeAgent('runStub', () => ({
       success: true,

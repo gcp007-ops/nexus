@@ -14,7 +14,10 @@
 
 import { AgentExecutionManager } from '../../server/execution/AgentExecutionManager';
 import { AgentRegistry } from '../../server/services/AgentRegistry';
-import { SessionContextManager } from '../SessionContextManager';
+import {
+    AmbiguousSessionHandleError,
+    SessionContextManager
+} from '../SessionContextManager';
 import { ToolListService } from '../../handlers/services/ToolListService';
 import { IAgent } from '../../agents/interfaces/IAgent';
 import { ToolManagerAgent } from '../../agents/toolManager/toolManager';
@@ -103,10 +106,12 @@ export class DirectToolExecutor {
     private toolListService: ToolListService;
     private agentProvider: AgentProvider;
     private internalRegistry: AgentRegistry;
+    private sessionContextManager?: SessionContextManager;
     private cachedTools: OpenAITool[] | null = null;
 
     constructor(config: DirectToolExecutorConfig) {
         this.agentProvider = config.agentProvider;
+        this.sessionContextManager = config.sessionContextManager;
 
         // Create internal AgentRegistry for AgentExecutionManager
         // (AgentExecutionManager requires the specific AgentRegistry type)
@@ -404,7 +409,7 @@ export class DirectToolExecutor {
             };
         }
 
-        const mergedParams = this.mergeToolManagerContext(params, context);
+        const mergedParams = await this.mergeToolManagerContext(params, context);
 
         // Execute via toolManager's getTools
         return await getToolsTool.execute(mergedParams);
@@ -434,7 +439,7 @@ export class DirectToolExecutor {
 
         const batchId = options?.batchId;
         const onToolEvent = options?.onToolEvent;
-        const mergedParams = this.mergeToolManagerContext(params, context);
+        const mergedParams = await this.mergeToolManagerContext(params, context);
 
         const batchExecutionService = toolManagerAgent instanceof ToolManagerAgent
             ? toolManagerAgent.getToolBatchExecutionService()
@@ -649,15 +654,40 @@ export class DirectToolExecutor {
         return params;
     }
 
-    private mergeToolManagerContext(
+    private async mergeToolManagerContext(
         params: Record<string, unknown>,
         context?: DirectToolExecutionContext
-    ): Record<string, unknown> {
+    ): Promise<Record<string, unknown>> {
+        const providedSessionId = typeof params.sessionId === 'string'
+            ? params.sessionId
+            : context?.sessionId;
+        const providedWorkspaceId = typeof params.workspaceId === 'string'
+            ? params.workspaceId
+            : context?.workspaceId;
+        let effectiveWorkspaceId = (params.workspaceId)
+            || context?.workspaceId
+            || 'default';
+
+        if (this.sessionContextManager && providedSessionId) {
+            try {
+                const validationResult = await this.sessionContextManager.validateSessionId(
+                    providedSessionId,
+                    typeof params.memory === 'string' ? params.memory : undefined,
+                    providedWorkspaceId
+                );
+                effectiveWorkspaceId = validationResult.effectiveWorkspaceId;
+            } catch (error) {
+                if (error instanceof AmbiguousSessionHandleError) {
+                    throw error;
+                }
+                // Preserve the legacy direct-executor merge for unrelated
+                // session-validation failures.
+            }
+        }
+
         return {
             ...params,
-            workspaceId: (params.workspaceId)
-                || context?.workspaceId
-                || 'default',
+            workspaceId: effectiveWorkspaceId,
             sessionId: (params.sessionId)
                 || context?.sessionId
                 || `session_${Date.now()}`,
