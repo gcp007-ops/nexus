@@ -6,9 +6,11 @@ Ponteiro técnico mínimo do fork `gcp007-ops/nexus` (upstream: `ProfSynapse/nex
 
 ---
 
-## Estado: zero divergência funcional (paridade `origin/main` `fb7c74b7`, pós-5.16.1)
+## Estado: zero divergência funcional (paridade upstream `5.16.3` / `aa6d8b82`)
 
-Base: `origin/main` em `fb7c74b7` ("Add MCP Toplist rank badge", #297, 2026-08-04), que é a tag `5.16.1` mais 4 commits ainda não liberados.
+Base funcional: `origin/main` em `aa6d8b82` (`5.16.3`, 2026-08-10). O fork preserva somente os artefatos próprios de governança — este arquivo, [OFFERINGS.md](./OFFERINGS.md) e [.github/workflows/upstream-sync.yml](./.github/workflows/upstream-sync.yml) — sem alteração funcional sobre o upstream.
+
+**Sync de 2026-08-10 incorporou 11 commits upstream por merge não destrutivo.** O fork avançou de `fb7c74b7` (pós-5.16.1) para `aa6d8b82` (5.16.3), preservando a história e os três arquivos fork-only. Nesse intervalo, o refinamento local #309 foi absorvido upstream por #312–#315 e saiu de *Active offerings*; ver History em [OFFERINGS.md](./OFFERINGS.md).
 
 **Sync de 2026-08-06 fechou um gap de 169 commits.** O fork estava parado em `4df1300a` (paridade v5.8.8, 2026-04-29) por três meses. O reset foi para `origin/main` com restauração dos três arquivos fork-only; nenhum cherry-pick funcional foi necessário. Backup do estado anterior: `backup/pre-5161-sync-2026-08-06`.
 
