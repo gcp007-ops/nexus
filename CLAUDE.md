@@ -67,11 +67,11 @@ Adapters at `src/services/llm/adapters/{provider}/`. Types at `src/services/llm/
 <!-- PACT_MANAGED_END -->
 
 # Claude Code Context Document
-Last Updated: 2026-05-26
+Last Updated: 2026-08-06
 
 ## Project Overview
 - **Name**: Nexus (package: claudesidian-mcp)
-- **Version**: 5.16.1
+- **Version**: 5.16.3
 - **Type**: Obsidian Community Plugin
 - **Purpose**: MCP integration for Obsidian with AI-powered vault operations
 - **Architecture**: Agent-Tool pattern with domain-driven design
@@ -111,10 +111,11 @@ Full guidelines: `docs/obsidian-plugin-guidelines.md`
 
 ## Recent Changes
 
-**Current Version**: 5.12.2
+**Current Version**: 5.16.2
 Full changelog: `docs/changelog.md`
 
-**Latest** (May 2026):
+**Latest**:
+- **v5.16.2** (2026-08-06) — Search ranking + CLI grounding. `searchContent.ts` tier ladder is now single-scale: `TITLE_EXACT_SCORE 0.95 > EXACT_PHRASE_SCORE 0.9 > ALL_WORDS_SCORE 0.8 > PARTIAL_MATCH_FLOOR 0.3 > FUZZY_ONLY_CEILING 0.25`; filename fuzzy was previously normalized to `1 + score/100` (~0.92–0.95), an incommensurable scale that let a coincidental name beat a verbatim body match (PRs #312/#313/#314, issue #309). `foldSeparators()` folds `-`/`_` to spaces on both sides so a kebab filename matches a spaced query. Results carry `matchType: 'content' | 'path' | 'semantic'`. **Test methodology changed (#315)** — three defects shipped past a green suite, all found by searching the real vault: `tests/unit/SearchContentTool.test.ts` now runs every ranking assertion twice with the vault enumerated in both orders and fails loudly if the order decides it (a tie is not a ranking rule), plus a naming-style × query-style cross-product; `tests/debug/search-ranking-live-smoke.test.ts` (`RUN_SEARCH_SMOKE=1`) drives a live vault through the `nexus` CLI so the real `prepareFuzzySearch` is exercised. The `prepareFuzzySearch` mock in `tests/mocks/obsidian/core.ts` charges a small per-discontiguity penalty **capped at 8** — this reproduces why the bug existed; do not make it proportional or the tests go vacuous. Also: `nexus --vault X use … -- storage list` no longer strips the agent name (#310); `NoteEmbeddingService.embedNote` treats ENOENT as a skip, not an error, and no longer logs-and-rethrows (callers already log) (#316); task metadata shallow-merges (#307, issue #305); `load-state` returns current tags (#308, issue #306).
 - **v5.9.7** — Archive visibility fix for tagged states (PR #218, commit `eae5f507` + version bump `05ce7199`): drops the `stateMeta.tags ? null :` shortcut at `MemoryService.getStates:555` so `adapter.getState` always runs. Pre-fix, the SQLite-metadata fast-path skipped JSONL content fetch for tagged states, and the skeleton return path never surfaced `state.metadata.isArchived` — UI list filter and AI-facing `listStates` filter both saw archived tagged states as active. Surgical 1 LoC + 3 regression tests (`MemoryServiceGetStates.test.ts`). Both UI and AI filters inherit the fix (read from same `getStates` output). Manually verified in Obsidian. Tech-debt follow-up tracked in **issue #219** (denormalize `is_archived` into SQLite metadata, ~80–120 LoC, v13 migration — restores the perf shortcut without correctness cost).
 - **v5.9.6 + #215 / #216** (manually verified, **issue #215 closed**) — state CRUA tools (`updateState` + `archiveState`) added to MemoryManager + states management UI section under workspace settings. Contract: AI gets archive-only (soft, reversible); UI gets archive AND delete (humans can permanently destroy). No `deleteState` MCP tool exists. Storage extension: `state_updated` event mirroring `state_deleted` (~80 LoC across 9 files). 2 remediation cycles during review: Cycle 1 (B1 archiveState skeleton-corruption for tagged states, B2/B3 StateRepository event-fold + archive round-trip tests), Cycle 2 (M1 MemoryService.deleteState latent landmine — routed through `HybridStorageAdapter.deleteState` via `withDualBackend`). Post-merge manual-test surfaced the archive-visibility bug (fixed in v5.9.7 above). Frontend polish F1-F4 still open in **issue #217**.
 - **v5.9.6** — Startup hydration recovery (PR #211, commit `3cf6d3f5` + version bump `f16356ac`): self-healing for stalled startup hydration in `StartupHydrationController`.
@@ -152,37 +153,66 @@ Older versions: see `docs/changelog.md`.
    - `useTools`: Execution - unified context-first tool execution
    - *Only these 2 tools are exposed to Claude Desktop. All other agents work internally.*
 
+> Tool names below are the **CLI form** (`agent tool-name`, kebab-case) — what a
+> caller actually types and what `getTools`/`useTools` resolve. Verify against
+> `src/agents/**` (`slug:`) before trusting; the `/nexus-release` skill gates on
+> refreshing this list, and `tests/unit/shippedGuidanceCommands.test.ts` fails
+> when shipped docs name a tool that does not exist.
+
 1. **PromptManager** (`src/agents/promptManager/`) - Custom prompts and LLM integration
-   - Tools: listModels, executePrompts, createPrompt, updatePrompt, deletePrompt, listPrompts, getPrompt, generateImage
+   - `prompt`: execute, create, get, list, update, archive, sub, list-models,
+     generate-image, generate-audio, generate-video, check-generated-artifact
+   - No delete — the AI gets `archive` (reversible). Media generation is async:
+     `generate-*` returns a job, poll `check-generated-artifact <jobId>`.
 
 2. **ContentManager** (`src/agents/contentManager/`) - Note reading/editing operations
-   - Tools: read, write, replace, insert, setProperty
+   - `content`: read, write, replace, insert, set-property
+   - `read` requires `--start-line`. `replace` is pattern-anchored
+     `{path, start, end, content}` — anchor TEXT, not line numbers.
 
 3. **StorageManager** (`src/agents/storageManager/`) - File/folder management
-   - Tools: list, createFolder, move, copy, archive, open
+   - `storage`: list, create-folder, move, copy, archive, open
 
 4. **SearchManager** (`src/agents/searchManager/`) - Advanced search operations
-   - Tools: searchContent, searchDirectory, searchMemory
+   - `search`: content, directory, memory, query-notes
 
-5. **MemoryManager** (`src/agents/memoryManager/`) - Session/workspace/state management
-   - Tools: createSession, loadSession, createWorkspace, createState, etc.
+5. **MemoryManager** (`src/agents/memoryManager/`) - Workspace/state/workflow management
+   - `memory`: create-workspace, list-workspaces, search-workspaces, load-workspace,
+     update-workspace, archive-workspace, create-state, list-states, load-state,
+     update-state, archive-state, run
+   - No session tools — sessions are context fields, not tools. `memory run`
+     triggers a workflow (`--workflow-id`/`--workflow-name`).
 
 6. **CanvasManager** (`src/agents/canvasManager/`) - Obsidian canvas operations
-   - Tools: read, write, update, list
+   - `canvas`: read, write, update, list
 
 7. **TaskManager** (`src/agents/taskManager/`) - Workspace-scoped project/task management with DAG dependencies
-   - Tools: createProject, listProjects, updateProject, archiveProject, createTask, listTasks, updateTask, moveTask, queryTasks, linkNote
+   - `task`: create-project, list-projects, update-project, archive-project,
+     create, list, update, move, query, open, link-note
+   - Note the asymmetry: project tools are suffixed (`create-project`), task tools
+     are bare (`create`, `list`, `update`, `move`, `query`).
    - Services: TaskService (business facade), DAGService (pure computation)
    - Auto-loads task summary when workspace loads
 
 8. **IngestManager** (`src/agents/ingestManager/`) - PDF/audio ingestion
-   - Tools: ingest, listCapabilities
+   - `ingest`: run, capabilities
 
 9. **WebToolsAgent** (`src/agents/apps/webTools/`) - Headless browser tools (desktop-only)
-   - Tools: openWebpage, capturePagePdf, capturePagePng, captureToMarkdown, extractLinks
+   - `web`: open, capture-markdown, capture-png, capture-pdf, links
 
 10. **ComposerAgent** (`src/agents/apps/composer/`) - Multimodal file composition
-    - Tools: compose, listFormats
+    - `composer`: compose, list-formats
+
+11. **ElevenLabsAgent** (`src/agents/apps/elevenlabs/`) - AI audio (app, opt-in)
+    - `elevenlabs`: list-voices, sound-effects, generate-music
+    - No text-to-speech tool; TTS runs through `prompt generate-audio` using the
+      ElevenLabs Voice defaults.
+
+12. **DataAnalysisAgent** (`src/agents/apps/dataAnalysis/`) - Pyodide pandas (app, opt-in, desktop-only)
+    - `data`: run-python, list-capabilities
+
+13. **SkillsAgent** (`src/agents/apps/skills/`) - Skills Protocol (app, opt-in)
+    - `skills`: list-skills, load-skill, create-skill, update-skill, archive-skill, sync-skills
 
 ### Agent Structure Pattern
 ```
@@ -300,13 +330,22 @@ Instead of 50+ tools, MCP exposes just 2: `getTools` (discovery) and `useTools` 
 
 **Context Schema**: `{ workspaceId, sessionId, memory, goal, constraints? }` - all required except constraints.
 
-**Flow**: `getTools` → get schemas → `useTools` with context + calls array
+**Flow**: `getTools` → get schemas → `useTools` with the context fields at the top
+level plus a single `tool` string. Batch by separating commands with a top-level
+comma outside quotes: `"storage list --path Notes, content read --path a.md --start-line 1"`.
+
+⚠️ The `calls: [{agent, tool, params}]` array and the nested `context: {...}` object
+were removed in v5.9.0 and are rejected outright (`Deprecated payload shape`).
+Context fields must NOT appear as CLI flags inside the `tool` string either.
 
 **Benefits**: 95% token reduction (~15,000 → ~500), works with small context models.
 
 **Key Files**: `src/agents/toolManager/` (agent + tools), `src/services/trace/ToolCallTraceService.ts`
 
-**Tool Count**: 55 tools across 8 agents (not counting ToolManager meta-tools)
+**Tool Count**: 74 tools across 13 agents (not counting ToolManager meta-tools) —
+56 across the 8 always-on agents, plus 18 across the 5 opt-in apps (composer,
+elevenlabs, data, skills, web). A vault only exposes the apps it has enabled, so
+`cli-first-tool-schemas.json` (66/11) reflects the vault it was generated from.
 
 ## Memory & Workspace System
 

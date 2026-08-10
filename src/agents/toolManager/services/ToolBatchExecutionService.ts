@@ -5,6 +5,17 @@ import { NormalizedUseToolParams, ToolCallParams, ToolCallResult, ToolContext, U
 import { getErrorMessage } from '../../../utils/errorUtils';
 import { getNexusPlugin } from '../../../utils/pluginLocator';
 import { WorkspaceService } from '../../../services/WorkspaceService';
+import { matchWorkspaces } from '../../memoryManager/services/WorkspaceMatcher';
+
+/**
+ * The slice of NexusPlugin this service needs. Declared structurally to avoid
+ * importing the plugin class (circular) — but unlike an inline cast it names
+ * members that actually exist on the class.
+ */
+interface NexusPluginLike {
+  services?: { workspaceService?: WorkspaceService };
+  getService?<T>(name: string, timeoutMs?: number): Promise<T | null>;
+}
 
 export interface ToolManagerWorkspaceInfo {
   name: string;
@@ -236,6 +247,12 @@ export class ToolBatchExecutionService {
       return null;
     }
 
+    // Fast path over the boot-time snapshot, to skip the async lookup below on
+    // vaults where SQLite WAS query-ready at registration. It may only ACCEPT:
+    // a miss falls through to the live list rather than rejecting, so a stale or
+    // empty snapshot can never reject a real workspace. Do not add a rejection
+    // here — that asymmetry is what keeps this from being a second source of
+    // truth for the guard (#317).
     const byName = this.knownWorkspaces.find(workspace =>
       workspace.name.toLowerCase() === workspaceId.toLowerCase()
     );
@@ -244,26 +261,64 @@ export class ToolBatchExecutionService {
     }
 
     try {
-      const plugin = getNexusPlugin(this.app);
+      const plugin = getNexusPlugin(this.app) as NexusPluginLike | null;
       if (!plugin) {
         return null;
       }
 
-      const workspaceService = (plugin as { workspaceService?: WorkspaceService }).workspaceService;
+      // NexusPlugin exposes services via the `services` getter and `getService()`
+      // — there is no top-level `plugin.workspaceService`. Reading one silently
+      // yielded undefined here, so this whole validation branch never fired.
+      const workspaceService =
+        plugin.services?.workspaceService
+        ?? (await plugin.getService?.<WorkspaceService>('workspaceService'))
+        ?? null;
       if (!workspaceService) {
         return null;
       }
 
+      // Accept by id OR name off the LIVE list. Checking the name only against
+      // `knownWorkspaces` (above) rejected real workspaces on any vault whose
+      // boot snapshot was empty, while the message below — already built from
+      // the live list — named that same workspace as the closest match. Both
+      // halves must read the same list or the guard contradicts itself (#317).
       const workspaces = await workspaceService.listWorkspaces();
-      const byUuid = workspaces.find(workspace => workspace.id === workspaceId);
-      if (byUuid) {
+      const target = workspaceId.toLowerCase();
+      const byIdOrName = workspaces.find(workspace =>
+        workspace.id === workspaceId || workspace.name.toLowerCase() === target
+      );
+      if (byIdOrName) {
         return null;
       }
 
-      const availableNames = this.knownWorkspaces.length > 0
-        ? this.knownWorkspaces.map(workspace => `"${workspace.name}"`).join(', ')
+      // Last resort before rejecting: ask the canonical resolver. The reserved
+      // guides workspace is resolvable by either identifier but is deliberately
+      // absent from `listWorkspaces()`, so the list alone cannot see it — the
+      // gate would reject the one workspace the product intentionally hides.
+      // Only the ACCEPT path consults the resolver; the suggestions below stay
+      // on the visible list, so a hidden workspace is never advertised back to
+      // the caller. Reaching this only on an otherwise-certain rejection also
+      // keeps the extra lookup off the common path (#319).
+      const resolved = await workspaceService.getWorkspaceByNameOrId?.(workspaceId);
+      if (resolved) {
+        return null;
+      }
+
+      // Name the alternatives off the LIVE list, not `knownWorkspaces` — that
+      // snapshot is taken at boot and is empty whenever SQLite was not ready
+      // then, which produced "Available: (none created yet)" on vaults that
+      // had workspaces all along.
+      const active = workspaces.filter(workspace => !workspace.isArchived);
+      const availableNames = active.length > 0
+        ? active.map(workspace => `"${workspace.name}"`).join(', ')
         : '(none created yet)';
-      return `Invalid workspace "${workspaceId}". Available: "default" (global), ${availableNames}`;
+
+      // A wrong workspaceId is usually a near-miss on a real name, so point at
+      // the closest one instead of leaving the caller to guess again.
+      const closest = matchWorkspaces(active, workspaceId, { limit: 1 })[0];
+      const didYouMean = closest ? ` Closest match: "${closest.workspace.name}".` : '';
+
+      return `Invalid workspace "${workspaceId}".${didYouMean} Use one of these exact values — do not infer a workspace name from the user's wording. Available: "default" (global), ${availableNames}`;
     } catch {
       return null;
     }
@@ -343,9 +398,19 @@ export class ToolBatchExecutionService {
 
         const { data, ...extra } = toolResultPayload;
 
+        const hasExtra = Object.keys(extra).length > 0;
+
         if (data !== undefined && data !== null) {
-          result.data = data;
-        } else if (Object.keys(extra).length > 0) {
+          // Keep sibling fields instead of dropping them. A tool that returns
+          // `data` PLUS a top-level field used to lose the latter silently —
+          // which is how loadWorkspace's `resolution` note vanished, leaving
+          // an auto-resolved near-miss looking like a plain successful load
+          // and the caller never learning a different workspace was opened.
+          // `data` is spread last so no existing key can change value.
+          result.data = hasExtra && typeof data === 'object' && !Array.isArray(data)
+            ? { ...extra, ...(data as Record<string, unknown>) }
+            : data;
+        } else if (hasExtra) {
           result.data = extra;
         }
       }
