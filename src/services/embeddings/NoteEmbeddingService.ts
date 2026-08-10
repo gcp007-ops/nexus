@@ -28,6 +28,13 @@ import type { QueryParams } from '../../database/repositories/base/BaseRepositor
 import { EmbeddingAdapter, type QueryAdapter } from './adapter/EmbeddingAdapter';
 
 const asQueryParams = (params: unknown[]): QueryParams => params as unknown as QueryParams;
+const SQLITE_SCOPED_PATH_CHUNK_SIZE = 900;
+
+interface SemanticCandidate {
+  notePath: string;
+  distance: number;
+  updated: number;
+}
 
 /**
  * True when an error means the note is no longer at the path we read.
@@ -207,8 +214,16 @@ export class NoteEmbeddingService {
    * @param limit - Maximum number of results (default: 10)
    * @returns Array of matching notes with distance scores
    */
-  async semanticSearch(query: string, limit = 10): Promise<SimilarNote[]> {
+  async semanticSearch(
+    query: string,
+    limit = 10,
+    allowedNotePaths?: readonly string[]
+  ): Promise<SimilarNote[]> {
     try {
+      if (allowedNotePaths && allowedNotePaths.length === 0) {
+        return [];
+      }
+
       // Generate query embedding, then apply the query-side adapter.
       // Identity adapter returns the vector untouched (zero behavior change).
       const queryEmbedding = await this.engine.generateEmbedding(query);
@@ -219,16 +234,37 @@ export class NoteEmbeddingService {
       // Fetch 3x the limit to allow for re-ranking
       const candidateLimit = limit * 3;
 
-      const candidates = await this.db.query<{ notePath: string; distance: number; updated: number }>(`
-        SELECT
-          em.notePath,
-          em.updated,
-          vec_distance_l2(ne.embedding, ?) as distance
-        FROM note_embeddings ne
-        JOIN embedding_metadata em ON em.rowid = ne.rowid
-        ORDER BY distance
-        LIMIT ?
-      `, asQueryParams([queryBuffer, candidateLimit]));
+      let candidates: SemanticCandidate[];
+      if (allowedNotePaths === undefined) {
+        candidates = await this.db.query<SemanticCandidate>(`
+          SELECT
+            em.notePath,
+            em.updated,
+            vec_distance_l2(ne.embedding, ?) as distance
+          FROM note_embeddings ne
+          JOIN embedding_metadata em ON em.rowid = ne.rowid
+          ORDER BY distance
+          LIMIT ?
+        `, asQueryParams([queryBuffer, candidateLimit]));
+      } else {
+        candidates = [];
+        for (let offset = 0; offset < allowedNotePaths.length; offset += SQLITE_SCOPED_PATH_CHUNK_SIZE) {
+          const pathChunk = allowedNotePaths.slice(offset, offset + SQLITE_SCOPED_PATH_CHUNK_SIZE);
+          const placeholders = pathChunk.map(() => '?').join(', ');
+          const chunkCandidates = await this.db.query<SemanticCandidate>(`
+            SELECT
+              em.notePath,
+              em.updated,
+              vec_distance_l2(ne.embedding, ?) as distance
+            FROM note_embeddings ne
+            JOIN embedding_metadata em ON em.rowid = ne.rowid
+            WHERE em.notePath IN (${placeholders})
+            ORDER BY distance
+            LIMIT ?
+          `, asQueryParams([queryBuffer, ...pathChunk, candidateLimit]));
+          candidates.push(...chunkCandidates);
+        }
+      }
 
       // 2. RE-RANKING LOGIC
       const now = Date.now();
