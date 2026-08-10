@@ -128,7 +128,7 @@ Expected: PASS.
 - Consumes: completed patch and regression suite.
 - Produces: intentional commits on `fix/mcp-session-workspace-propagation-5163` with no unrelated changes.
 
-- [ ] **Step 1: Run static and build verification**
+- [x] **Step 1: Run static and build verification**
 
 Run: `npm run build`
 
@@ -136,13 +136,13 @@ Run: `npm run lint -- --no-fix`
 
 Expected: both exit 0.
 
-- [ ] **Step 2: Run proportional regression tests**
+- [x] **Step 2: Run proportional regression tests**
 
 Run: `npm test -- --runInBand --testPathIgnorePatterns=ModelAgentManager`
 
 Expected: all relevant tests pass; if the known `LocalCliInstaller` Windows simulation failure appears, record it as unchanged baseline rather than modifying it.
 
-- [ ] **Step 3: Inspect the patch**
+- [x] **Step 3: Inspect the patch**
 
 Run: `git diff --check`
 
@@ -152,6 +152,17 @@ Run: `git diff --stat fork/main...HEAD`
 
 Expected: only the plan, ToolManager/session/request-boundary production files, and their tests are present.
 
-- [ ] **Step 4: Commit intentionally**
+- [x] **Step 4: Commit intentionally**
 
 Commit the plan/tests and implementation with messages scoped to issue #214. Do not push.
+
+## Execution Evidence
+
+- RED: 8 expected failures and 17 passes across the three new/extended focal suites before production changes.
+- GREEN focal: 34/34 tests passed across session resolution, request-boundary propagation, schema, connector, and batch execution suites.
+- Headless contract: 7/7 tests passed after aligning the real-stack schema expectation.
+- Build: `npm run build` exited 0, including ESLint, both TypeScript configurations, CLI bundle, plugin bundle, and connector generation.
+- Lint: `npm run lint -- --no-fix` exited 0; npm emitted only its existing nested-script CLI warning.
+- Regression: 4,255 passed, 29 skipped, 1 failed. The sole failure was the pre-existing `LocalCliInstaller` Windows namesake-PATH simulation at `tests/services/cli/LocalCliInstaller.test.ts:398`.
+- Commit: `5eadbd91 fix(mcp): preserve session workspace when omitted (#214)`.
+- Publication/deployment: not performed.
