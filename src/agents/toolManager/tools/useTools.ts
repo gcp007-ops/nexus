@@ -22,7 +22,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
   ) {
     this.slug = 'useTools';
     this.name = 'Use Tools';
-    this.description = 'Execute one or more CLI-style tool commands from the top-level "tool" field. Known-good example: {"workspaceId":"default","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available workspaces.","tool":"memory list-workspaces"}. Use one stable human-readable session name for the conversation; reuse that same sessionId value for every useTools call so traces and saved states attach to the current session. Nexus stores the internal UUID silently. '
+    this.description = 'Execute one or more CLI-style tool commands from the top-level "tool" field. Known-good first-call example: {"workspaceId":"<the workspace you are working in>","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available workspaces.","tool":"memory list-workspaces"}. Use one stable human-readable session name for the conversation; reuse that same sessionId value for every useTools call so traces and saved states attach to the current session. Later calls with that unambiguous sessionId may omit workspaceId and inherit the remembered workspace. Nexus stores the internal UUID silently. '
       + CLI_BATCHING_RULE + ' '
       + CLI_MULTILINE_RULE + ' '
       + CLI_VALUES_RULE + ' Example: ' + CLI_VALUES_EXAMPLE
@@ -50,7 +50,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
       properties: {
         workspaceId: {
           type: 'string',
-          description: 'Workspace ID. Optional. Defaults to "default".'
+          description: 'Workspace ID for this operation. Pass it when establishing or changing the workspace for a session. Later calls with the same unambiguous sessionId may omit it and inherit the remembered workspace. Use "default" only for the global workspace; do not invent IDs.'
         },
         sessionId: {
           type: 'string',
@@ -87,7 +87,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
             + ' Keys use letters, digits, "_" or "-". Example: ' + CLI_VALUES_EXAMPLE
         }
       },
-      required: ['workspaceId', 'sessionId', 'memory', 'goal', 'tool']
+      required: ['sessionId', 'memory', 'goal', 'tool']
     };
   }
 

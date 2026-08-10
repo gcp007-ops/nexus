@@ -2,7 +2,10 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { IRequestStrategy } from './IRequestStrategy';
 import { IRequestHandlerDependencies, IRequestContext, SessionInfo, ToolExecutionResult } from '../interfaces/IRequestHandlerServices';
 import { IAgent } from '../../agents/interfaces/IAgent';
-import { SessionContextManager } from '../../services/SessionContextManager';
+import {
+    AmbiguousSessionHandleError,
+    SessionContextManager
+} from '../../services/SessionContextManager';
 import { logger } from '../../utils/logger';
 import { getErrorMessage } from '../../utils/errorUtils';
 
@@ -246,7 +249,16 @@ export class ToolExecutionStrategy implements IRequestStrategy<ToolExecutionRequ
                 }
                 params.sessionId = validationResult.id;
                 params._displaySessionId = validationResult.displaySessionId;
+                if (agentName === 'toolManager') {
+                    // ToolManager normalizes the top-level envelope into batch
+                    // context after this boundary. Preserve the workspace bound
+                    // to the friendly session before that defaulting occurs.
+                    params.workspaceId = validationResult.effectiveWorkspaceId;
+                }
             } catch (error) {
+                if (error instanceof AmbiguousSessionHandleError) {
+                    throw error;
+                }
                 logger.systemWarn(`SessionContextManager validation failed: ${getErrorMessage(error)}. Falling back to SessionService`);
                 // Fallback to original SessionService if SessionContextManager fails
                 sessionInfo = await this.dependencies.sessionService.processSessionId(sessionId);

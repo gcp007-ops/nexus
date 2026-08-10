@@ -38,6 +38,17 @@ export interface SessionValidationResult {
   created: boolean;
   displaySessionId: string;
   displaySessionIdChanged: boolean;
+  effectiveWorkspaceId: string;
+}
+
+export class AmbiguousSessionHandleError extends Error {
+  constructor(handle: string, workspaceIds: string[]) {
+    super(
+      `Ambiguous session handle "${handle}" exists in multiple workspaces: ${workspaceIds.join(', ')}. ` +
+      'Pass workspaceId explicitly.'
+    );
+    this.name = 'AmbiguousSessionHandleError';
+  }
 }
 
 /**
@@ -119,6 +130,30 @@ export class SessionContextManager {
     this.sessionContextMap.delete(sessionId);
     this.sessionActiveSkillsMap.delete(sessionId);
     this.instructedSessions.delete(sessionId);
+  }
+
+  /**
+   * Resolve a friendly handle without a caller-supplied workspace.
+   * The paired input/display keys share the same entry object, so object
+   * identity distinguishes aliases from genuine cross-workspace collisions.
+   */
+  private resolveHandleAcrossWorkspaces(
+    handle: string
+  ): { id: string; displaySessionId: string; workspaceId: string } | undefined {
+    const matches = new Set<{ id: string; displaySessionId: string; workspaceId: string }>();
+
+    for (const [key, entry] of this.sessionHandleMap.entries()) {
+      if (key === this.handleKey(entry.workspaceId, handle)) {
+        matches.add(entry);
+      }
+    }
+
+    if (matches.size > 1) {
+      const workspaceIds = Array.from(matches, entry => entry.workspaceId).sort();
+      throw new AmbiguousSessionHandleError(handle, workspaceIds);
+    }
+
+    return matches.values().next().value;
   }
   
   /**
@@ -318,45 +353,52 @@ export class SessionContextManager {
   async validateSessionId(
     sessionId: string,
     sessionDescription?: string,
-    workspaceId = 'default'
+    workspaceId?: string
   ): Promise<SessionValidationResult> {
+    const requestedWorkspaceId = workspaceId?.trim() || undefined;
+    const fallbackWorkspaceId = requestedWorkspaceId ?? 'default';
     
     // If no session ID is provided, generate a new one in our standard format
     if (!sessionId) {
       logger.systemWarn('Empty sessionId provided for validation, generating a new one');
       const newId = generateSessionId();
-      await this.createAutoSession(newId, 'Default Session', sessionDescription);
+      await this.createAutoSession(newId, 'Default Session', sessionDescription, fallbackWorkspaceId);
       return {
         id: newId,
         created: true,
         displaySessionId: 'Default Session',
-        displaySessionIdChanged: true
+        displaySessionIdChanged: true,
+        effectiveWorkspaceId: fallbackWorkspaceId
       };
     }
     
     // If the session ID doesn't match our standard format, it's a friendly name - create session
     if (!isStandardSessionId(sessionId)) {
-      const existingHandle = this.sessionHandleMap.get(this.handleKey(workspaceId, sessionId));
+      const existingHandle = requestedWorkspaceId
+        ? this.sessionHandleMap.get(this.handleKey(requestedWorkspaceId, sessionId))
+        : this.resolveHandleAcrossWorkspaces(sessionId);
       if (existingHandle) {
         return {
           id: existingHandle.id,
           created: false,
           displaySessionId: existingHandle.displaySessionId,
-          displaySessionIdChanged: existingHandle.displaySessionId !== sessionId
+          displaySessionIdChanged: existingHandle.displaySessionId !== sessionId,
+          effectiveWorkspaceId: existingHandle.workspaceId
         };
       }
 
       const newId = generateSessionId();
-      const displaySessionId = await this.createUniqueSessionDisplayName(sessionId, workspaceId);
-      const handleEntry = { id: newId, displaySessionId, workspaceId };
-      this.sessionHandleMap.set(this.handleKey(workspaceId, sessionId), handleEntry);
-      this.sessionHandleMap.set(this.handleKey(workspaceId, displaySessionId), handleEntry);
-      await this.createAutoSession(newId, displaySessionId, sessionDescription, workspaceId);
+      const displaySessionId = await this.createUniqueSessionDisplayName(sessionId, fallbackWorkspaceId);
+      const handleEntry = { id: newId, displaySessionId, workspaceId: fallbackWorkspaceId };
+      this.sessionHandleMap.set(this.handleKey(fallbackWorkspaceId, sessionId), handleEntry);
+      this.sessionHandleMap.set(this.handleKey(fallbackWorkspaceId, displaySessionId), handleEntry);
+      await this.createAutoSession(newId, displaySessionId, sessionDescription, fallbackWorkspaceId);
       return {
         id: newId,
         created: true,
         displaySessionId,
-        displaySessionIdChanged: displaySessionId !== sessionId
+        displaySessionIdChanged: displaySessionId !== sessionId,
+        effectiveWorkspaceId: fallbackWorkspaceId
       };
     }
     
@@ -365,7 +407,13 @@ export class SessionContextManager {
     // it means the session was already bound - no need to check database
     if (this.sessionContextMap.has(sessionId)) {
       logger.systemLog(`Session ${sessionId} found in context map - already bound to workspace`);
-      return {id: sessionId, created: false, displaySessionId: sessionId, displaySessionIdChanged: false};
+      return {
+        id: sessionId,
+        created: false,
+        displaySessionId: sessionId,
+        displaySessionIdChanged: false,
+        effectiveWorkspaceId: this.sessionContextMap.get(sessionId)!.workspaceId
+      };
     }
 
     // Check database if not in context map
@@ -377,15 +425,38 @@ export class SessionContextManager {
     try {
       const existingSession = await this.sessionService.getSession(sessionId);
       if (existingSession) {
-        return {id: sessionId, created: false, displaySessionId: sessionId, displaySessionIdChanged: false};
+        return {
+          id: sessionId,
+          created: false,
+          displaySessionId: sessionId,
+          displaySessionIdChanged: false,
+          effectiveWorkspaceId: existingSession.workspaceId || fallbackWorkspaceId
+        };
       } else {
-        await this.createAutoSession(sessionId, `Session ${sessionId}`, sessionDescription);
-        return {id: sessionId, created: true, displaySessionId: sessionId, displaySessionIdChanged: false};
+        await this.createAutoSession(
+          sessionId,
+          `Session ${sessionId}`,
+          sessionDescription,
+          fallbackWorkspaceId
+        );
+        return {
+          id: sessionId,
+          created: true,
+          displaySessionId: sessionId,
+          displaySessionIdChanged: false,
+          effectiveWorkspaceId: fallbackWorkspaceId
+        };
       }
     } catch (error) {
       logger.systemWarn(`Error checking session existence: ${error instanceof Error ? error.message : String(error)}`);
       // Fallback to returning the session ID without verification
-      return {id: sessionId, created: false, displaySessionId: sessionId, displaySessionIdChanged: false};
+      return {
+        id: sessionId,
+        created: false,
+        displaySessionId: sessionId,
+        displaySessionIdChanged: false,
+        effectiveWorkspaceId: fallbackWorkspaceId
+      };
     }
   }
 
