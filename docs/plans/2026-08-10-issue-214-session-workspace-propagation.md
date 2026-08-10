@@ -232,4 +232,5 @@ Commit only the four correction files, their tests, and this evidence update. Do
 - Adjacent regression: 51/51 tests passed across DirectToolExecutor, AgentExecutionManager, request-boundary propagation, session resolution, ToolManager schema, connector, batch execution, and headless contract suites.
 - Build: `npm run build` exited 0, including ESLint, both TypeScript configurations, CLI bundle, plugin bundle, and connector generation.
 - Full regression: 4,262 passed, 29 skipped, 1 failed. The sole failure remained the pre-existing `LocalCliInstaller` Windows namesake-PATH simulation at `tests/services/cli/LocalCliInstaller.test.ts:398`.
+- Correction commit: `e435377e fix(mcp): close alternate session workspace paths (#214)`.
 - Publication/deployment: not performed.
