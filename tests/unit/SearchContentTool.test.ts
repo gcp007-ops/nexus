@@ -33,6 +33,8 @@
 
 import { Plugin, TFile } from 'obsidian';
 import { SearchContentTool, ContentSearchParams, ContentSearchResult } from '../../src/agents/searchManager/tools/searchContent';
+import type { EmbeddingService } from '../../src/services/embeddings/EmbeddingService';
+import type { SimilarNote } from '../../src/services/embeddings/NoteEmbeddingService';
 
 interface VaultFile {
   path: string;
@@ -79,6 +81,33 @@ function createTool(files: VaultFile[]): SearchContentTool {
   return new SearchContentTool(plugin);
 }
 
+function createSemanticTool(
+  paths: string[],
+  semanticSearch: jest.Mock<Promise<SimilarNote[]>, [string, number, readonly string[]?]>
+): SearchContentTool {
+  const tFiles = paths.map(path => new TFile(path.split('/').pop() ?? path, path));
+  const byPath = new Map(tFiles.map(file => [file.path, file]));
+  const plugin = {
+    app: {
+      vault: {
+        getMarkdownFiles: () => tFiles,
+        getAbstractFileByPath: (path: string) => byPath.get(path) ?? null
+      },
+      metadataCache: {
+        getFileCache: () => null
+      }
+    }
+  } as unknown as Plugin;
+
+  const tool = new SearchContentTool(plugin);
+  tool.setEmbeddingService({
+    isServiceEnabled: () => true,
+    getStats: async () => ({ noteCount: tFiles.length, traceCount: 0, conversationChunkCount: 0 }),
+    semanticSearch
+  } as unknown as EmbeddingService);
+  return tool;
+}
+
 function params(overrides: Partial<ContentSearchParams> = {}): ContentSearchParams {
   return {
     context: BASE_CONTEXT,
@@ -99,6 +128,92 @@ function resultsOf(result: ContentSearchResult): ContentSearchResult['results'] 
   const nested = (result as unknown as { data?: ContentSearchResult }).data;
   return nested?.results ?? result.results ?? [];
 }
+
+function successOf(result: ContentSearchResult): boolean {
+  const envelope = result as unknown as { success?: boolean; data?: ContentSearchResult };
+  return envelope.data?.success ?? envelope.success ?? false;
+}
+
+describe('SearchContentTool — semantic path scope', () => {
+  const VAULT_PATHS = [
+    'Archive/global-nearest.md',
+    '_Base/Policies/target.md',
+    '_Base/Workflows/other.md',
+    'Projects/target.md'
+  ];
+
+  it('resolves literal prefixes before vector retrieval so an in-scope target outside the global top set is searchable', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>(
+      async (_query, _limit, allowedNotePaths) => {
+        if (allowedNotePaths?.includes('_Base/Policies/target.md')) {
+          return [{ notePath: '_Base/Policies/target.md', distance: 0.42 }];
+        }
+        return [{ notePath: 'Archive/global-nearest.md', distance: 0.01 }];
+      }
+    );
+    const tool = createSemanticTool(VAULT_PATHS, semanticSearch);
+
+    const result = await tool.execute(params({
+      query: 'governance policy',
+      semantic: true,
+      paths: ['_Base/'],
+      limit: 1
+    }));
+
+    expect(semanticSearch).toHaveBeenCalledWith(
+      'governance policy',
+      1,
+      ['_Base/Policies/target.md', '_Base/Workflows/other.md']
+    );
+    expect(resultsOf(result).map(entry => entry.filePath)).toEqual(['_Base/Policies/target.md']);
+  });
+
+  it('resolves glob scopes to exact Markdown paths before vector retrieval', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>()
+      .mockResolvedValue([{ notePath: '_Base/Policies/target.md', distance: 0.2 }]);
+    const tool = createSemanticTool(VAULT_PATHS, semanticSearch);
+
+    await tool.execute(params({
+      query: 'policy',
+      semantic: true,
+      paths: ['_Base/**/target.md'],
+      limit: 5
+    }));
+
+    expect(semanticSearch).toHaveBeenCalledWith(
+      'policy',
+      5,
+      ['_Base/Policies/target.md']
+    );
+  });
+
+  it('returns a successful empty result when an explicit scope matches no Markdown files', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>()
+      .mockResolvedValue([]);
+    const tool = createSemanticTool(VAULT_PATHS, semanticSearch);
+
+    const result = await tool.execute(params({
+      query: 'missing',
+      semantic: true,
+      paths: ['DoesNotExist/'],
+      limit: 3
+    }));
+
+    expect(semanticSearch).toHaveBeenCalledWith('missing', 3, []);
+    expect(successOf(result)).toBe(true);
+    expect(resultsOf(result)).toEqual([]);
+  });
+
+  it('keeps unscoped vector retrieval free of an allowed-path argument', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>()
+      .mockResolvedValue([{ notePath: 'Archive/global-nearest.md', distance: 0.01 }]);
+    const tool = createSemanticTool(VAULT_PATHS, semanticSearch);
+
+    await tool.execute(params({ query: 'nearest', semantic: true, paths: [], limit: 4 }));
+
+    expect(semanticSearch).toHaveBeenCalledWith('nearest', 8);
+  });
+});
 
 /**
  * Rank `files` and return the results, having first proved the ranking is a
