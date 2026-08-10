@@ -128,7 +128,7 @@ Expected: PASS.
 - Consumes: completed patch and regression suite.
 - Produces: intentional commits on `fix/mcp-session-workspace-propagation-5163` with no unrelated changes.
 
-- [ ] **Step 1: Run static and build verification**
+- [x] **Step 1: Run static and build verification**
 
 Run: `npm run build`
 
@@ -136,13 +136,13 @@ Run: `npm run lint -- --no-fix`
 
 Expected: both exit 0.
 
-- [ ] **Step 2: Run proportional regression tests**
+- [x] **Step 2: Run proportional regression tests**
 
 Run: `npm test -- --runInBand --testPathIgnorePatterns=ModelAgentManager`
 
 Expected: all relevant tests pass; if the known `LocalCliInstaller` Windows simulation failure appears, record it as unchanged baseline rather than modifying it.
 
-- [ ] **Step 3: Inspect the patch**
+- [x] **Step 3: Inspect the patch**
 
 Run: `git diff --check`
 
@@ -152,6 +152,84 @@ Run: `git diff --stat fork/main...HEAD`
 
 Expected: only the plan, ToolManager/session/request-boundary production files, and their tests are present.
 
-- [ ] **Step 4: Commit intentionally**
+- [x] **Step 4: Commit intentionally**
 
 Commit the plan/tests and implementation with messages scoped to issue #214. Do not push.
+
+## Execution Evidence
+
+- RED: 8 expected failures and 17 passes across the three new/extended focal suites before production changes.
+- GREEN focal: 34/34 tests passed across session resolution, request-boundary propagation, schema, connector, and batch execution suites.
+- Headless contract: 7/7 tests passed after aligning the real-stack schema expectation.
+- Build: `npm run build` exited 0, including ESLint, both TypeScript configurations, CLI bundle, plugin bundle, and connector generation.
+- Lint: `npm run lint -- --no-fix` exited 0; npm emitted only its existing nested-script CLI warning.
+- Regression: 4,255 passed, 29 skipped, 1 failed. The sole failure was the pre-existing `LocalCliInstaller` Windows namesake-PATH simulation at `tests/services/cli/LocalCliInstaller.test.ts:398`.
+- Commit: `5eadbd91 fix(mcp): preserve session workspace when omitted (#214)`.
+- Publication/deployment: not performed.
+
+### Task 5: Close alternate-entrypoint workspace leaks
+
+**Files:**
+- Create: `tests/unit/DirectToolExecutorSessionWorkspace.test.ts`
+- Modify: `tests/unit/AgentExecutionManager.processResponse.test.ts`
+- Modify: `src/services/chat/DirectToolExecutor.ts`
+- Modify: `src/server/execution/AgentExecutionManager.ts`
+
+**Interfaces:**
+- Consumes: `SessionContextManager.validateSessionId(...).effectiveWorkspaceId` and `AmbiguousSessionHandleError`.
+- Produces: native-chat ToolManager batches resolved through the same session-workspace contract; server execution that cannot continue after ambiguous session validation.
+
+- [x] **Step 1: Write failing DirectToolExecutor tests**
+
+Drive the public `executeTool()` surface with a real `ToolManagerAgent`. Establish a friendly handle through an explicit `getTools` call, omit `workspaceId` on `useTools`, and assert the normalized batch receives the remembered workspace. Establish the same handle in two workspaces and assert omission rejects before batch execution. Characterize explicit workspace and first-use omission as preserving their existing explicit/`default` outcomes.
+
+- [x] **Step 2: Verify DirectToolExecutor RED**
+
+Run: `npm test -- --runInBand tests/unit/DirectToolExecutorSessionWorkspace.test.ts`
+
+Expected: unique inheritance receives `default`, and ambiguous omission executes instead of rejecting.
+
+- [x] **Step 3: Implement minimal asynchronous ToolManager context resolution**
+
+Retain the configured `SessionContextManager`, resolve a non-empty session handle before inserting the workspace fallback, copy only `effectiveWorkspaceId` into the meta-tool envelope, rethrow `AmbiguousSessionHandleError`, and preserve the prior explicit/`default` merge when validation fails for any other reason. Use the same merge in `getTools` so an explicit discovery call establishes the binding consumed by a later `useTools` call.
+
+- [x] **Step 4: Verify DirectToolExecutor GREEN**
+
+Run: `npm test -- --runInBand tests/unit/DirectToolExecutorSessionWorkspace.test.ts`
+
+Expected: PASS.
+
+- [x] **Step 5: Write and verify failing AgentExecutionManager test**
+
+Create duplicate real handle bindings, execute through `executeAgentTool()`, and assert `AmbiguousSessionHandleError` escapes while the agent is never invoked. Add a characterization that a non-ambiguous validation error retains the existing original-parameter fallback.
+
+Run: `npm test -- --runInBand tests/unit/AgentExecutionManager.processResponse.test.ts`
+
+Expected: ambiguous omission executes the agent instead of rejecting; non-ambiguous fallback passes.
+
+- [x] **Step 6: Implement fail-closed ambiguity propagation**
+
+Rethrow `AmbiguousSessionHandleError` from `processSessionContext()` and preserve it through the public execution wrapper. Keep the existing warning-and-original-params path for every other validation error.
+
+- [x] **Step 7: Verify focused and adjacent suites**
+
+Run: `npm test -- --runInBand tests/unit/DirectToolExecutorSessionWorkspace.test.ts tests/unit/AgentExecutionManager.processResponse.test.ts tests/unit/ToolExecutionStrategy.buildRequestContext.test.ts tests/unit/SessionContextManager.test.ts tests/unit/ToolManagerSessionWorkspacePropagation.test.ts tests/eval/headless/headless.smoke.test.ts`
+
+Expected: PASS.
+
+- [x] **Step 8: Build, inspect, and commit the correction**
+
+Run: `npm run build`
+
+Run: `git diff --check`
+
+Commit only the four correction files, their tests, and this evidence update. Do not push or deploy.
+
+### Correction Evidence
+
+- RED: 3 expected failures and 7 passes across the two correction suites. Unique DirectToolExecutor inheritance received `default`; both direct and agent-manager ambiguous omissions executed instead of rejecting. Explicit workspace, first-use `default`, and non-ambiguous fallback characterizations remained green.
+- GREEN focal: 10/10 tests passed across the two correction suites.
+- Adjacent regression: 51/51 tests passed across DirectToolExecutor, AgentExecutionManager, request-boundary propagation, session resolution, ToolManager schema, connector, batch execution, and headless contract suites.
+- Build: `npm run build` exited 0, including ESLint, both TypeScript configurations, CLI bundle, plugin bundle, and connector generation.
+- Full regression: 4,262 passed, 29 skipped, 1 failed. The sole failure remained the pre-existing `LocalCliInstaller` Windows namesake-PATH simulation at `tests/services/cli/LocalCliInstaller.test.ts:398`.
+- Publication/deployment: not performed.

@@ -4,7 +4,11 @@
  */
 
 import { AgentRegistry } from '../services/AgentRegistry';
-import { SessionContextManager, WorkspaceContext } from '../../services/SessionContextManager';
+import {
+    AmbiguousSessionHandleError,
+    SessionContextManager,
+    WorkspaceContext
+} from '../../services/SessionContextManager';
 import { NexusError, NexusErrorCode } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { getErrorMessage } from '../../utils/errorUtils';
@@ -62,6 +66,9 @@ export class AgentExecutionManager {
             // Add session instructions if needed
             return this.addSessionInstructions(processedParams, result);
         } catch (error) {
+            if (error instanceof AmbiguousSessionHandleError) {
+                throw error;
+            }
             if (error instanceof NexusError) {
                 throw error;
             }
@@ -140,6 +147,9 @@ export class AgentExecutionManager {
 
             return params;
         } catch (error) {
+            if (error instanceof AmbiguousSessionHandleError) {
+                throw error;
+            }
             logger.systemWarn(`Session validation failed: ${getErrorMessage(error)}. Using original ID`);
             return params;
         }
