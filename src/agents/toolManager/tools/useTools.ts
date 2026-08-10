@@ -15,7 +15,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
   ) {
     this.slug = 'useTools';
     this.name = 'Use Tools';
-    this.description = 'Execute one or more CLI-style tool commands from the top-level "tool" field. Known-good example: {"workspaceId":"default","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available workspaces.","tool":"memory list-workspaces"}. Use one stable human-readable session name for the conversation; reuse that same sessionId value for every useTools call so traces and saved states attach to the current session. Nexus stores the internal UUID silently. Multiple commands are separated only by a top-level comma outside quotes, so commas inside quoted values are preserved. For multiline text such as note bodies or Markdown, wrap the value in quotes and use escaped newlines like "# Title\\n\\nBody"; the parser decodes them before execution. When you already know several files you want to read, batch them as comma-separated "content read" commands in ONE call with strategy "parallel" — do not issue a separate useTools call per file. IMPORTANT: You MUST call getTools first to inspect the exact command signatures before calling this tool.';
+    this.description = 'Execute one or more CLI-style tool commands from the top-level "tool" field. Known-good first-call example: {"workspaceId":"<the workspace you are working in>","sessionId":"workspace setup","memory":"Summarize work so far.","goal":"Inspect available workspaces.","tool":"memory list-workspaces"}. Use one stable human-readable session name for the conversation; reuse that same sessionId value for every useTools call so traces and saved states attach to the current session. Later calls with that unambiguous sessionId may omit workspaceId and inherit the remembered workspace. Nexus stores the internal UUID silently. Multiple commands are separated only by a top-level comma outside quotes, so commas inside quoted values are preserved. For multiline text such as note bodies or Markdown, wrap the value in quotes and use escaped newlines like "# Title\\n\\nBody"; the parser decodes them before execution. When you already know several files you want to read, batch them as comma-separated "content read" commands in ONE call with strategy "parallel" — do not issue a separate useTools call per file. IMPORTANT: You MUST call getTools first to inspect the exact command signatures before calling this tool.';
     this.version = '1.0.0';
   }
 
@@ -39,7 +39,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
       properties: {
         workspaceId: {
           type: 'string',
-          description: 'Workspace ID. Optional. Defaults to "default".'
+          description: 'Workspace ID for this operation. Pass it when establishing or changing the workspace for a session. Later calls with the same unambiguous sessionId may omit it and inherit the remembered workspace. Use "default" only for the global workspace; do not invent IDs.'
         },
         sessionId: {
           type: 'string',
@@ -67,7 +67,7 @@ export class UseToolTool implements ITool<UseToolParams, UseToolResult> {
           description: 'Execution strategy for multiple CLI commands. Defaults to serial. Use "parallel" for independent read-only commands (e.g. batched content reads) to avoid wasted round-trips.'
         }
       },
-      required: ['workspaceId', 'sessionId', 'memory', 'goal', 'tool']
+      required: ['sessionId', 'memory', 'goal', 'tool']
     };
   }
 

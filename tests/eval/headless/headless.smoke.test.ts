@@ -59,7 +59,7 @@ describe('HeadlessAgentStack', () => {
     expect(stack.toolManager).toBeDefined();
   });
 
-  it('should expose CLI-first meta-tool schemas with required top-level context fields', () => {
+  it('should expose CLI-first meta-tool schemas with an optional workspace field', () => {
     const getToolsSchema = stack.toolManager.getTool('getTools')?.getParameterSchema() as {
       required?: string[];
       properties?: Record<string, unknown>;
@@ -70,11 +70,13 @@ describe('HeadlessAgentStack', () => {
     };
 
     expect(getToolsSchema.required).toEqual(
-      expect.arrayContaining(['workspaceId', 'sessionId', 'memory', 'goal', 'tool'])
+      expect.arrayContaining(['sessionId', 'memory', 'goal', 'tool'])
     );
     expect(useToolsSchema.required).toEqual(
-      expect.arrayContaining(['workspaceId', 'sessionId', 'memory', 'goal', 'tool'])
+      expect.arrayContaining(['sessionId', 'memory', 'goal', 'tool'])
     );
+    expect(getToolsSchema.required).not.toContain('workspaceId');
+    expect(useToolsSchema.required).not.toContain('workspaceId');
 
     expect(getToolsSchema.properties).toHaveProperty('workspaceId');
     expect(getToolsSchema.properties).toHaveProperty('sessionId');

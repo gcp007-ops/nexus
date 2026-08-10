@@ -26,11 +26,12 @@ import type {
 } from '../../src/handlers/interfaces/IRequestHandlerServices';
 import type { IAgent } from '../../src/agents/interfaces/IAgent';
 import type { ITool } from '../../src/agents/interfaces/ITool';
-import type { SessionContextManager } from '../../src/services/SessionContextManager';
+import { SessionContextManager } from '../../src/services/SessionContextManager';
 
 interface CapturedExecution {
   sessionInfo?: SessionInfo;
   toolParams?: Record<string, unknown>;
+  callbackParams?: Record<string, unknown>;
 }
 
 function makeStubTool(): ITool {
@@ -184,6 +185,76 @@ describe('ToolExecutionStrategy.buildRequestContext', () => {
     }));
 
     expect(validateSessionId).toHaveBeenCalledWith('chat', 'm', 'ws-from-context');
+  });
+
+  it('injects the inherited workspace into raw useTools params before execution and tracing', async () => {
+    const tool = makeStubTool();
+    tool.slug = 'useTools';
+    const agent = makeStubAgent(tool, 'toolManager');
+    const captured: CapturedExecution = {};
+    const validateSessionId = jest.fn().mockResolvedValue({
+      id: 's-internal-uuid',
+      created: false,
+      displaySessionId: 'planning chat',
+      displaySessionIdChanged: false,
+      effectiveWorkspaceId: 'ws-inherited'
+    });
+    const sessionContextManager = makeContextManager({
+      validateSessionId
+    } as Partial<SessionContextManager>);
+    const deps = makeDeps(captured);
+    const onToolResponse = jest.fn(async (
+      _toolName: string,
+      params: Record<string, unknown>
+    ) => {
+      captured.callbackParams = params;
+    });
+
+    const strategy = new ToolExecutionStrategy(
+      deps,
+      () => agent,
+      sessionContextManager,
+      onToolResponse
+    );
+
+    await strategy.handle(makeRequest('toolManager_useTools', {
+      sessionId: 'planning chat',
+      memory: 'Continue the existing workspace task.',
+      goal: 'Read the next note.',
+      tool: 'content read --path next.md --start-line 1'
+    }));
+
+    expect(captured.toolParams?.workspaceId).toBe('ws-inherited');
+    expect(captured.callbackParams?.workspaceId).toBe('ws-inherited');
+  });
+
+  it('does not fall back or execute when an omitted friendly handle is ambiguous', async () => {
+    const tool = makeStubTool();
+    tool.slug = 'useTools';
+    const agent = makeStubAgent(tool, 'toolManager');
+    const captured: CapturedExecution = {};
+    const sessionContextManager = new SessionContextManager();
+    sessionContextManager.setSessionService({
+      getSession: jest.fn().mockResolvedValue(null),
+      getAllSessions: jest.fn().mockResolvedValue([]),
+      createSession: jest.fn(),
+      updateSession: jest.fn()
+    });
+    await sessionContextManager.validateSessionId('planning chat', undefined, 'ws-engineering');
+    await sessionContextManager.validateSessionId('planning chat', undefined, 'ws-research');
+    const deps = makeDeps(captured);
+
+    const strategy = new ToolExecutionStrategy(deps, () => agent, sessionContextManager);
+
+    await strategy.handle(makeRequest('toolManager_useTools', {
+      sessionId: 'planning chat',
+      memory: 'Continue the existing workspace task.',
+      goal: 'Read the next note.',
+      tool: 'content read --path next.md --start-line 1'
+    }));
+
+    expect(deps.sessionService.processSessionId).not.toHaveBeenCalled();
+    expect(deps.toolExecutionService.executeAgent).not.toHaveBeenCalled();
   });
 
   it('threads displaySessionId into params.context.sessionName and params._displaySessionId', async () => {

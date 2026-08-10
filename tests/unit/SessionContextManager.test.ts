@@ -66,6 +66,74 @@ describe('SessionContextManager', () => {
     );
   });
 
+  it('exposes the explicit workspace as the effective session workspace', async () => {
+    const manager = new SessionContextManager();
+    const sessionService = {
+      getSession: jest.fn().mockResolvedValue(null),
+      getAllSessions: jest.fn().mockResolvedValue([]),
+      createSession: jest.fn(),
+      updateSession: jest.fn()
+    };
+    manager.setSessionService(sessionService);
+
+    const result = await manager.validateSessionId('planning', undefined, 'ws-engineering');
+
+    expect(result.effectiveWorkspaceId).toBe('ws-engineering');
+  });
+
+  it('reuses a uniquely bound friendly handle when workspaceId is omitted', async () => {
+    const manager = new SessionContextManager();
+    const sessionService = {
+      getSession: jest.fn().mockResolvedValue(null),
+      getAllSessions: jest.fn().mockResolvedValue([]),
+      createSession: jest.fn(),
+      updateSession: jest.fn()
+    };
+    manager.setSessionService(sessionService);
+
+    const first = await manager.validateSessionId('planning', undefined, 'ws-engineering');
+    const inherited = await manager.validateSessionId('planning');
+
+    expect(inherited.id).toBe(first.id);
+    expect(inherited.created).toBe(false);
+    expect(inherited.effectiveWorkspaceId).toBe('ws-engineering');
+    expect(sessionService.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a blank workspaceId as omitted and inherits a unique handle binding', async () => {
+    const manager = new SessionContextManager();
+    const sessionService = {
+      getSession: jest.fn().mockResolvedValue(null),
+      getAllSessions: jest.fn().mockResolvedValue([]),
+      createSession: jest.fn(),
+      updateSession: jest.fn()
+    };
+    manager.setSessionService(sessionService);
+
+    const first = await manager.validateSessionId('planning', undefined, 'ws-engineering');
+    const inherited = await manager.validateSessionId('planning', undefined, '   ');
+
+    expect(inherited.id).toBe(first.id);
+    expect(inherited.effectiveWorkspaceId).toBe('ws-engineering');
+  });
+
+  it('rejects an omitted workspaceId when the friendly handle exists in multiple workspaces', async () => {
+    const manager = new SessionContextManager();
+    const sessionService = {
+      getSession: jest.fn().mockResolvedValue(null),
+      getAllSessions: jest.fn().mockResolvedValue([]),
+      createSession: jest.fn(),
+      updateSession: jest.fn()
+    };
+    manager.setSessionService(sessionService);
+
+    await manager.validateSessionId('planning', undefined, 'ws-engineering');
+    await manager.validateSessionId('planning', undefined, 'ws-research');
+
+    await expect(manager.validateSessionId('planning')).rejects.toThrow(/ambiguous.*workspace/i);
+    expect(sessionService.createSession).toHaveBeenCalledTimes(2);
+  });
+
   describe('active skills (§9 usage attribution)', () => {
     it('returns an empty array for a session with no active skills', () => {
       const manager = new SessionContextManager();

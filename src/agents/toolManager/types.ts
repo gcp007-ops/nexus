@@ -129,7 +129,7 @@ export function getTopLevelToolContextSchema(): Record<string, unknown> {
   return {
     workspaceId: {
       type: 'string',
-      description: 'Workspace ID. Use "default" for the global workspace. Do not invent workspace IDs.'
+      description: 'Workspace ID for this operation. Pass it when establishing or changing the workspace for a session. Later calls with the same unambiguous sessionId may omit it and inherit the remembered workspace. Use "default" only for the global workspace; do not invent IDs.'
     },
     sessionId: {
       type: 'string',
