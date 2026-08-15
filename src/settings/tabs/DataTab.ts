@@ -5,6 +5,7 @@ import type { IStorageAdapter } from '../../database/interfaces/IStorageAdapter'
 import { resolveVaultRoot } from '../../database/storage/VaultRootResolver';
 import { DEFAULT_STORAGE_SETTINGS } from '../../types/plugin/PluginTypes';
 import { changeDataFolderPath } from '../storage/changeDataFolderPath';
+import { ConfirmModal } from '../components/ConfirmModal';
 
 type RebuildableStorageAdapter = IStorageAdapter & {
     rebuildCache(options?: { onProgress?: (label: string, done: number, total: number) => void }): Promise<void>;
@@ -15,6 +16,19 @@ function isRebuildableStorageAdapter(adapter: IStorageAdapter | null): adapter i
         && adapter !== null
         && 'rebuildCache' in adapter
         && typeof adapter.rebuildCache === 'function';
+}
+
+type EmbeddingClearableStorageAdapter = IStorageAdapter & {
+    clearNoteEmbeddings(): Promise<void>;
+};
+
+function isEmbeddingClearableStorageAdapter(
+    adapter: IStorageAdapter | null
+): adapter is EmbeddingClearableStorageAdapter {
+    return typeof adapter === 'object'
+        && adapter !== null
+        && 'clearNoteEmbeddings' in adapter
+        && typeof adapter.clearNoteEmbeddings === 'function';
 }
 
 export interface DataTabServices {
@@ -176,6 +190,61 @@ export class DataTab {
                 .onClick(() => {
                     void this.handleRebuildCache(button);
                 }));
+
+        new Setting(content)
+            .setName('Remove note embeddings')
+            .setDesc(
+                'Delete every stored note vector and reclaim the space. Turning embeddings off '
+                + 'stops new ones being computed but leaves existing vectors in the cache, where '
+                + 'they are rewritten by every save. Rebuilding the cache does not remove them. '
+                + 'Recomputing later means a full re-index.'
+            )
+            .addButton(button => button
+                .setButtonText('Remove embeddings')
+                .setIcon('trash-2')
+                .setWarning()
+                .onClick(() => {
+                    void this.handleClearNoteEmbeddings(button);
+                }));
+    }
+
+    private async handleClearNoteEmbeddings(button: ButtonComponent): Promise<void> {
+        if (!this.storageAdapter) {
+            await this.initStorageAdapter();
+        }
+
+        if (!isEmbeddingClearableStorageAdapter(this.storageAdapter)) {
+            new Notice('Removing embeddings is not available. Please try again after startup finishes.');
+            return;
+        }
+
+        const confirmed = await ConfirmModal.confirm(this.services.app, {
+            variant: 'delete',
+            title: 'Remove note embeddings',
+            body: 'Every stored note vector will be deleted and the cache compacted. '
+                + 'They are not recoverable from the synced event files — rebuilding them '
+                + 'means re-indexing the whole vault. Continue?'
+        });
+
+        if (!confirmed) {
+            return;
+        }
+
+        const stickyNotice = new Notice('Removing note embeddings...', 0);
+        button.setButtonText('Removing...').setDisabled(true);
+
+        try {
+            await this.storageAdapter.clearNoteEmbeddings();
+            stickyNotice.hide();
+            new Notice('Note embeddings removed and cache compacted.');
+        } catch (error) {
+            stickyNotice.hide();
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('[DataTab] Removing note embeddings failed:', error);
+            new Notice(`Removing note embeddings failed: ${message}`);
+        } finally {
+            button.setButtonText('Remove embeddings').setDisabled(false);
+        }
     }
 
     private async handleRebuildCache(button: ButtonComponent): Promise<void> {
