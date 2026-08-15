@@ -47,7 +47,8 @@ jest.mock('obsidian', () => {
           button.click = handler;
           return button;
         }),
-        setIcon: jest.fn().mockReturnThis()
+        setIcon: jest.fn().mockReturnThis(),
+        setWarning: jest.fn().mockReturnThis()
       };
       mockButtons.push(button);
       callback(button);
@@ -77,6 +78,20 @@ jest.mock('obsidian', () => {
     ButtonComponent: jest.fn(),
     Setting: MockSetting,
     TextComponent: jest.fn(),
+    // DataTab reaches ConfirmModal for the destructive maintenance action, and
+    // ConfirmModal extends Modal — without this the whole suite fails to load
+    // with "Class extends value undefined", before a single test runs.
+    Modal: class {
+      app: unknown;
+      contentEl: HTMLElement = document.createElement('div');
+
+      constructor(app: unknown) {
+        this.app = app;
+      }
+
+      open = jest.fn();
+      close = jest.fn();
+    },
     Platform: { isMobile: false, isDesktop: true },
     normalizePath: (value: string) => value
       .replace(/\\/g, '/')
