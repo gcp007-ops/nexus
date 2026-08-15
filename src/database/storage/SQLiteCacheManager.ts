@@ -115,6 +115,7 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
   private hasUnsavedData = false;
   private autoSaveInterval: number;
   private autoSaveTimer: number | null = null;
+  private warnedUnreadableDbSize = false;
   private readonly transactionCoordinator: SQLiteTransactionCoordinator;
   private readonly syncStateStore: SQLiteSyncStateStore;
   private readonly persistenceService: SQLitePersistenceService;
@@ -371,16 +372,46 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
    * Returning 0 rather than a guess matters: `computeAutoSaveIntervalMs` treats
    * an unreadable size as "no basis to judge" and falls back to the floor, so a
    * failed PRAGMA can never silently widen the crash window.
+   *
+   * But falling back silently is its own trap: the floor *is* the old fixed
+   * period, so a broken size read degrades into exactly the behaviour the
+   * budget exists to replace, and looks identical from outside. Hence the warn
+   * — once per manager, since this runs before every save and would otherwise
+   * become its own noise problem.
    */
   private getDatabaseSizeBytes(): number {
     try {
       const bytes = this.getDbOrThrow().selectValue(
         'SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()'
       );
-      return typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
-    } catch {
+      if (typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0) {
+        return bytes;
+      }
+      this.warnUnreadableDbSizeOnce(`unexpected value: ${typeof bytes} ${String(bytes)}`);
+      return 0;
+    } catch (error) {
+      this.warnUnreadableDbSizeOnce(error instanceof Error ? error.message : String(error));
       return 0;
     }
+  }
+
+  /**
+   * Report an unreadable database size once, then stay quiet.
+   *
+   * Exposed for tests: the interesting property is that repeated failures do
+   * not repeat the warning, and that is awkward to assert through a console
+   * spy alone.
+   */
+  private warnUnreadableDbSizeOnce(reason: string): void {
+    if (this.warnedUnreadableDbSize) {
+      return;
+    }
+    this.warnedUnreadableDbSize = true;
+    console.warn(
+      '[SQLiteCacheManager] Could not read the database size, so the auto-save '
+      + 'budget is inactive and the minimum interval applies. Saves will be as '
+      + `frequent as before. Reason: ${reason}`
+    );
   }
 
   /**
