@@ -55,6 +55,43 @@ export class SQLiteMaintenanceService {
     this.dbPath = dbPath;
   }
 
+  /**
+   * Drop every note embedding and reclaim the space.
+   *
+   * Turning `enableEmbeddings` off stops the system from running, but leaves
+   * the vectors behind: `EmbeddingManager` simply never initializes, and
+   * nothing deletes what was already computed. `clearAllData()` does not help
+   * either — it clears the *conversation* embeddings and leaves
+   * `note_embeddings` and `embedding_metadata` untouched, which is the right
+   * call for a rebuild (they are not derivable from the JSONL store, so
+   * dropping them would turn every rebuild into a full re-index) but leaves no
+   * way at all to get rid of them.
+   *
+   * On a 43k-note vault that is ~63 MB of dead weight in a cache the auto-save
+   * rewrites in full, so it is not merely wasted space — it is a permanent tax
+   * on every save.
+   *
+   * `note_embeddings` is a vec0 virtual table, so it is dropped and recreated
+   * rather than deleted from, mirroring how `clearAllData` handles the
+   * conversation table. VACUUM runs outside the transaction because SQLite
+   * refuses it inside one, and without it the pages are freed to the file's
+   * free list rather than back to the filesystem.
+   */
+  async clearNoteEmbeddings(): Promise<void> {
+    await this.transaction(() => {
+      const db = this.getDb();
+      this.bridge.exec(db, 'DROP TABLE IF EXISTS note_embeddings');
+      this.bridge.exec(
+        db,
+        'CREATE VIRTUAL TABLE IF NOT EXISTS note_embeddings USING vec0(embedding float[384])'
+      );
+      this.bridge.exec(db, 'DELETE FROM embedding_metadata');
+      return Promise.resolve();
+    });
+
+    await this.vacuum();
+  }
+
   async clearAllData(): Promise<void> {
     await this.transaction(() => {
       const db = this.getDb();

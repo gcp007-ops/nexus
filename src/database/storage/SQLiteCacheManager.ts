@@ -653,6 +653,17 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
     this.hasUnsavedData = true;
   }
 
+  /**
+   * Drop every note embedding and reclaim the space. Saves immediately rather
+   * than waiting for the next auto-save tick — the point of the operation is
+   * to shrink the file, and the budget-derived delay can be minutes.
+   */
+  async clearNoteEmbeddings(): Promise<void> {
+    await this.getMaintenanceService().clearNoteEmbeddings();
+    this.hasUnsavedData = true;
+    await this.saveToFile();
+  }
+
   // ==================== Full-text search ====================
   // Delegated to SQLiteSearchService for single responsibility
 
