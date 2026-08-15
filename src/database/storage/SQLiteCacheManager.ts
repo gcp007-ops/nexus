@@ -44,6 +44,7 @@ import { resolveActivePluginFolderName } from './PluginStoragePathResolver';
 // Import schema from TypeScript module (esbuild compatible)
 import { SCHEMA_SQL } from '../schema/schema';
 import { SchemaMigrator } from '../schema/SchemaMigrator';
+import { AUTO_SAVE_MAX_INTERVAL_MS, computeAutoSaveIntervalMs } from './autoSaveBudget';
 
 import type { Plugin } from 'obsidian';
 
@@ -135,6 +136,8 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
   private pendingSave: Promise<void> | null = null;
   /** Set by stopAutoSave() and close() to cancel a scheduled follow-up. */
   private followUpCancelled = false;
+  /** Set by stopAutoSave(): a tick already in flight must not re-arm the timer. */
+  private autoSaveStopped = false;
   /**
    * How big the cache is, in bytes, as far as anything here knows: the size of
    * the blob loaded at startup, then the byte count of the last successful
@@ -301,6 +304,7 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
     // handle went away. Rebuild Cache reopens the same instance, so clear it
     // or the reopened handle would never run a coalesced save again.
     this.followUpCancelled = false;
+    this.autoSaveStopped = false;
     this.allocationFailureCount = 0;
     this.nextAutoSaveAttemptAt = 0;
 
@@ -382,16 +386,11 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
       // used to die in this scope, so `needsRebuild` could never mean anything.
       this.pendingSchemaRebuild = migrationResult.needsRebuild;
 
-      // Start auto-save timer
+      // Start auto-save. The delay is re-derived from the database size before
+      // every tick rather than fixed, so a growing cache stretches the period
+      // instead of multiplying the bytes written. See autoSaveBudget.ts.
       if (this.autoSaveInterval > 0) {
-        this.autoSaveTimer = window.setInterval(() => {
-          if (this.hasUnsavedData && !this.saveInFlight && !this.pendingSave &&
-              Date.now() >= this.nextAutoSaveAttemptAt) {
-            this.saveToFile().catch(err => {
-              console.error('[SQLiteCacheManager] Auto-save failed:', err);
-            });
-          }
-        }, this.autoSaveInterval);
+        this.scheduleNextAutoSave();
       }
 
       this.isInitialized = true;
@@ -532,13 +531,74 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
   }
 
   /**
+   * On-disk size of the database, or 0 when it cannot be read.
+   *
+   * Returning 0 rather than a guess matters: `computeAutoSaveIntervalMs` treats
+   * an unreadable size as "no basis to judge" and falls back to the floor, so a
+   * failed PRAGMA can never silently widen the crash window.
+   */
+  private getDatabaseSizeBytes(): number {
+    try {
+      const bytes = this.getDbOrThrow().selectValue(
+        'SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()'
+      );
+      return typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Arm the next auto-save tick, sizing the delay to the current database.
+   *
+   * A self-rescheduling timeout rather than an interval: the delay has to be
+   * recomputed as the cache grows, and an interval fixes it at whatever the
+   * size was when the plugin started.
+   */
+  private scheduleNextAutoSave(): void {
+    if (this.autoSaveInterval <= 0) {
+      return;
+    }
+
+    // The configured interval is the floor (30s by default, the budget's own
+    // floor), so a caller asking for a shorter cadence still gets it on a small cache.
+    const delay = computeAutoSaveIntervalMs(this.getDatabaseSizeBytes(), {
+      minIntervalMs: this.autoSaveInterval,
+      maxIntervalMs: Math.max(AUTO_SAVE_MAX_INTERVAL_MS, this.autoSaveInterval)
+    });
+
+    this.autoSaveTimer = window.setTimeout(() => {
+      this.autoSaveTimer = null;
+      // Same gates as before the budget: skip while an export is running or
+      // queued, and while an allocation failure is backing off.
+      const due = this.hasUnsavedData && !this.saveInFlight && !this.pendingSave &&
+        Date.now() >= this.nextAutoSaveAttemptAt;
+      const done = due
+        ? this.saveToFile().catch(err => {
+            console.error('[SQLiteCacheManager] Auto-save failed:', err);
+          })
+        : Promise.resolve();
+
+      // Re-arm after the save settles, never before — otherwise a save slower
+      // than the delay would stack overlapping full-database exports.
+      void done.then(() => {
+        if (this.isInitialized && !this.autoSaveStopped) {
+          this.scheduleNextAutoSave();
+        }
+      });
+    }, delay);
+  }
+
+  /**
    * Close the database and save to file
    */
   async close(): Promise<void> {
     try {
-      // Stop auto-save timer
+      // Stop auto-save. `isInitialized` is cleared first so a tick already in
+      // flight does not re-arm behind us.
+      this.isInitialized = false;
       if (this.autoSaveTimer) {
-        window.clearInterval(this.autoSaveTimer);
+        window.clearTimeout(this.autoSaveTimer);
         this.autoSaveTimer = null;
       }
 
@@ -840,8 +900,9 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
    * Rebuild Cache flow to suspend writes before clearing the blob store.
    */
   stopAutoSave(): void {
+    this.autoSaveStopped = true;
     if (this.autoSaveTimer) {
-      window.clearInterval(this.autoSaveTimer);
+      window.clearTimeout(this.autoSaveTimer);
       this.autoSaveTimer = null;
     }
     // Stopping the timer is not enough on its own: a coalesced follow-up is

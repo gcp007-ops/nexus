@@ -844,6 +844,34 @@ describe('SQLiteCacheManager save path', () => {
     }
   });
 
+  // The budgeted timer re-arms itself after each tick. stopAutoSave() has to
+  // stop that too: a tick whose save is still running when Rebuild Cache stops
+  // the timer must not arm a new one behind it.
+  it('does not re-arm the autosave timer after stopAutoSave, even from a tick in flight', async () => {
+    jest.useFakeTimers();
+    const harness = await createSaveHarness({ autoSaveInterval: 1000 });
+    try {
+      harness.gateWrites();
+      await harness.manager.run('INSERT INTO memory_traces (id) VALUES (?)', ['t1']);
+
+      jest.advanceTimersByTime(1000);
+      await flushMicrotasks();
+      expect(harness.exportAttempts()).toBe(1);
+
+      harness.manager.stopAutoSave();
+      harness.releaseWrites();
+      await flushMicrotasks();
+
+      await harness.manager.run('INSERT INTO memory_traces (id) VALUES (?)', ['t2']);
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+      expect(harness.exportAttempts()).toBe(1);
+      expect(harness.manager.hasUnsavedChanges()).toBe(true);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it('allows an explicit save during allocation backoff and resets the automatic delay on success', async () => {
     jest.useFakeTimers();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
