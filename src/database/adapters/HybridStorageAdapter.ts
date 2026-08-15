@@ -707,6 +707,19 @@ export class HybridStorageAdapter implements IStorageAdapter {
     return this.maintenance.rebuildCache(options);
   }
 
+  /**
+   * Drop every note embedding and reclaim the space.
+   *
+   * Deliberately not part of `rebuildCache`: note embeddings are not derivable
+   * from the JSONL store, so folding them into a rebuild would turn cache
+   * recovery into a multi-hour re-index. This is the explicit, separate
+   * operation for someone who has turned embeddings off and wants the vectors
+   * gone — until now there was no way to remove them at all.
+   */
+  async clearNoteEmbeddings(): Promise<void> {
+    return this.sqliteCache.clearNoteEmbeddings();
+  }
+
   // ============================================================================
   // External sync: vault-event-driven reconciliation
   // ============================================================================
