@@ -216,6 +216,68 @@ describe('SearchContentTool — semantic path scope', () => {
 });
 
 /**
+ * A literal scope names a folder, so it has to match at a folder boundary.
+ *
+ * Found by the maintainer while triaging #323: the literal branch was a bare
+ * `startsWith`, so scoping to `_Base` also swept in `_Baseball/`. Both the
+ * semantic and the keyword path now share `filterMarkdownFilesByPaths`, so a
+ * single unanchored comparison silently widened every scoped search in the
+ * tool. The sibling folder here is deliberately named so that its path has the
+ * scope as a strict string prefix — that is the whole failure mode.
+ */
+describe('SearchContentTool — literal scopes anchor at a folder boundary', () => {
+  const NEIGHBOURS = [
+    '_Base/Policies/target.md',
+    '_Baseball/roster.md',
+    '_Base.archive/old.md'
+  ];
+
+  it('does not sweep a sibling folder that merely shares the scope as a prefix', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>()
+      .mockResolvedValue([]);
+    const tool = createSemanticTool(NEIGHBOURS, semanticSearch);
+
+    await tool.execute(params({ query: 'roster', semantic: true, paths: ['_Base'], limit: 5 }));
+
+    expect(semanticSearch).toHaveBeenCalledWith('roster', 5, ['_Base/Policies/target.md']);
+  });
+
+  it('anchors the keyword path too, since both share one scope resolver', async () => {
+    const results = await createTool([
+      { path: '_Base/Policies/target.md', content: 'quarterly roster notes' },
+      { path: '_Baseball/roster.md', content: 'quarterly roster notes' }
+    ]).execute(params({ query: 'quarterly roster', paths: ['_Base'] }));
+
+    expect(resultsOf(results).map(entry => entry.filePath)).toEqual(['_Base/Policies/target.md']);
+  });
+
+  it('still matches a scope written with a trailing slash', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>()
+      .mockResolvedValue([]);
+    const tool = createSemanticTool(NEIGHBOURS, semanticSearch);
+
+    await tool.execute(params({ query: 'policy', semantic: true, paths: ['_Base/'], limit: 5 }));
+
+    expect(semanticSearch).toHaveBeenCalledWith('policy', 5, ['_Base/Policies/target.md']);
+  });
+
+  it('still matches a scope that names one file exactly', async () => {
+    const semanticSearch = jest.fn<Promise<SimilarNote[]>, [string, number, readonly string[]?]>()
+      .mockResolvedValue([]);
+    const tool = createSemanticTool(NEIGHBOURS, semanticSearch);
+
+    await tool.execute(params({
+      query: 'policy',
+      semantic: true,
+      paths: ['_Base/Policies/target.md'],
+      limit: 5
+    }));
+
+    expect(semanticSearch).toHaveBeenCalledWith('policy', 5, ['_Base/Policies/target.md']);
+  });
+});
+
+/**
  * Rank `files` and return the results, having first proved the ranking is a
  * property of the SCORES and not of the enumeration order.
  *

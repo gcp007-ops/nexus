@@ -375,7 +375,12 @@ export class SearchContentTool extends BaseTool<ContentSearchParams, ContentSear
       const matchesLiteral = literalPaths.some(path => {
         // Empty path (from "/") matches everything.
         if (path === '') return true;
-        return file.path.startsWith(path);
+        // Anchor at a folder boundary. A bare `startsWith` made a scope of
+        // `_Base` also match `_Baseball/`, silently widening the scope the
+        // caller asked for. The equality arm keeps a scope that names one
+        // file exactly working.
+        const folderPrefix = path.endsWith('/') ? path : `${path}/`;
+        return file.path === path || file.path.startsWith(folderPrefix);
       });
       const matchesGlob = globPatterns.some(regex => regex.test(file.path));
       return matchesLiteral || matchesGlob;
