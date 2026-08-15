@@ -40,6 +40,9 @@ export class WorkflowScheduleService {
 
     this.scanInProgress = true;
     const now = Date.now();
+    // Whether this scan saw anything that makes `lastCheckAt` worth persisting.
+    // Nothing scheduled means nothing will ever read the stamp back.
+    let sawEnabledSchedule = false;
 
     try {
       const workspaces = await this.deps.workspaceService.getAllWorkspaces();
@@ -55,6 +58,7 @@ export class WorkflowScheduleService {
           if (!schedule?.enabled) {
             continue;
           }
+          sawEnabledSchedule = true;
 
           const dueSlots = this.computeDueSlots(schedule, lastCheckAt, now);
           const runSlots = isStartup ? this.applyCatchUpPolicy(dueSlots, schedule) : dueSlots;
@@ -78,9 +82,18 @@ export class WorkflowScheduleService {
       }
     } finally {
       this.scanInProgress = false;
+      // The stamp is always advanced in memory. Freezing it would leave a stale
+      // anchor for `computeDueSlots`, so the first schedule created after a long
+      // quiet period would backfill every slot since the last write.
       this.deps.settings.settings.workflowScheduler = this.deps.settings.settings.workflowScheduler || {};
       this.deps.settings.settings.workflowScheduler.lastCheckAt = now;
-      await this.deps.settings.saveSettings();
+      // It only reaches disk when a schedule exists to read it back. This runs
+      // once a minute for the life of the process, and `saveSettings()` rewrites
+      // the entire settings object, so an unconditional write here costs a full
+      // data.json rewrite every 60s on a vault that schedules nothing.
+      if (sawEnabledSchedule) {
+        await this.deps.settings.saveSettings();
+      }
     }
   }
 
