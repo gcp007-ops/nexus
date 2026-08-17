@@ -1,5 +1,6 @@
 import type { TaskBoardViewState } from '../taskBoardNavigation';
 import type { SwimlaneGroup, TaskBoardTask, TaskSortField, TaskSortOrder } from '../taskBoardTypes';
+import type { TaskStatus } from '../../../database/repositories/interfaces/ITaskRepository';
 import { TaskBoardFilterController } from './TaskBoardFilterController';
 
 export class TaskBoardGroupingService {
@@ -22,6 +23,9 @@ export class TaskBoardGroupingService {
 
     for (const task of columnTasks) {
       if (parentIdsWithChildren.has(task.id)) {
+        if (!grouped.has(task.id)) {
+          grouped.set(task.id, []);
+        }
         continue;
       }
 
@@ -79,6 +83,13 @@ export class TaskBoardGroupingService {
     }
 
     return groups;
+  }
+
+  static countVisibleTasks(groups: SwimlaneGroup[], columnStatus: TaskStatus): number {
+    return groups.reduce((total, group) => {
+      const parentCount = group.parentTask?.status === columnStatus ? 1 : 0;
+      return total + group.children.length + parentCount;
+    }, 0);
   }
 
   private static getParentProgress(
