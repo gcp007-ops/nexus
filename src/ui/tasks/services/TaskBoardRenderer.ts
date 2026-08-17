@@ -1,6 +1,7 @@
 import { Component, Notice, setIcon, type App } from 'obsidian';
 import type { TaskStatus } from '../../../database/repositories/interfaces/ITaskRepository';
 import { STATUS_COLUMNS, type SwimlaneGroup, type TaskBoardTask } from '../taskBoardTypes';
+import { TaskBoardGroupingService } from './TaskBoardGroupingService';
 
 interface TaskBoardRendererDependencies {
   app: App;
@@ -48,7 +49,7 @@ export class TaskBoardRenderer {
       });
 
       const groups = this.deps.groupTasksByParent(columnTasks);
-      const cardCount = groups.reduce((sum, group) => sum + group.children.length, 0);
+      const cardCount = TaskBoardGroupingService.countVisibleTasks(groups, column.id);
 
       header.createSpan({
         cls: 'nexus-task-board-column-count',
