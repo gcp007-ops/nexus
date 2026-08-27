@@ -39,7 +39,7 @@ describe('auto-save write budget', () => {
   });
 
   it('honours the budget in the range where neither bound binds', () => {
-    // 30 MB / 100 KB/s = 307s, comfortably between the 30s floor and 10m ceiling.
+    // 30 MB / 100 KB/s = 307s, comfortably between the 30s floor and 30m ceiling.
     const interval = computeAutoSaveIntervalMs(30 * MB);
 
     expect(interval).toBeGreaterThan(AUTO_SAVE_MIN_INTERVAL_MS);
@@ -51,8 +51,23 @@ describe('auto-save write budget', () => {
   });
 
   it('caps the interval so a crash cannot cost more than the ceiling', () => {
-    expect(computeAutoSaveIntervalMs(146 * MB)).toBe(AUTO_SAVE_MAX_INTERVAL_MS);
+    // The ceiling binds above ~176 MB (30m x 100 KB/s).
+    expect(computeAutoSaveIntervalMs(200 * MB)).toBe(AUTO_SAVE_MAX_INTERVAL_MS);
     expect(computeAutoSaveIntervalMs(2000 * MB)).toBe(AUTO_SAVE_MAX_INTERVAL_MS);
+  });
+
+  it('holds the target at the size that made the ceiling move', () => {
+    // Measured 2026-08-27: 96.8 MB rewritten every 601s = 161 kB/s, because a
+    // 10m ceiling clamped a budget that wanted 945s. The point of raising it is
+    // that this size is once again governed by the budget, not by the bound.
+    const measured = 96_785_297;
+    const interval = computeAutoSaveIntervalMs(measured);
+
+    expect(interval).toBeLessThan(AUTO_SAVE_MAX_INTERVAL_MS);
+    expect(impliedBytesPerSecond(measured, interval)).toBeCloseTo(
+      AUTO_SAVE_TARGET_BYTES_PER_SECOND,
+      -2
+    );
   });
 
   it('keeps the measured vault under the rate the OS complained about', () => {

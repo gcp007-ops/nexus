@@ -23,8 +23,18 @@
  *   The cache is rebuildable from the JSONL event store, so this is replay
  *   time, not data loss.
  *
- * Above roughly 60 MB the ceiling dominates and the budget stops binding —
+ * Above roughly 176 MB the ceiling dominates and the budget stops binding —
  * deliberately. Bounding crash exposure outranks shaving writes.
+ *
+ * The ceiling was 10 minutes until 2026-08-27, when the cache on the vault
+ * above reached 96.8 MB and the ceiling stopped describing an extreme. The
+ * budget wanted 945s; the ceiling forced 601s, so the database was rewritten
+ * at a measured 161 kB/s — 61% above the target this file exists to hold. A
+ * bound that binds in the ordinary case is not a bound, it is the period. It
+ * moved to 30 minutes, which puts a 96.8 MB cache back inside the budget and
+ * leaves headroom to roughly 176 MB before the ceiling binds again. What that
+ * buys is paid in replay: a crash now costs up to 30 minutes of cache. The
+ * cache is rebuildable from the JSONL event store, so that is time, not data.
  */
 
 /** Target sustained write rate, in bytes per second. */
@@ -34,7 +44,7 @@ export const AUTO_SAVE_TARGET_BYTES_PER_SECOND = 100 * 1024;
 export const AUTO_SAVE_MIN_INTERVAL_MS = 30_000;
 
 /** Never let a crash cost more than this much cache. */
-export const AUTO_SAVE_MAX_INTERVAL_MS = 10 * 60_000;
+export const AUTO_SAVE_MAX_INTERVAL_MS = 30 * 60_000;
 
 export interface AutoSaveBudgetBounds {
   targetBytesPerSecond?: number;
