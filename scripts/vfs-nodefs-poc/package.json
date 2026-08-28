@@ -1,0 +1,6 @@
+{
+  "name": "nexus-vfs-poc",
+  "private": true,
+  "type": "module",
+  "description": "E1 da NexusVfsNodeFs-INI — PoC do VFS node:fs via sqlite3.vfs.installVfs. Descartavel."
+}
