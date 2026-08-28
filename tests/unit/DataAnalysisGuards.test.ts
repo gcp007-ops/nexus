@@ -17,6 +17,8 @@ import {
   formatBytesMb,
 } from '../../src/agents/apps/dataAnalysis/services/guards';
 import { DATA_ANALYSIS_DEFAULTS } from '../../src/agents/apps/dataAnalysis/types';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 describe('Data Analysis guards', () => {
   describe('countResultRows', () => {
@@ -136,5 +138,36 @@ describe('Data Analysis guards', () => {
       expect(formatBytesMb(10 * 1024 * 1024)).toBe('10.0');
       expect(formatBytesMb(1024 * 1024 + 512 * 1024)).toBe('1.5');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Locale independence of the refusal messages.
+//
+// These strings go back to the model, not to a person, and the assertions in
+// this file spell out en-US grouping ("8,432 rows"). A bare `toLocaleString()`
+// reads the host's locale, so the same refusal came back as "8.432 rows" under
+// pt-BR and this suite passed or failed by who ran it — while guards.ts claimed
+// in its own header to be deterministic.
+//
+// The behavioural tests above no longer catch a regression on their own: pinned
+// to 'en-US' they pass everywhere, and reverted to a bare call they would still
+// pass on an en-US machine and only break on someone else's. So the guard is on
+// the source itself, which is the thing that has to stay explicit.
+// ---------------------------------------------------------------------------
+
+describe('refusal messages do not follow the host locale', () => {
+  it('guards.ts never calls toLocaleString without naming a locale', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../../src/agents/apps/dataAnalysis/services/guards.ts'),
+      'utf8'
+    );
+    // Comments stripped first: the explanation of this very rule names the bare
+    // call, and a guard that trips on its own documentation teaches people to
+    // stop writing the documentation.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(code).not.toMatch(/toLocaleString\(\s*\)/);
   });
 });

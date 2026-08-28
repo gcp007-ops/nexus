@@ -8,6 +8,19 @@
 import { DATA_ANALYSIS_DEFAULTS } from '../types';
 import { isValidPath } from '../../../../utils/pathUtils';
 
+/**
+ * Number grouping is pinned rather than left to the machine.
+ *
+ * These strings are not UI: they are returned to the model as the reason a call
+ * was refused, alongside English instructions it has to act on. Bare
+ * `toLocaleString()` reads the host's locale, so the same refusal came back as
+ * "8,432 rows" on one machine and "8.432 rows" on another — which also made the
+ * file's own claim to be deterministic false, and the unit tests pass or fail by
+ * whoever ran them. UI elsewhere in the plugin deliberately keeps following the
+ * user's locale; a protocol string cannot.
+ */
+const MESSAGE_LOCALE = 'en-US';
+
 export interface RowCapOutcome {
   ok: boolean;
   rowCount: number | null;
@@ -33,7 +46,8 @@ export function enforceRowCap(data: unknown, maxRows: number): RowCapOutcome {
       ok: false,
       rowCount,
       error:
-        `Result has ${rowCount.toLocaleString()} rows (max ${maxRows.toLocaleString()}). ` +
+        `Result has ${rowCount.toLocaleString(MESSAGE_LOCALE)} rows ` +
+        `(max ${maxRows.toLocaleString(MESSAGE_LOCALE)}). ` +
         `Aggregate (groupby/pivot/describe) or add a filter/limit and re-run.`,
     };
   }
@@ -64,8 +78,8 @@ export function enforceOutputBudget(data: unknown, maxBytes: number): OutputBudg
       ok: false,
       bytes,
       error:
-        `Result is ${Math.round(bytes / 1024).toLocaleString()}KB ` +
-        `(max ${Math.round(maxBytes / 1024).toLocaleString()}KB). ` +
+        `Result is ${Math.round(bytes / 1024).toLocaleString(MESSAGE_LOCALE)}KB ` +
+        `(max ${Math.round(maxBytes / 1024).toLocaleString(MESSAGE_LOCALE)}KB). ` +
         `Aggregate or reduce the columns/rows returned and re-run.`,
     };
   }
