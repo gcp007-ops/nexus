@@ -27,12 +27,34 @@ import {
 } from './vfs/cacheWriteStats';
 
 /**
- * `TRUNCATE` rather than `DELETE` avoids re-creating the journal file on every
- * transaction; `NORMAL` avoids an fsync per commit without giving up the
- * journal. WAL is deliberately absent — it needs `xShm*`, which this VFS does
- * not implement.
+ * The journal is held in memory, so a changed page reaches the disk once
+ * instead of twice.
+ *
+ * Measured on the live cache before this change: 2.05, 2.10 and 2.05 `xWrite`
+ * calls per 8 KiB page across three save windows — constant because it is
+ * structural, not incidental. A rollback journal records the original content
+ * of every page a transaction touches, so each page is paid for twice, once in
+ * the journal and once in the database. `MEMORY` keeps the journal, and with it
+ * `ROLLBACK` and statement-level recovery, but stops writing it to disk.
+ *
+ * What that gives up is crash durability, and only that: a hard crash or a
+ * power loss during a commit can leave the file inconsistent, where `TRUNCATE`
+ * would have replayed the journal on the next open. `OFF` removes the same
+ * write but also makes `ROLLBACK` undefined — an ordinary constraint violation
+ * would be enough to corrupt the file — so it is not a cheaper version of this
+ * trade, it is a different and worse one.
+ *
+ * The exposure is priced, not ignored. The cache is derived: `integrity_check`
+ * runs at load and a failure discards the file and rebuilds from the JSONL
+ * event store. But that rebuild opens a brand new database from `SCHEMA_SQL`,
+ * and note embeddings are not derivable from JSONL, so recovery costs a
+ * re-index rather than a replay. This is a constant, certain cost traded for a
+ * rare, expensive one — chosen deliberately by the operator, not defaulted to.
+ *
+ * `NORMAL` avoids an fsync per commit. WAL is deliberately absent — it needs
+ * `xShm*`, which this VFS does not implement.
  */
-const OPEN_PRAGMAS = 'PRAGMA journal_mode=TRUNCATE; PRAGMA synchronous=NORMAL;';
+const OPEN_PRAGMAS = 'PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;';
 
 /** Must be set before the first table exists, so it only applies to a fresh file. */
 const FRESH_FILE_PRAGMAS = 'PRAGMA page_size=4096;';

@@ -115,6 +115,40 @@ describe('hasExistingDatabase', () => {
   });
 });
 
+/**
+ * Pinned because the choice has a price. `MEMORY` halves the writes by keeping
+ * the rollback journal off the disk, and pays for it with crash durability: a
+ * crash mid-commit costs a rebuild, and a rebuild costs re-embedding. Someone
+ * reverting this to `TRUNCATE` — or "improving" it to `OFF`, which would break
+ * `ROLLBACK` in ordinary operation — should have to say so out loud.
+ */
+describe('open PRAGMAs', () => {
+  const EXPECTED = 'PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;';
+
+  it('applies them when opening an existing file', async () => {
+    const bridge = fakeBridge();
+    const service = build(fakeFs(4096), bridge, fakeBlob(null));
+
+    await service.loadDatabase(sqlite3, 'CREATE TABLE t(x);');
+
+    expect(bridge.exec).toHaveBeenCalledWith(expect.anything(), EXPECTED);
+  });
+
+  it('applies them to a fresh database, after the page size', () => {
+    const bridge = fakeBridge();
+    const service = build(fakeFs(null), bridge, fakeBlob(null));
+
+    service.createFreshDatabase(sqlite3, 'CREATE TABLE t(x);');
+
+    const applied = bridge.exec.mock.calls.map((call) => call[1] as string);
+    expect(applied).toEqual([
+      'PRAGMA page_size=4096;',
+      EXPECTED,
+      'CREATE TABLE t(x);'
+    ]);
+  });
+});
+
 describe('loadDatabase', () => {
   it('seeds the file from the blob rather than rebuilding from the event store', async () => {
     const fs = fakeFs(null);

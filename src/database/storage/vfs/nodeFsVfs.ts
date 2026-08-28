@@ -18,8 +18,9 @@
  * Deliberate limits, all of them declared rather than forgotten:
  * - single process. Locking is a no-op, which is sound for one Obsidian window
  *   against its own cache and is NOT sound for anything else;
- * - no WAL. There is no `xShm*` here; `journal_mode=TRUNCATE` with
- *   `synchronous=NORMAL` already reduces a commit to the changed pages;
+ * - no WAL. There is no `xShm*` here; `journal_mode=MEMORY` with
+ *   `synchronous=NORMAL` reduces a commit to one write per changed page, at
+ *   the cost of crash durability. See `VfsPersistenceService` for the trade;
  * - `node:fs` and `node:path` are resolved at call time through
  *   `desktopRequire`. A top-level import would be executed during module init,
  *   before any platform check, and would take the plugin down at launch on every
