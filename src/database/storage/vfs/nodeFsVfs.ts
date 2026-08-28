@@ -151,14 +151,26 @@ export function installNodeFsVfs(
     xClose(pFile: number): number {
       const file = openFiles.get(pFile);
       if (!file) return 0;
+
+      // Dropped before the close is attempted rather than after it succeeds.
+      // SQLite never calls xClose twice, so an entry kept past a failed close is
+      // kept for the life of the process — and it would make `openFileCount()`,
+      // which exists to detect exactly that, report the leak as a live file.
+      openFiles.delete(pFile);
+
+      let result = 0;
       try {
         fs.closeSync(file.fd);
-        openFiles.delete(pFile);
-        if (file.flags & capi.SQLITE_OPEN_DELETEONCLOSE) {
-          try { fs.unlinkSync(file.path); } catch { /* already gone */ }
-        }
-        return 0;
-      } catch { return capi.SQLITE_IOERR_CLOSE; }
+      } catch {
+        result = capi.SQLITE_IOERR_CLOSE;
+      }
+
+      // Runs even when the close failed: the file was opened to be deleted, and
+      // leaving it behind trades a descriptor leak for a disk one.
+      if (file.flags & capi.SQLITE_OPEN_DELETEONCLOSE) {
+        try { fs.unlinkSync(file.path); } catch { /* already gone */ }
+      }
+      return result;
     },
 
     xRead(pFile: number, pDest: number, n: number, offset64: bigint | number): number {
@@ -246,6 +258,12 @@ export function installNodeFsVfs(
 
   const vfsMethods: Record<string, (...args: never[]) => number> = {
     xOpen(pVfs: number, zName: number, pFile: number, flags: number, pOutFlags: number): number {
+      // Held outside the try so the failure path can still reach it. Everything
+      // after `openSync` can throw — the struct binding allocates — and SQLite
+      // will not call xClose for an open it was told had failed, so a descriptor
+      // left behind here is open for the life of the process.
+      let fd: number | null = null;
+
       try {
         const name = zName && wasm.peek8(zName)
           ? resolve(wasm.cstrToJs(zName))
@@ -260,17 +278,23 @@ export function installNodeFsVfs(
           if (flags & capi.SQLITE_OPEN_EXCLUSIVE) osFlags |= fs.constants.O_EXCL;
         }
 
-        const fd = fs.openSync(name, osFlags, 0o644);
+        fd = fs.openSync(name, osFlags, 0o644);
         openFiles.set(pFile, { fd, path: name, flags, lockType: capi.SQLITE_LOCK_NONE });
-        stats.opens++;
 
         const sq3File = new capi.sqlite3_file(pFile);
         sq3File.$pMethods = nodeFsIoMethods.pointer;
         sq3File.dispose();
 
         if (pOutFlags) wasm.poke32(pOutFlags, flags);
+        // Counted last, so the figure describes opens that happened rather than
+        // opens that were attempted.
+        stats.opens++;
         return 0;
       } catch {
+        if (fd !== null) {
+          openFiles.delete(pFile);
+          try { fs.closeSync(fd); } catch { /* the descriptor is unusable either way */ }
+        }
         return capi.SQLITE_CANTOPEN;
       }
     },
