@@ -22,11 +22,23 @@ const APP_DIR_NAME = 'nexus-cache';
 /** File name inside the per-vault directory. */
 const CACHE_FILE_NAME = 'cache.db';
 
+/** Append-only record of what each save cost, beside the database it describes. */
+const STATS_FILE_NAME = 'write-stats.jsonl';
+
 export interface CacheFileLocation {
   /** Per-vault directory. Created by the caller, not here. */
   dir: string;
   /** Absolute path of the database file itself. */
   file: string;
+  /**
+   * Absolute path of the write-statistics record.
+   *
+   * Beside the database rather than in the vault, and for the same reason: it
+   * describes one machine's cache, so it is not something three machines should
+   * be reconciling. It also has to survive a rebuild of the cache to be worth
+   * anything, which rules out living inside the file it measures.
+   */
+  statsFile: string;
 }
 
 interface PlatformEnvironment {
@@ -103,5 +115,9 @@ export function resolveCacheFileLocation(
   const separator = resolved.platform === 'win32' ? '\\' : '/';
   const dir = `${resolveAppDataRoot(resolved)}${separator}${sanitiseVaultKey(vaultKey)}`;
 
-  return { dir, file: `${dir}${separator}${CACHE_FILE_NAME}` };
+  return {
+    dir,
+    file: `${dir}${separator}${CACHE_FILE_NAME}`,
+    statsFile: `${dir}${separator}${STATS_FILE_NAME}`
+  };
 }

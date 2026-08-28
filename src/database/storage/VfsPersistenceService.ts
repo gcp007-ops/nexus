@@ -19,6 +19,12 @@ import {
   SQLiteDatabaseHandle
 } from './SQLiteWasmBridge';
 import { desktopRequire } from '../../utils/desktopRequire';
+import type { NodeFsVfsStats } from './vfs/nodeFsVfs';
+import {
+  CacheWriteStatsRecorder,
+  type CacheWriteStatsRecord,
+  type StatsFileSystem
+} from './vfs/cacheWriteStats';
 
 /**
  * `TRUNCATE` rather than `DELETE` avoids re-creating the journal file on every
@@ -42,6 +48,17 @@ export interface VfsPersistenceServiceOptions {
    * so an existing cache is carried over instead of rebuilt. Never written.
    */
   seedSource?: CacheBlobStore;
+  /**
+   * Live counters from the installed VFS.
+   *
+   * Optional so a caller that only wants persistence is not forced to wire
+   * instrumentation, and so the existing tests keep describing the behaviour
+   * they were written for. Absent means the save records nothing; it never
+   * means the save does something different.
+   */
+  stats?: NodeFsVfsStats;
+  /** Where records are appended. Required for `stats` to be recorded anywhere. */
+  statsFilePath?: string;
 }
 
 export class VfsPersistenceService implements CachePersistence {
@@ -49,12 +66,26 @@ export class VfsPersistenceService implements CachePersistence {
   private readonly filePath: string;
   private readonly vfsName: string;
   private readonly seedSource?: CacheBlobStore;
+  private readonly stats?: NodeFsVfsStats;
+  private readonly statsRecorder?: CacheWriteStatsRecorder;
 
   constructor(options: VfsPersistenceServiceOptions) {
     this.bridge = options.bridge;
     this.filePath = options.filePath;
     this.vfsName = options.vfsName;
     this.seedSource = options.seedSource;
+    this.stats = options.stats;
+    if (options.stats && options.statsFilePath) {
+      // Seeded with the counters as they stand rather than with zero: the mount
+      // and the first open have already gone through the VFS, and booking them
+      // against the first save would put a one-off open in a figure that is
+      // meant to describe steady state.
+      this.statsRecorder = new CacheWriteStatsRecorder(
+        options.statsFilePath,
+        Date.now(),
+        options.stats
+      );
+    }
   }
 
   /**
@@ -104,16 +135,48 @@ export class VfsPersistenceService implements CachePersistence {
   }
 
   /**
-   * Nothing to do, and that is the entire point of this class.
+   * Nothing to write, and that is the entire point of this class.
    *
    * Kept as a real method rather than dropped from the interface because the
    * cache manager's auto-save tick, its final save on close and its post-
    * migration save all call it. They stay correct and become free; deciding
    * whether the auto-save budget should still exist at all is a separate
    * question from making it cheap.
+   *
+   * What is left is bookkeeping, and this is the right moment for it. The cache
+   * manager reaches here only when the database is dirty, so every call marks an
+   * instant at which the blob-backed path would have exported the whole thing —
+   * which is what turns "how much did the pages cost" into a comparison instead
+   * of a bare number.
    */
   saveDatabase(): Promise<void> {
+    this.recordWriteStats();
     return Promise.resolve();
+  }
+
+  /**
+   * The most recent statistics record, or null if none has been taken.
+   *
+   * Null before the first save of a session, which is ordinary rather than a
+   * failure: nothing has been dirty yet.
+   */
+  getWriteStats(): CacheWriteStatsRecord | null {
+    return this.statsRecorder?.getLatest() ?? null;
+  }
+
+  private recordWriteStats(): void {
+    if (!this.stats || !this.statsRecorder) {
+      return;
+    }
+    try {
+      const record = this.statsRecorder.build(Date.now(), this.stats, this.fileSize());
+      const fs = desktopRequire<typeof import('node:fs')>('node:fs') as unknown as StatsFileSystem;
+      this.statsRecorder.append(fs, record);
+    } catch {
+      // Instrumentation must never be able to fail a save. `append` has its own
+      // guard; this one covers everything before it — reading the file size, or
+      // a `desktopRequire` that stops working mid-session.
+    }
   }
 
   /**
@@ -182,11 +245,22 @@ export class VfsPersistenceService implements CachePersistence {
   }
 
   private fileHasContent(): boolean {
+    return this.fileSize() > 0;
+  }
+
+  /**
+   * Size of the database file, or 0 when it cannot be read.
+   *
+   * Zero rather than a throw: the two callers both treat it as "no basis to
+   * judge" — one reports no existing database, the other records a save whose
+   * counterfactual is unknown — and neither is improved by an exception.
+   */
+  private fileSize(): number {
     try {
       const fs = desktopRequire<typeof import('node:fs')>('node:fs');
-      return fs.statSync(this.filePath).size > 0;
+      return fs.statSync(this.filePath).size;
     } catch {
-      return false;
+      return 0;
     }
   }
 

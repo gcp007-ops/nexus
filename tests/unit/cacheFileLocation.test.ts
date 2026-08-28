@@ -73,6 +73,7 @@ describe('resolveCacheFileLocation', () => {
     expect(location.dir)
       .toBe('/Users/someone/Library/Application Support/nexus-cache/abc123-nexus');
     expect(location.file).toBe(`${location.dir}/cache.db`);
+    expect(location.statsFile).toBe(`${location.dir}/write-stats.jsonl`);
   });
 
   it('uses backslashes on Windows', () => {

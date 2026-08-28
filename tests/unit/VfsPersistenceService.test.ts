@@ -4,8 +4,8 @@
  * The VFS itself and its failure modes belong to a suite of their own; what is
  * asserted here is the surface the cache manager sees — whether a database is
  * reported present, whether an existing blob becomes the first file rather than
- * a full rebuild, that a save costs nothing, and that a discard actually
- * discards.
+ * a full rebuild, that a save writes no database pages, that it records what the
+ * pages already cost, and that a discard actually discards.
  */
 
 import type { CacheBlobStore } from '../../src/database/storage/CacheBlobStore';
@@ -28,6 +28,8 @@ interface FakeFs {
   statSync: jest.Mock;
   writeFileSync: jest.Mock;
   rmSync: jest.Mock;
+  readFileSync: jest.Mock;
+  appendFileSync: jest.Mock;
 }
 
 function fakeFs(fileSize: number | null): FakeFs {
@@ -37,7 +39,18 @@ function fakeFs(fileSize: number | null): FakeFs {
       return { size: fileSize };
     }),
     writeFileSync: jest.fn(),
-    rmSync: jest.fn()
+    rmSync: jest.fn(),
+    readFileSync: jest.fn(() => ''),
+    appendFileSync: jest.fn()
+  };
+}
+
+function fakeStats(over: Record<string, number> = {}) {
+  return {
+    writeCalls: 0, bytesWritten: 0, readCalls: 0, bytesRead: 0,
+    syncs: 0, opens: 0, truncates: 0, deletes: 0,
+    reset: jest.fn(),
+    ...over
   };
 }
 
@@ -60,10 +73,23 @@ function fakeBlob(bytes: number | null): CacheBlobStore {
   } as unknown as CacheBlobStore;
 }
 
-function build(fs: FakeFs, bridge: SQLiteWasmBridge, seedSource?: CacheBlobStore) {
+function build(
+  fs: FakeFs,
+  bridge: SQLiteWasmBridge,
+  seedSource?: CacheBlobStore,
+  instrumentation?: { stats: ReturnType<typeof fakeStats>; statsFilePath: string }
+) {
   mockedRequire.mockReturnValue(fs);
-  return new VfsPersistenceService({ bridge, filePath: FILE, vfsName: 'nexus-nodefs', seedSource });
+  return new VfsPersistenceService({
+    bridge,
+    filePath: FILE,
+    vfsName: 'nexus-nodefs',
+    seedSource,
+    ...instrumentation
+  });
 }
+
+const STATS_FILE = '/app-data/vault/write-stats.jsonl';
 
 const sqlite3 = {} as SQLiteWasmModule;
 
@@ -147,7 +173,7 @@ describe('loadDatabase', () => {
 });
 
 describe('saveDatabase', () => {
-  it('does nothing, because the pages were written at commit', async () => {
+  it('writes no database pages, because they went out at commit', async () => {
     const fs = fakeFs(4096);
     const bridge = fakeBridge();
     const service = build(fs, bridge, fakeBlob(null));
@@ -156,6 +182,48 @@ describe('saveDatabase', () => {
 
     expect(fs.writeFileSync).not.toHaveBeenCalled();
     expect(bridge.exec).not.toHaveBeenCalled();
+  });
+
+  it('records nothing when it was given no counters, rather than recording zeroes', async () => {
+    const fs = fakeFs(4096);
+    const service = build(fs, fakeBridge(), fakeBlob(null));
+
+    await service.saveDatabase();
+
+    expect(fs.appendFileSync).not.toHaveBeenCalled();
+    expect(service.getWriteStats()).toBeNull();
+  });
+
+  it('records what the pages cost against what an export would have cost', async () => {
+    const fs = fakeFs(232_816_640);
+    const stats = fakeStats();
+    const service = build(fs, fakeBridge(), fakeBlob(null), { stats, statsFilePath: STATS_FILE });
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    stats.bytesWritten = 8192;
+    stats.writeCalls = 2;
+    await service.saveDatabase();
+
+    const record = service.getWriteStats();
+    expect(record).not.toBeNull();
+    expect(record?.bytesWritten).toBe(8192);
+    expect(record?.wouldHaveWrittenBytes).toBe(232_816_640);
+    expect(fs.appendFileSync).toHaveBeenCalledWith(STATS_FILE, expect.stringContaining('"bytesWritten":8192'));
+    log.mockRestore();
+  });
+
+  it('resolves even when the statistics file cannot be written', async () => {
+    const fs = fakeFs(4096);
+    fs.appendFileSync.mockImplementation(() => { throw new Error('ENOSPC'); });
+    const stats = fakeStats();
+    const service = build(fs, fakeBridge(), fakeBlob(null), { stats, statsFilePath: STATS_FILE });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await expect(service.saveDatabase()).resolves.toBeUndefined();
+
+    warn.mockRestore();
+    log.mockRestore();
   });
 });
 

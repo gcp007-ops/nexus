@@ -15,7 +15,11 @@ jest.mock('../../src/utils/platform', () => ({ isDesktop: jest.fn(() => true) })
 jest.mock('../../src/utils/desktopRequire', () => ({ desktopRequire: jest.fn() }));
 jest.mock('../../src/database/storage/vfs/nodeFsVfs', () => ({ installNodeFsVfs: jest.fn() }));
 jest.mock('../../src/database/storage/vfs/cacheFileLocation', () => ({
-  resolveCacheFileLocation: jest.fn(() => ({ dir: '/app-data/vault', file: '/app-data/vault/cache.db' }))
+  resolveCacheFileLocation: jest.fn(() => ({
+    dir: '/app-data/vault',
+    file: '/app-data/vault/cache.db',
+    statsFile: '/app-data/vault/write-stats.jsonl'
+  }))
 }));
 
 import { tryCreateVfsPersistence } from '../../src/database/storage/CachePersistenceFactory';
@@ -27,6 +31,13 @@ import { resolveCacheFileLocation } from '../../src/database/storage/vfs/cacheFi
 const mockedInstall = installNodeFsVfs as jest.Mock;
 const mockedRequire = desktopRequire as jest.Mock;
 const mockedLocation = resolveCacheFileLocation as jest.Mock;
+
+function fakeStats() {
+  return {
+    writeCalls: 0, bytesWritten: 0, readCalls: 0, bytesRead: 0,
+    syncs: 0, opens: 0, truncates: 0, deletes: 0, reset: jest.fn()
+  };
+}
 
 function attempt(overrides: Record<string, unknown> = {}) {
   return {
@@ -46,8 +57,12 @@ describe('tryCreateVfsPersistence', () => {
     jest.clearAllMocks();
     mkdirSync = jest.fn();
     mockedRequire.mockReturnValue({ mkdirSync });
-    mockedLocation.mockReturnValue({ dir: '/app-data/vault', file: '/app-data/vault/cache.db' });
-    mockedInstall.mockReturnValue({ vfsName: 'nexus-nodefs' });
+    mockedLocation.mockReturnValue({
+      dir: '/app-data/vault',
+      file: '/app-data/vault/cache.db',
+      statsFile: '/app-data/vault/write-stats.jsonl'
+    });
+    mockedInstall.mockReturnValue({ vfsName: 'nexus-nodefs', stats: fakeStats() });
     warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 

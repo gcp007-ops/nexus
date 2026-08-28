@@ -50,16 +50,23 @@ export function tryCreateVfsPersistence(attempt: VfsPersistenceAttempt): CachePe
     const fs = desktopRequire<typeof import('node:fs')>('node:fs');
     fs.mkdirSync(location.dir, { recursive: true });
 
-    installNodeFsVfs(attempt.sqlite3 as unknown as SQLiteVfsCapableModule, {
+    const installed = installNodeFsVfs(attempt.sqlite3 as unknown as SQLiteVfsCapableModule, {
       vfsName: VFS_NAME,
       root: location.dir
     });
 
+    // The counters travel with the service rather than staying here. They are
+    // the only direct measurement of what this change was for, and the first
+    // version of this factory dropped them on the floor — the write volume had
+    // to be reconstructed from per-process I/O accounting, which cannot tell
+    // the cache apart from everything else the renderer writes.
     return new VfsPersistenceService({
       bridge: attempt.bridge,
       filePath: location.file,
       vfsName: VFS_NAME,
-      seedSource: attempt.seedSource
+      seedSource: attempt.seedSource,
+      stats: installed.stats,
+      statsFilePath: location.statsFile
     });
   } catch (error) {
     // Loud on purpose. Falling back is safe, but falling back silently would
