@@ -143,11 +143,12 @@ export class VfsPersistenceService implements CachePersistence {
    * whether the auto-save budget should still exist at all is a separate
    * question from making it cheap.
    *
-   * What is left is bookkeeping, and this is the right moment for it. The cache
-   * manager reaches here only when the database is dirty, so every call marks an
+   * What is left is bookkeeping, and this is the right moment for it. Both
+   * backends are reached from the same call sites, so every call marks an
    * instant at which the blob-backed path would have exported the whole thing —
    * which is what turns "how much did the pages cost" into a comparison instead
-   * of a bare number.
+   * of a bare number. Not all of those call sites are the auto-save tick: see
+   * `cacheWriteStats` for why the forced saves matter more than the tick does.
    */
   saveDatabase(): Promise<void> {
     this.recordWriteStats();

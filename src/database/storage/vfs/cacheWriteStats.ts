@@ -9,12 +9,21 @@
  * so can only bound it from above.
  *
  * The sampling point is every `saveDatabase()`, and it is chosen rather than
- * convenient. `SQLiteCacheManager` calls it only when `hasUnsavedData` is set,
- * so every call is an instant at which the blob-backed path would have exported
- * the whole database. That is what makes `wouldHaveWrittenBytes` the size of the
- * database rather than an estimate: `sqlite3_js_db_export()` produces the
- * on-disk image byte for byte, which is the same fact that lets a blob seed a
- * file by copying instead of converting.
+ * convenient: both backends are reached from the same seven call sites in
+ * `SQLiteCacheManager`, so whatever asked for a save here would have asked for
+ * a whole-database export there. That is what makes `wouldHaveWrittenBytes` the
+ * size of the database rather than an estimate — `sqlite3_js_db_export()`
+ * produces the on-disk image byte for byte, which is the same fact that lets a
+ * blob seed a file by copying instead of converting.
+ *
+ * Worth knowing which of those call sites dominates, because it is not the one
+ * the auto-save budget was built for. The tick and the save on close are gated
+ * on `hasUnsavedData`; the public `save()` is not, and it is called after every
+ * sync batch and — through `IndexingQueue`, `ConversationIndexer` and
+ * `TraceIndexer` — on every tenth item embedded. On the blob path that is a
+ * full export per ten embeddings, which the budget never bounded because the
+ * budget only paces the tick. It is why the counters here can show a database
+ * written a hundred times over in a session that ticked twice.
  *
  * Two things the counters deliberately do not include. Seeding writes the file
  * with `fs.writeFileSync`, around the VFS rather than through it, so a first
