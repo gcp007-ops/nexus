@@ -84,6 +84,9 @@ export interface VfsPersistenceServiceOptions {
 }
 
 export class VfsPersistenceService implements CachePersistence {
+  /** A save writes no database pages; the commit already did. */
+  readonly saveWritesWholeDatabase = false;
+
   private readonly bridge: SQLiteWasmBridge;
   private readonly filePath: string;
   private readonly vfsName: string;

@@ -46,7 +46,7 @@ import { resolveActivePluginFolderName } from './PluginStoragePathResolver';
 // Import schema from TypeScript module (esbuild compatible)
 import { SCHEMA_SQL } from '../schema/schema';
 import { SchemaMigrator } from '../schema/SchemaMigrator';
-import { computeAutoSaveIntervalMs } from './autoSaveBudget';
+import { resolveAutoSaveIntervalMs } from './autoSaveBudget';
 
 import type { Plugin } from 'obsidian';
 
@@ -450,18 +450,28 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
   }
 
   /**
-   * Arm the next auto-save tick, sizing the delay to the current database.
+   * Arm the next auto-save tick, sizing the delay to what a save actually costs.
    *
    * A self-rescheduling timeout rather than an interval: the delay has to be
    * recomputed as the cache grows, and an interval fixes it at whatever the
    * size was when the plugin started.
+   *
+   * When the backend says a save writes nothing, the budget has nothing to
+   * budget and the ceiling applies directly. That is not a shortcut: measured
+   * on the VFS, a save writes zero database pages, so a period derived from the
+   * size would tighten as a `VACUUM` shrinks the file and buy nothing for it.
+   * It also skips the size query, which ran once per tick to feed a decision
+   * that no longer depends on it.
    */
   private scheduleNextAutoSave(): void {
     if (this.autoSaveInterval <= 0) {
       return;
     }
 
-    const delay = computeAutoSaveIntervalMs(this.getDatabaseSizeBytes());
+    const delay = resolveAutoSaveIntervalMs(
+      this.persistenceService.saveWritesWholeDatabase,
+      () => this.getDatabaseSizeBytes()
+    );
 
     this.autoSaveTimer = window.setTimeout(() => {
       this.autoSaveTimer = null;

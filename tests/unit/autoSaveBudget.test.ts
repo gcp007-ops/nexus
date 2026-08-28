@@ -13,7 +13,8 @@ import {
   computeAutoSaveIntervalMs,
   AUTO_SAVE_MIN_INTERVAL_MS,
   AUTO_SAVE_MAX_INTERVAL_MS,
-  AUTO_SAVE_TARGET_BYTES_PER_SECOND
+  AUTO_SAVE_TARGET_BYTES_PER_SECOND,
+  resolveAutoSaveIntervalMs
 } from '../../src/database/storage/autoSaveBudget';
 
 const MB = 1024 * 1024;
@@ -102,5 +103,50 @@ describe('auto-save write budget', () => {
     });
 
     expect(interval).toBe(10_000);
+  });
+});
+
+/**
+ * The budget prices a save as proportional to the database. That is true of the
+ * export path and false of the VFS, where a save writes nothing at any size —
+ * so which one applies is a property of the backend, not of the number.
+ */
+describe('resolveAutoSaveIntervalMs', () => {
+  it('returns the ceiling when a save writes nothing, whatever the size', () => {
+    const read = jest.fn(() => 1024);
+    expect(resolveAutoSaveIntervalMs(false, read)).toBe(AUTO_SAVE_MAX_INTERVAL_MS);
+  });
+
+  it('does not even ask for the size in that case — the PRAGMA per tick is the point', () => {
+    const read = jest.fn(() => 1024);
+    resolveAutoSaveIntervalMs(false, read);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('does not tighten as a VACUUM shrinks the file', () => {
+    const big = resolveAutoSaveIntervalMs(false, () => 233_447_424);
+    const small = resolveAutoSaveIntervalMs(false, () => 4096);
+    expect(small).toBe(big);
+  });
+
+  it('still budgets when a save rewrites the whole database', () => {
+    expect(resolveAutoSaveIntervalMs(true, () => 233_447_424)).toBe(AUTO_SAVE_MAX_INTERVAL_MS);
+    expect(resolveAutoSaveIntervalMs(true, () => 10 * 1024 * 1024)).toBe(
+      computeAutoSaveIntervalMs(10 * 1024 * 1024)
+    );
+  });
+
+  it('gives an undeclared backend the budget, not the ceiling', () => {
+    // A stub that omits the flag reaches here as `undefined`. Falsy, but it must
+    // NOT be read as "free": that would hand the export path 30 minutes of
+    // unbounded rewriting, which is the failure the budget exists to prevent.
+    const undeclared = undefined as unknown as boolean;
+    expect(resolveAutoSaveIntervalMs(undeclared, () => 10 * 1024 * 1024)).toBe(
+      computeAutoSaveIntervalMs(10 * 1024 * 1024)
+    );
+  });
+
+  it('honours an overridden ceiling', () => {
+    expect(resolveAutoSaveIntervalMs(false, () => 0, { maxIntervalMs: 60_000 })).toBe(60_000);
   });
 });

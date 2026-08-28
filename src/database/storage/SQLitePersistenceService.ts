@@ -12,6 +12,9 @@ interface SQLitePersistenceServiceOptions {
 }
 
 export class SQLitePersistenceService implements CachePersistence {
+  /** Every save serialises and rewrites the whole database. */
+  readonly saveWritesWholeDatabase = true;
+
   private readonly bridge: SQLiteWasmBridge;
   private readonly blobStore: CacheBlobStore;
 

@@ -75,3 +75,33 @@ export function computeAutoSaveIntervalMs(
   const budgeted = (sizeBytes / target) * 1000;
   return Math.min(max, Math.max(min, Math.round(budgeted)));
 }
+
+/**
+ * The interval to actually use, given what a save costs on this backend.
+ *
+ * The budget prices a save as proportional to the size of the database, which
+ * is true only where a save serialises the whole thing. Under the VFS a save
+ * writes no database pages at any size, so the budget has nothing to bound and
+ * the ceiling applies directly — and deriving from the size would be worse than
+ * useless, tightening the period as a `VACUUM` shrinks the file while buying
+ * nothing for it.
+ *
+ * The size is read through a callback so it is never queried where it cannot
+ * matter: it is a PRAGMA per tick, asked to feed a decision the VFS path does
+ * not make.
+ *
+ * Explicitly `false`, never merely falsy: a backend that fails to declare must
+ * land on the budget, not the ceiling. Omission is what a stub does, and the
+ * ceiling is the unsafe side to reach by accident — on the export path it means
+ * 30 minutes of unbounded rewriting where the budget would have bound it.
+ */
+export function resolveAutoSaveIntervalMs(
+  saveWritesWholeDatabase: boolean,
+  readSizeBytes: () => number,
+  bounds: AutoSaveBudgetBounds = {}
+): number {
+  if (saveWritesWholeDatabase === false) {
+    return bounds.maxIntervalMs ?? AUTO_SAVE_MAX_INTERVAL_MS;
+  }
+  return computeAutoSaveIntervalMs(readSizeBytes(), bounds);
+}

@@ -13,6 +13,19 @@ import type { SQLiteWasmModule, SQLiteDatabaseHandle } from './SQLiteWasmBridge'
 
 export interface CachePersistence {
   /**
+   * Whether `saveDatabase()` writes the database, as opposed to being a no-op
+   * over pages that a commit already put on disk.
+   *
+   * The auto-save budget exists to bound the cost of a save, and that cost is
+   * proportional to the size of the database only on the export path. Under the
+   * VFS it is zero at any size, so deriving the period from the size measures
+   * something that no longer happens — and would tighten it as a `VACUUM`
+   * shrinks the file, buying nothing at a price. Backends declare which they
+   * are rather than the scheduler guessing from a `instanceof`.
+   */
+  readonly saveWritesWholeDatabase: boolean;
+
+  /**
    * Whether there is a database to open, as opposed to one to create.
    *
    * Asked before `loadDatabase` so the caller does not have to know whether
