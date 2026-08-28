@@ -21,7 +21,12 @@ export interface SQLiteDatabaseHandle {
 
 export interface SQLiteWasmModule {
   oo1: {
-    DB: new (filename: string) => SQLiteDatabaseHandle;
+    /**
+     * `flags` and `vfsName` are the second and third arguments of the oo1
+     * constructor. Only the VFS-backed path passes them: a database opened on a
+     * named VFS is a file SQLite writes page by page, not a blob held in memory.
+     */
+    DB: new (filename: string, flags?: string, vfsName?: string) => SQLiteDatabaseHandle;
   };
   wasm: {
     allocFromTypedArray(data: Uint8Array): number;
@@ -77,6 +82,17 @@ export class SQLiteWasmBridge {
 
   createMemoryDatabase(module: SQLiteWasmModule): SQLiteDatabaseHandle {
     return new module.oo1.DB(':memory:');
+  }
+
+  /**
+   * Open a database that lives in a file, through a named VFS.
+   *
+   * The counterpart of `deserializeDatabase`, and the reason the two cannot
+   * share a path: this handle is backed by the filesystem for its whole life, so
+   * there is nothing to export afterwards.
+   */
+  openFileDatabase(module: SQLiteWasmModule, filePath: string, vfsName: string): SQLiteDatabaseHandle {
+    return new module.oo1.DB(filePath, 'c', vfsName);
   }
 
   deserializeDatabase(module: SQLiteWasmModule, data: Uint8Array): SQLiteDatabaseHandle {

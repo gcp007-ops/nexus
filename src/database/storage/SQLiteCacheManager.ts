@@ -36,6 +36,8 @@ import {
 import { SQLiteTransactionCoordinator } from './SQLiteTransactionCoordinator';
 import { SQLiteSyncStateStore } from './SQLiteSyncStateStore';
 import { SQLitePersistenceService } from './SQLitePersistenceService';
+import type { CachePersistence } from './CachePersistence';
+import { tryCreateVfsPersistence } from './CachePersistenceFactory';
 import { SQLiteMaintenanceService, SQLiteMaintenanceStatistics } from './SQLiteMaintenanceService';
 import type { CacheBlobStore } from './CacheBlobStore';
 import { createCacheBlobStore, computeIdbKey } from './CacheBlobStoreFactory';
@@ -118,8 +120,17 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
   private warnedUnreadableDbSize = false;
   private readonly transactionCoordinator: SQLiteTransactionCoordinator;
   private readonly syncStateStore: SQLiteSyncStateStore;
-  private readonly persistenceService: SQLitePersistenceService;
+  /**
+   * Not readonly, and not the concrete class: `initialize()` swaps this for the
+   * VFS-backed service once the WASM module exists and the VFS mounts. Mounting
+   * needs `sqlite3`, which does not exist yet in the constructor, so the
+   * blob-backed service built here is both the mobile answer and the desktop
+   * fallback.
+   */
+  private persistenceService: CachePersistence;
   private readonly blobStore: CacheBlobStore;
+  /** Stable per-vault key; names the cache directory outside the vault. */
+  private readonly vaultKey: string;
   private maintenanceService?: SQLiteMaintenanceService;
 
   constructor(options: SQLiteCacheManagerOptions) {
@@ -129,6 +140,10 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
     this.autoSaveInterval = options.autoSaveInterval ?? 30000;  // 30 seconds default
     this.bridge = new SQLiteWasmBridge();
     this.transactionCoordinator = new SQLiteTransactionCoordinator();
+    this.vaultKey = computeIdbKey(
+      options.app,
+      options.plugin ? resolveActivePluginFolderName(options.plugin) : 'nexus'
+    );
     this.blobStore = options.blobStore ?? this.buildDefaultBlobStore(options);
     this.persistenceService = new SQLitePersistenceService({
       blobStore: this.blobStore,
@@ -160,13 +175,10 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
   }
 
   private buildDefaultBlobStore(options: SQLiteCacheManagerOptions): CacheBlobStore {
-    const pluginDir = options.plugin
-      ? resolveActivePluginFolderName(options.plugin)
-      : 'nexus';
     return createCacheBlobStore({
       app: options.app,
       vaultRelativePath: options.dbPath,
-      idbKey: computeIdbKey(options.app, pluginDir)
+      idbKey: this.vaultKey
     });
   }
 
@@ -306,12 +318,24 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
         await this.app.vault.adapter.mkdir(parentPath);
       }
 
-      // Ask the blob store directly — getMetadata returns null when the blob
-      // is absent. This works uniformly across IDB (desktop) and the
-      // vault.adapter file path (mobile) without leaking which backend is in
-      // use into the cache manager.
-      const meta = await this.blobStore.getMetadata();
-      const dbExists = meta !== null && meta.size > 0;
+      // Try to move persistence onto the node:fs VFS now that the module
+      // exists. Declining is an ordinary outcome — always on mobile, and on
+      // desktop whenever the mount fails — and leaves the blob-backed service
+      // built in the constructor in place, untouched.
+      const vfsPersistence = tryCreateVfsPersistence({
+        sqlite3: this.getSqlite3OrThrow(),
+        bridge: this.bridge,
+        vaultKey: this.vaultKey,
+        seedSource: this.blobStore
+      });
+      if (vfsPersistence) {
+        this.persistenceService = vfsPersistence;
+      }
+
+      // Ask the active persistence service, not the blob store: under the VFS
+      // "exists" means a file on disk, and under the blob store it means an IDB
+      // record or a vault-adapter file. Which one is in use stays its business.
+      const dbExists = await this.persistenceService.hasExistingDatabase();
 
       if (dbExists) {
         // Load existing database from blob store
@@ -344,6 +368,17 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
       console.error('[SQLiteCacheManager] Initialization failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Discard whatever is persisted, so the next `initialize()` starts empty.
+   *
+   * Exists because "Nexus: Rebuild cache" used to remove the blob directly,
+   * which stops meaning anything once the database is a file on a VFS. Routed
+   * through here so the command talks to the backend actually in use.
+   */
+  async discardPersistedDatabase(): Promise<void> {
+    await this.persistenceService.discardExistingDatabase();
   }
 
   /**

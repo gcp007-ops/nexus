@@ -121,7 +121,10 @@ export class StorageMaintenanceService {
         await this.deps.getSqliteCache().close();
 
         options.onProgress?.('Removing cache blob', 0, 1);
-        await this.deps.getCacheBlobStore().remove();
+        // Through the cache manager, not the blob store: on the node:fs VFS the
+        // database is a file and removing the blob would leave the stale cache
+        // in place, so the rebuild would reopen it and report success.
+        await this.deps.getSqliteCache().discardPersistedDatabase();
 
         options.onProgress?.('Reopening cache', 0, 1);
         await this.deps.getSqliteCache().initialize();

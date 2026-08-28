@@ -79,6 +79,7 @@ describe('HybridStorageAdapter (Phase 0 characterization)', () => {
         stopAutoSave: jest.Mock;
         close: jest.Mock;
         initialize: jest.Mock;
+        discardPersistedDatabase: jest.Mock;
       };
       cacheBlobStore: { remove: jest.Mock };
       syncCoordinator: { fullRebuild: jest.Mock };
@@ -92,7 +93,8 @@ describe('HybridStorageAdapter (Phase 0 characterization)', () => {
       adapter.sqliteCache = {
         stopAutoSave: jest.fn(),
         close: jest.fn().mockResolvedValue(undefined),
-        initialize: jest.fn().mockResolvedValue(undefined)
+        initialize: jest.fn().mockResolvedValue(undefined),
+        discardPersistedDatabase: jest.fn().mockResolvedValue(undefined)
       };
       adapter.cacheBlobStore = { remove: jest.fn().mockResolvedValue(undefined) };
       adapter.syncCoordinator = {
@@ -118,7 +120,13 @@ describe('HybridStorageAdapter (Phase 0 characterization)', () => {
 
       expect(adapter.sqliteCache.stopAutoSave).toHaveBeenCalledTimes(1);
       expect(adapter.sqliteCache.close).toHaveBeenCalledTimes(1);
-      expect(adapter.cacheBlobStore.remove).toHaveBeenCalledTimes(1);
+      expect(adapter.sqliteCache.discardPersistedDatabase).toHaveBeenCalledTimes(1);
+      // And NOT through the blob store. Reaching past the cache manager is
+      // correct for one backend and a silent no-op for the other: on the
+      // node:fs VFS the database is a file, so removing the blob would leave
+      // the stale cache in place for `initialize()` to reopen — and the
+      // rebuild would report success having rebuilt nothing.
+      expect(adapter.cacheBlobStore.remove).not.toHaveBeenCalled();
       expect(adapter.sqliteCache.initialize).toHaveBeenCalledTimes(1);
       expect(adapter.syncCoordinator.fullRebuild).toHaveBeenCalledTimes(1);
 

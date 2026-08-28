@@ -24,6 +24,7 @@ interface CacheLifecycleMock {
   close: jest.Mock<Promise<void>, []>;
   save: jest.Mock<Promise<void>, []>;
   stopAutoSave: jest.Mock<void, []>;
+  discardPersistedDatabase: jest.Mock<Promise<void>, []>;
 }
 
 interface SyncCoordinatorMock {
@@ -63,7 +64,14 @@ async function buildRebuildHarness(): Promise<RebuildHarness> {
     stopAutoSave: jest.fn(() => { callOrder.push('stopAutoSave'); }),
     close: jest.fn(async () => { callOrder.push('close'); }),
     initialize: jest.fn(async () => { callOrder.push('initialize'); }),
-    save: jest.fn(async () => { callOrder.push('save'); })
+    save: jest.fn(async () => { callOrder.push('save'); }),
+    // The rebuild no longer reaches the blob store directly: it asks the cache
+    // manager to discard whatever IS persisted, because on the node:fs VFS that
+    // is a file and removing the blob would be a silent no-op. Production's
+    // blob-backed service answers this by calling `blobStore.remove()`, so the
+    // mock does the same and every assertion below still measures the real
+    // store being wiped.
+    discardPersistedDatabase: jest.fn(async () => { await blobStore.remove(); })
   };
   const syncCoordinator: SyncCoordinatorMock = {
     fullRebuild: jest.fn(async () => {

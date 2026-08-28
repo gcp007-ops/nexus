@@ -32,7 +32,10 @@ function makeMaintenance(rebuildSucceeds: boolean) {
     initialize: () => {
       calls.push('initialize');
       return Promise.resolve();
-    }
+    },
+    // Routed through the cache manager rather than the blob store, so the
+    // rebuild discards whichever backend is actually persisting the database.
+    discardPersistedDatabase: () => cacheBlobStore.remove()
   };
   const cacheBlobStore = {
     remove: () => {

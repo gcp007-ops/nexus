@@ -1,4 +1,5 @@
 import type { CacheBlobStore } from './CacheBlobStore';
+import type { CachePersistence } from './CachePersistence';
 import {
   SQLiteWasmBridge,
   SQLiteWasmModule,
@@ -10,13 +11,29 @@ interface SQLitePersistenceServiceOptions {
   bridge: SQLiteWasmBridge;
 }
 
-export class SQLitePersistenceService {
+export class SQLitePersistenceService implements CachePersistence {
   private readonly bridge: SQLiteWasmBridge;
   private readonly blobStore: CacheBlobStore;
 
   constructor(options: SQLitePersistenceServiceOptions) {
     this.blobStore = options.blobStore;
     this.bridge = options.bridge;
+  }
+
+  /**
+   * Whether the blob store holds a database worth loading.
+   *
+   * `getMetadata` returns null when the record is absent, which reads the same
+   * on IndexedDB (desktop) and on the vault adapter (mobile) — so the caller
+   * never learns which backend is in use.
+   */
+  async hasExistingDatabase(): Promise<boolean> {
+    const meta = await this.blobStore.getMetadata();
+    return meta !== null && meta.size > 0;
+  }
+
+  async discardExistingDatabase(): Promise<void> {
+    await this.blobStore.remove();
   }
 
   async loadDatabase(sqlite3: SQLiteWasmModule, schemaSql: string): Promise<SQLiteDatabaseHandle> {
