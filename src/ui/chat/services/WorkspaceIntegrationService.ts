@@ -29,13 +29,16 @@ import type { AgentManager } from '../../../services/AgentManager';
 export class WorkspaceIntegrationService {
   constructor(private app: App) {}
 
-  /** A passive briefing read never selects a workflow or updates session bindings. */
+  /**
+   * A passive briefing read never selects a workflow or updates session bindings.
+   * Internal consumers read the compact projection; callers expand references explicitly.
+   */
   async loadWorkspace(workspaceId: string): Promise<Record<string, unknown> | null> {
     const plugin = getNexusPlugin<NexusPlugin>(this.app);
     const agents = await plugin?.getService<AgentManager>('agentManager');
     const memory = agents?.getAgent('memoryManager');
     if (!(memory instanceof MemoryManagerAgent)) return null;
-    const result = await memory.readWorkspaceBriefing({ workspace: workspaceId, limit: 3, context: { workspaceId, sessionId: '', memory: 'Reading workspace context', goal: 'Refresh workspace briefing without changing selection' } });
+    const result = await memory.readWorkspaceBriefing({ workspace: workspaceId, limit: 3, detail: 'compact', context: { workspaceId, sessionId: '', memory: 'Reading workspace context', goal: 'Refresh workspace briefing without changing selection' } });
     return result.success ? { id: result.workspaceContext?.workspaceId ?? workspaceId, ...result.data, workspaceContext: result.workspaceContext } : null;
   }
 
@@ -51,7 +54,8 @@ export class WorkspaceIntegrationService {
     if (!(memory instanceof MemoryManagerAgent) || !preparation || !activation) throw new Error('Workspace services are initializing');
     const adjustedBudget = { ...budget };
     const loader = new WorkspaceLoadService(async params => {
-      const result = await memory.readWorkspaceBriefing(params);
+      // Chat selection keeps the bounded projection; workflow preparation still gets its definitions.
+      const result = await memory.readWorkspaceBriefing({ ...params, detail: 'compact' });
       if (result.success && adjustedBudget.maxTokens !== undefined) {
         const briefing = { ...result.data };
         delete briefing.workflowDefinitions; delete briefing.loadedWorkflow; delete briefing.preloadedTools; delete briefing.prompt;
