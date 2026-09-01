@@ -109,7 +109,7 @@ export interface CreateWorkspaceResult extends CommonResult {
 export interface LoadWorkspaceResult extends CommonResult {
   responseVersion?: 1 | 2;
   detail?: LoadWorkspaceDetail;
-  data: {
+  data: ({
     context: {
       name: string;
       description?: string;
@@ -142,7 +142,7 @@ export interface LoadWorkspaceResult extends CommonResult {
       systemPrompt: string;
     };
     taskSummary?: import('../../../agents/taskManager/types').WorkspaceTaskSummary;
-  };
+  } | LoadWorkspaceCompactData);
   pagination?: {
     sessions: {
       page: number;

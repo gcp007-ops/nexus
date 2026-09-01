@@ -32,6 +32,7 @@ import { PaginationParams } from '../../../../types/pagination/PaginationTypes';
 import { WorkspaceDataFetcher } from '../../services/WorkspaceDataFetcher';
 import { WorkspacePromptResolver } from '../../services/WorkspacePromptResolver';
 import { WorkspaceContextBuilder } from '../../services/WorkspaceContextBuilder';
+import { WorkspaceCompactResponseBuilder } from '../../services/WorkspaceCompactResponseBuilder';
 import { WorkspaceFileCollector } from '../../services/WorkspaceFileCollector';
 import { resolveWorkspaceIdentifier } from '../../services/WorkspaceMatcher';
 import type { WorkspaceTaskSummary } from '../../../taskManager/types';
@@ -58,6 +59,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
   private dataFetcher: WorkspaceDataFetcher;
   private promptResolver: WorkspacePromptResolver;
   private contextBuilder: WorkspaceContextBuilder;
+  private compactResponseBuilder: WorkspaceCompactResponseBuilder;
   private fileCollector: WorkspaceFileCollector;
 
   /**
@@ -81,6 +83,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
       agent.customPromptStorage
     );
     this.contextBuilder = new WorkspaceContextBuilder();
+    this.compactResponseBuilder = new WorkspaceCompactResponseBuilder();
     this.fileCollector = new WorkspaceFileCollector();
   }
 
@@ -173,6 +176,18 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         // Continue - this is not critical
       }
 
+      const detail = params.detail ?? 'full';
+      if (detail === 'compact') {
+        return {
+          success: true,
+          responseVersion: 2,
+          detail,
+          data: this.compactResponseBuilder.build(projectWorkspace),
+          workspaceContext: { workspaceId: projectWorkspace.id },
+          ...(resolution ? { resolution } : {})
+        };
+      }
+
       // Get memory service for data operations
       const memoryService = this.agent.getMemoryService();
 
@@ -246,6 +261,8 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       const result: LoadWorkspaceResult = {
         success: true,
+        responseVersion: 1,
+        detail: 'full',
         data: {
           context,
           workflows,
@@ -283,9 +300,11 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       // Add navigation fallback message if workspace path building failed
       if (workspacePathResult.failed) {
-        result.data.context.recentActivity.push(
-          "Note: Workspace directory navigation unavailable. Use vaultManager listDirectoryMode to explore the workspace folder structure."
-        );
+        if ('recentActivity' in result.data.context) {
+          result.data.context.recentActivity.push(
+            "Note: Workspace directory navigation unavailable. Use vaultManager listDirectoryMode to explore the workspace folder structure."
+          );
+        }
       }
 
       return result;
