@@ -27,6 +27,30 @@ Workspaces scope your sessions, traces, and operations. Every tool call is tagge
 
 When a workspace loads, its **recent activity** is grouped by session and carries the memory, goal, and constraints captured with each trace — so the AI sees not just *what* happened recently but *why*.
 
+### Progressive loading
+
+For ordinary routing and workspace entry, prefer the compact response:
+
+```powershell
+nexus use --memory "entering a known workspace" --goal "load its navigation" -- memory load-workspace "NeuroAI Mapping" --detail compact
+```
+
+Compact mode returns only workspace identity, ordered key-file and workflow
+references, and an explicit list of omitted full-response branches. Read
+`mustRead: true` references first and expand only the branch required by the
+request:
+
+- note or workflow content: `content read --path <path> --start-line 1`;
+- saved continuity: `memory load-state` when the user asks to resume;
+- project or task state: task tools only for an explicit resume, pending-work,
+  next-step, or DAG request;
+- folder structure: `storage list --path <path>`.
+
+Use `--detail full` when the comprehensive legacy briefing is actually needed.
+`full` remains the default during migration. In that mode, `--limit` bounds
+sessions, states, and recent activity; compact mode omits all three as well as
+task data, so lowering `--limit` does not make compact mode more compact.
+
 ---
 
 ## Workflows
