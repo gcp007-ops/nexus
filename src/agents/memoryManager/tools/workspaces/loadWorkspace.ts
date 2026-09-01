@@ -105,8 +105,42 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       // Get the workspace by ID or name (unified lookup)
       const limit = params.limit ?? 5;
+      const detail = params.detail ?? 'full';
 
       if (workspaceService.isSystemWorkspaceId(params.workspace)) {
+        if (detail === 'compact') {
+          const summary = workspaceService.getSystemGuidesWorkspaceSummary();
+          if (!summary) {
+            return this.createErrorResult(`Workspace '${params.workspace}' is unavailable`, params);
+          }
+
+          const data = this.compactResponseBuilder.build({
+            id: summary.id,
+            name: summary.name,
+            description: summary.description,
+            rootFolder: summary.rootFolder,
+            created: 0,
+            lastAccessed: 0,
+            context: {
+              keyFiles: [summary.entrypoint],
+              workflows: []
+            }
+          });
+          data.navigation.keyFiles = [{
+            path: summary.entrypoint,
+            role: 'entrypoint',
+            mustRead: true
+          }];
+
+          return {
+            success: true,
+            responseVersion: 2,
+            detail,
+            data,
+            workspaceContext: { workspaceId: summary.id }
+          };
+        }
+
         const systemWorkspace = await workspaceService.loadSystemGuidesWorkspace(limit);
         if (!systemWorkspace) {
           return this.createErrorResult(`Workspace '${params.workspace}' is unavailable`, params);
@@ -114,6 +148,8 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
         return {
           success: true,
+          responseVersion: 1,
+          detail: 'full',
           data: systemWorkspace.data,
           workspaceContext: systemWorkspace.workspaceContext,
           pagination: {
@@ -176,7 +212,6 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         // Continue - this is not critical
       }
 
-      const detail = params.detail ?? 'full';
       if (detail === 'compact') {
         return {
           success: true,

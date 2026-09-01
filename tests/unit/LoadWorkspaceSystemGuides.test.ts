@@ -17,9 +17,22 @@ describe('LoadWorkspaceTool system guides workspace', () => {
       getWorkspaceServiceAsync: jest.fn().mockResolvedValue({
         isSystemWorkspaceId: jest.fn().mockImplementation((id: string) => id === SYSTEM_GUIDES_WORKSPACE_ID),
         loadSystemGuidesWorkspace: jest.fn().mockResolvedValue({
+          workspace: {
+            id: SYSTEM_GUIDES_WORKSPACE_ID,
+            name: 'Assistant guides',
+            description: 'Reference documentation.',
+            rootFolder: 'Assistant data/guides',
+            created: 0,
+            lastAccessed: 0,
+            context: {
+              purpose: 'Reference documentation.',
+              keyFiles: ['Assistant data/guides/index.md']
+            },
+            sessions: {}
+          },
           workspaceContext: {
-            purpose: 'Reference documentation.',
-            keyFiles: ['Assistant data/guides/index.md']
+            workspaceId: SYSTEM_GUIDES_WORKSPACE_ID,
+            workspacePath: ['Assistant data/guides/index.md']
           },
           data: {
             context: {
@@ -46,10 +59,55 @@ describe('LoadWorkspaceTool system guides workspace', () => {
     const result = await tool.execute({ workspace: SYSTEM_GUIDES_WORKSPACE_ID, limit: 2 });
 
     expect(result.success).toBe(true);
+    expect(result).toMatchObject({ responseVersion: 1, detail: 'full' });
     expect(result.data.context.name).toBe('Assistant guides');
     expect(result.data.keyFiles['Assistant data/guides/index.md']).toContain('# Assistant guides');
     expect(result.pagination?.sessions.totalItems).toBe(0);
     expect(result.pagination?.states.totalItems).toBe(0);
+  });
+
+  it('returns compact system-guide navigation without installing or reading guide files', async () => {
+    const loadSystemGuidesWorkspace = jest.fn();
+    const tool = new LoadWorkspaceTool({
+      getWorkspaceServiceAsync: jest.fn().mockResolvedValue({
+        isSystemWorkspaceId: jest.fn().mockImplementation((id: string) => id === SYSTEM_GUIDES_WORKSPACE_ID),
+        getSystemGuidesWorkspaceSummary: jest.fn().mockReturnValue({
+          id: SYSTEM_GUIDES_WORKSPACE_ID,
+          name: 'Assistant guides',
+          description: 'Reference documentation.',
+          rootFolder: 'Assistant data/guides',
+          entrypoint: 'Assistant data/guides/index.md',
+          isSystemManaged: true
+        }),
+        loadSystemGuidesWorkspace
+      }),
+      getApp: jest.fn().mockReturnValue({}),
+      plugin: {},
+      customPromptStorage: undefined
+    } as never);
+
+    const result = await tool.execute({
+      workspace: SYSTEM_GUIDES_WORKSPACE_ID,
+      detail: 'compact'
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      responseVersion: 2,
+      detail: 'compact',
+      workspaceContext: { workspaceId: SYSTEM_GUIDES_WORKSPACE_ID },
+      data: {
+        navigation: {
+          keyFiles: [{
+            path: 'Assistant data/guides/index.md',
+            role: 'entrypoint',
+            mustRead: true
+          }]
+        }
+      }
+    });
+    expect(result.data).not.toHaveProperty('keyFiles');
+    expect(loadSystemGuidesWorkspace).not.toHaveBeenCalled();
   });
 
   it('loads a regular workspace by case-insensitive name and uses the resolved workspace ID downstream', async () => {
