@@ -79,6 +79,36 @@ function createTool() {
 }
 
 describe('LoadWorkspaceTool compact detail', () => {
+  it('publishes compact and full as the only supported detail values', () => {
+    const { tool } = createTool();
+    const schema = tool.getParameterSchema() as {
+      properties?: Record<string, { type?: string; enum?: unknown[]; default?: unknown }>;
+    };
+
+    expect(schema.properties?.detail).toMatchObject({
+      type: 'string',
+      enum: ['compact', 'full'],
+      default: 'full'
+    });
+  });
+
+  it('documents the compact response envelope and navigation fields', () => {
+    const { tool } = createTool();
+    const schema = tool.getResultSchema() as {
+      properties?: Record<string, {
+        enum?: unknown[];
+        properties?: Record<string, {
+          properties?: Record<string, unknown>;
+        }>;
+      }>;
+    };
+
+    expect(schema.properties?.responseVersion).toBeDefined();
+    expect(schema.properties?.detail).toMatchObject({ enum: ['compact', 'full'] });
+    expect(schema.properties?.data?.properties?.navigation).toBeDefined();
+    expect(schema.properties?.data?.properties?.omitted).toBeDefined();
+  });
+
   it('returns compact navigation before querying tasks, memory, or files', async () => {
     const {
       cacheManager,

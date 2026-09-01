@@ -508,6 +508,12 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
           minimum: 1,
           maximum: 20
         },
+        detail: {
+          type: 'string',
+          enum: ['compact', 'full'],
+          default: 'full',
+          description: 'Response detail level. compact returns workspace identity plus ordered navigation references and skips task, memory, file, prompt, and workflow-body expansion. full preserves the legacy comprehensive briefing.'
+        },
         recursive: {
           type: 'boolean',
           description: 'Show full recursive file structure (true) or top-level folders only (false). Default: false (top-level only, folders marked with trailing /)',
@@ -536,6 +542,16 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
           type: 'string',
           description: 'Error message if operation failed'
         },
+        responseVersion: {
+          type: 'number',
+          enum: [1, 2],
+          description: 'Response contract version: 1 for the legacy full briefing, 2 for compact navigation.'
+        },
+        detail: {
+          type: 'string',
+          enum: ['compact', 'full'],
+          description: 'Detail level actually returned.'
+        },
         data: {
           type: 'object',
           properties: {
@@ -553,7 +569,46 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
                   description: 'Recent tool activity as natural-language sentences, newest first. Each sentence couches the action in the memory/goal/constraints captured with that activity, so what happened is grounded in why it happened.'
                 }
               },
-              required: ['name', 'rootFolder', 'recentActivity']
+              required: ['name', 'rootFolder']
+            },
+            navigation: {
+              type: 'object',
+              description: 'Ordered references returned in compact mode. Read mustRead entries first, then load other paths only when the task requires them.',
+              properties: {
+                keyFiles: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      path: { type: 'string' },
+                      role: { type: 'string' },
+                      mustRead: { type: 'boolean' }
+                    },
+                    required: ['role', 'mustRead']
+                  }
+                },
+                workflows: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string' },
+                      name: { type: 'string' },
+                      when: { type: 'string' },
+                      path: { type: 'string' },
+                      role: { type: 'string' },
+                      mustRead: { type: 'boolean' }
+                    },
+                    required: ['role', 'mustRead']
+                  }
+                }
+              },
+              required: ['keyFiles', 'workflows']
+            },
+            omitted: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Full-response branches intentionally not loaded in compact mode.'
             },
             workflows: {
               type: 'array',
