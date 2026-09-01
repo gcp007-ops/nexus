@@ -69,7 +69,7 @@ export interface AgentRegistrationStatus {
  * Type guard to check if plugin has Settings
  */
 function hasSettings(plugin: Plugin | NexusPlugin): plugin is NexusPlugin {
-  return 'settings' in plugin && plugin.settings !== undefined;
+  return 'settings' in plugin && (plugin as NexusPlugin).settings !== undefined;
 }
 
 export class AgentRegistrationService implements AgentRegistrationServiceInterface {
@@ -280,8 +280,7 @@ export class AgentRegistrationService implements AgentRegistrationServiceInterfa
    * Helper to get memory settings from plugin
    */
   private getMemorySettings(): MemorySettings {
-    const pluginWithSettings = this.plugin as Plugin & { settings?: { settings?: { memory?: MemorySettings } } };
-    return pluginWithSettings?.settings?.settings?.memory ?? {};
+    return hasSettings(this.plugin) ? this.plugin.settings.settings.memory ?? {} : {};
   }
 
   /**
