@@ -10,6 +10,31 @@ import {
 
 export type WorkspaceWorkflowDefinition = WorkspaceWorkflow
 
+export type LoadWorkspaceDetail = 'compact' | 'full';
+
+export interface WorkspaceNavigationReference {
+  path?: string;
+  role: string;
+  mustRead: boolean;
+  id?: string;
+  name?: string;
+  when?: string;
+}
+
+export interface LoadWorkspaceCompactData {
+  context: {
+    name: string;
+    description?: string;
+    purpose?: string;
+    rootFolder: string;
+  };
+  navigation: {
+    keyFiles: WorkspaceNavigationReference[];
+    workflows: WorkspaceNavigationReference[];
+  };
+  omitted: string[];
+}
+
 /**
  * Create workspace parameters - LLM must provide complete WorkspaceContext structure
  */
@@ -82,6 +107,8 @@ export interface CreateWorkspaceResult extends CommonResult {
  * Load workspace result - returns actionable briefing instead of raw data
  */
 export interface LoadWorkspaceResult extends CommonResult {
+  responseVersion?: 1 | 2;
+  detail?: LoadWorkspaceDetail;
   data: {
     context: {
       name: string;
@@ -246,6 +273,7 @@ export interface LoadWorkspaceParameters extends CommonParameters {
   workspace: string;
   limit?: number; // Optional limit for sessions, states, and recentActivity (default: 3)
   recursive?: boolean; // Show full recursive structure (true) or top-level folders only (false, default)
+  detail?: LoadWorkspaceDetail; // Compact navigation references or the legacy full briefing
 }
 
 export interface LoadStateParams extends CommonParameters {
