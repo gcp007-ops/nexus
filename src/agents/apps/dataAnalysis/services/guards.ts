@@ -33,7 +33,7 @@ export function enforceRowCap(data: unknown, maxRows: number): RowCapOutcome {
       ok: false,
       rowCount,
       error:
-        `Result has ${rowCount.toLocaleString()} rows (max ${maxRows.toLocaleString()}). ` +
+        `Result has ${rowCount.toLocaleString('en-US')} rows (max ${maxRows.toLocaleString('en-US')}). ` +
         `Aggregate (groupby/pivot/describe) or add a filter/limit and re-run.`,
     };
   }

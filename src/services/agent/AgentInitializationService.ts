@@ -51,7 +51,7 @@ const LIVE_WORKSPACE_LOOKUP_TIMEOUT_MS = 4000;
  * Type guard to check if plugin has Settings
  */
 function hasSettings(plugin: Plugin | NexusPlugin): plugin is NexusPlugin {
-  return 'settings' in plugin && plugin.settings !== undefined;
+  return 'settings' in plugin && (plugin as NexusPlugin).settings !== undefined;
 }
 
 /**
