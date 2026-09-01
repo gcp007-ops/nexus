@@ -29,8 +29,8 @@ export class WorkspaceIntegrationService {
   constructor(private app: App) {}
 
   /**
-   * Load workspace by ID with full context (like loadWorkspace tool)
-   * This executes the LoadWorkspaceTool to get comprehensive data including file structure
+   * Load workspace by ID through the compact projection used by internal consumers.
+   * Callers can expand the returned references explicitly when the task requires it.
    */
   async loadWorkspace(workspaceId: string): Promise<Record<string, unknown> | null> {
     try {
@@ -58,14 +58,15 @@ export class WorkspaceIntegrationService {
           const memoryManager = agentManager.getAgent('memoryManager');
 
           if (memoryManager) {
-            // Execute loadWorkspace tool to get comprehensive workspace data
+            // Keep chat, #workspace references, and workflow runs on the bounded projection.
             const result = await memoryManager.executeTool('loadWorkspace', {
               id: resolvedWorkspaceId,
-              limit: 3 // Get recent sessions, states, and activity
+              limit: 3,
+              detail: 'compact'
             }) as LoadWorkspaceToolResult;
 
             if (result.success && result.data) {
-              // Return the comprehensive workspace data from the tool
+              // Return the compact workspace data and its expansion references.
               return {
                 id: resolvedWorkspaceId,
                 ...result.data,
