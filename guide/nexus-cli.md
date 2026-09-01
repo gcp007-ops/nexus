@@ -61,8 +61,16 @@ The `--` delimiter separates CLI context from the tool command. Values after it
 are ordinary shell arguments, so a multiword value needs only one quote layer:
 
 ```powershell
-nexus use --memory "resuming research" --goal "load the workspace" -- memory load-workspace "NeuroAI Mapping" --limit 1
+nexus use --memory "entering research" --goal "load workspace navigation" -- memory load-workspace "NeuroAI Mapping" --detail compact
 ```
+
+`memory load-workspace --detail compact` returns workspace identity and ordered
+navigation references without loading tasks, sessions, states, activity,
+prompts, workflow bodies, or the file tree. Follow `mustRead` references first,
+then use the relevant content, state, task, or storage tool only when the request
+requires that branch. Use `--detail full` for the legacy comprehensive briefing;
+it remains the default during migration, and its `--limit` controls sessions,
+states, and recent activity.
 
 The legacy `nexus use "<command>" ...` form remains supported. If Windows
 PowerShell splits a legacy command at nested double quotes, Nexus rejects it
