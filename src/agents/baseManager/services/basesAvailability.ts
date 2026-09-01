@@ -165,8 +165,9 @@ function sinks(): Map<string, AnalyzeViewSink> {
  * why nothing below can call into an API the running app does not have.
  */
 function basesViewApi(plugin: Plugin): ((viewId: string, registration: BasesViewRegistration) => boolean) | null {
-  const register = (plugin as BasesCapablePlugin).registerBasesView;
-  return typeof register === 'function' ? register.bind(plugin) : null;
+  const capablePlugin = plugin as BasesCapablePlugin;
+  if (typeof capablePlugin.registerBasesView !== 'function') return null;
+  return (viewId, registration) => capablePlugin.registerBasesView(viewId, registration);
 }
 
 /** True when the running app exposes the Bases view API at all (1.10.0+). */
