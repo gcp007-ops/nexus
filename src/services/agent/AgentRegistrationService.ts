@@ -69,6 +69,7 @@ export interface AgentRegistrationStatus {
  * Type guard to check if plugin has Settings
  */
 function hasSettings(plugin: Plugin | NexusPlugin): plugin is NexusPlugin {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- f2106cbb added this assertion for the Windows toolchain; removing it regresses that fix
   return 'settings' in plugin && (plugin as NexusPlugin).settings !== undefined;
 }
 
