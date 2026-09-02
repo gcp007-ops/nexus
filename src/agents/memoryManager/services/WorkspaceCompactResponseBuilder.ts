@@ -7,13 +7,16 @@ import type {
   WorkspaceWorkflow
 } from '../../../database/types/workspace/WorkspaceTypes';
 
+// Ramos do briefing completo que o compacto nao carrega. Nenhum nome aqui
+// pode coincidir com uma chave de `navigation`: o consumidor leria ausencia
+// onde ha referencia. `keyFileContents` nomeia o que de fato falta — o
+// briefing completo devolve path -> conteudo, o compacto so a referencia.
 const OMITTED_FULL_BRANCHES = [
   'recentActivity',
-  'workflows',
   'workflowDefinitions',
   'workspaceStructure',
   'recentFiles',
-  'keyFiles',
+  'keyFileContents',
   'preferences',
   'sessions',
   'states',
