@@ -62,11 +62,10 @@ describe('WorkspaceCompactResponseBuilder', () => {
 
     expect(data.omitted).toEqual([
       'recentActivity',
-      'workflows',
       'workflowDefinitions',
       'workspaceStructure',
       'recentFiles',
-      'keyFiles',
+      'keyFileContents',
       'preferences',
       'sessions',
       'states',
@@ -91,5 +90,18 @@ describe('WorkspaceCompactResponseBuilder', () => {
 
     expect(new WorkspaceCompactResponseBuilder().build(aliased).navigation.workflows[0].path)
       .toBe('_Base/Workflows/Default/WF-Retomada-Default');
+  });
+
+  it('never names a delivered navigation key as omitted', () => {
+    const data = new WorkspaceCompactResponseBuilder().build(workspace);
+
+    const entregues = Object.entries(data.navigation)
+      .filter(([, value]) => Array.isArray(value) && value.length > 0)
+      .map(([key]) => key);
+
+    expect(entregues.length).toBeGreaterThan(0);
+    for (const key of entregues) {
+      expect(data.omitted).not.toContain(key);
+    }
   });
 });
