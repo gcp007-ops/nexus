@@ -65,7 +65,6 @@ describe('WorkspaceCompactResponseBuilder', () => {
       'workflowDefinitions',
       'workspaceStructure',
       'recentFiles',
-      'keyFileContents',
       'preferences',
       'sessions',
       'states',

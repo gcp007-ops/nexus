@@ -9,14 +9,13 @@ import type {
 
 // Ramos do briefing completo que o compacto nao carrega. Nenhum nome aqui
 // pode coincidir com uma chave de `navigation`: o consumidor leria ausencia
-// onde ha referencia. `keyFileContents` nomeia o que de fato falta — o
-// briefing completo devolve path -> conteudo, o compacto so a referencia.
+// onde ha referencia. E nenhum ramo entra aqui sem existir no briefing
+// completo: nomear a falta de algo inexistente engana do mesmo jeito.
 const OMITTED_FULL_BRANCHES = [
   'recentActivity',
   'workflowDefinitions',
   'workspaceStructure',
   'recentFiles',
-  'keyFileContents',
   'preferences',
   'sessions',
   'states',
