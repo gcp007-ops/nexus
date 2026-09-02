@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-02T14:54:25.554Z",
+  "generatedAt": "2026-09-05T04:21:43.585Z",
   "selector": "--help",
   "toolCount": 80,
   "agentCount": 14,
@@ -1315,7 +1315,7 @@
       "tool": "loadWorkspace",
       "description": "Load a workspace by ID and restore context and state",
       "command": "memory load-workspace",
-      "usage": "memory load-workspace <workspace> [--limit <limit>] [--recursive]",
+      "usage": "memory load-workspace <workspace> [--limit <limit>] [--detail <detail>] [--recursive]",
       "arguments": [
         {
           "name": "workspace",
@@ -1334,6 +1334,14 @@
           "description": "[OPTIONAL] Optional limit for sessions, states, and recentActivity returned (default: 5) (number) [min: 1, max: 20]"
         },
         {
+          "name": "detail",
+          "flag": "--detail",
+          "type": "string",
+          "required": false,
+          "positional": false,
+          "description": "[OPTIONAL] Response detail level. compact is the default: workspace identity plus ordered navigation references, skipping task, memory, file, prompt, and workflow-body expansion, with every omitted branch named in `omitted`. full is the explicit escape for inventory, contract diagnosis, or a legacy consumer that depends on the comprehensive briefing. (One of: [\"compact\", \"full\"])"
+        },
+        {
           "name": "recursive",
           "flag": "--recursive",
           "type": "boolean",
@@ -1343,7 +1351,7 @@
         }
       ],
       "examples": [
-        "memory load-workspace \"workspace-value\" --limit 1"
+        "memory load-workspace \"workspace-value\" --limit 1 --detail \"detail-value\""
       ]
     },
     {
