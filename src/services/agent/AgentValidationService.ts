@@ -13,6 +13,7 @@ import { DEFAULT_LLM_PROVIDER_SETTINGS } from '../../types';
 import { logger } from '../../utils/logger';
 
 function hasSettings(plugin: Plugin | NexusPlugin): plugin is NexusPlugin {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- f2106cbb added this assertion for the Windows toolchain; removing it regresses that fix
   return 'settings' in plugin && (plugin as NexusPlugin).settings !== undefined;
 }
 
