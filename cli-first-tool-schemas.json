@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-01T10:03:08.653Z",
+  "generatedAt": "2026-09-02T15:12:44.873Z",
   "selector": "--help",
   "toolCount": 80,
   "agentCount": 14,
@@ -1339,7 +1339,7 @@
           "type": "string",
           "required": false,
           "positional": false,
-          "description": "[OPTIONAL] Response detail level. compact returns workspace identity plus ordered navigation references and skips task, memory, file, prompt, and workflow-body expansion. full preserves the legacy comprehensive briefing. (One of: [\"compact\", \"full\"])"
+          "description": "[OPTIONAL] Response detail level. compact is the default: workspace identity plus ordered navigation references, skipping task, memory, file, prompt, and workflow-body expansion, with every omitted branch named in `omitted`. full is the explicit escape for inventory, contract diagnosis, or a legacy consumer that depends on the comprehensive briefing. (One of: [\"compact\", \"full\"])"
         },
         {
           "name": "recursive",

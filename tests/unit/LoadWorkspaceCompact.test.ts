@@ -88,7 +88,7 @@ describe('LoadWorkspaceTool compact detail', () => {
     expect(schema.properties?.detail).toMatchObject({
       type: 'string',
       enum: ['compact', 'full'],
-      default: 'full'
+      default: 'compact'
     });
   });
 
@@ -142,10 +142,24 @@ describe('LoadWorkspaceTool compact detail', () => {
     expect(workspaceService.updateLastAccessed).toHaveBeenCalledWith('ws-dev');
   });
 
-  it('keeps the legacy full load as the default during migration', async () => {
-    const { taskService, taskSummary, tool } = createTool();
+  it('defaults to the compact load and never reaches the task service', async () => {
+    const { taskService, tool } = createTool();
 
     const result = await tool.execute({ workspace: 'Desenvolvedor', limit: 1 });
+
+    expect(result).toMatchObject({
+      success: true,
+      responseVersion: 2,
+      detail: 'compact'
+    });
+    expect(result.data).not.toHaveProperty('taskSummary');
+    expect(taskService.getWorkspaceSummary).not.toHaveBeenCalled();
+  });
+
+  it('still serves the legacy briefing when full is asked for explicitly', async () => {
+    const { taskService, taskSummary, tool } = createTool();
+
+    const result = await tool.execute({ workspace: 'Desenvolvedor', limit: 1, detail: 'full' });
 
     expect(result).toMatchObject({
       success: true,

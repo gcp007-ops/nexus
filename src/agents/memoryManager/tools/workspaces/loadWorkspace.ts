@@ -105,7 +105,7 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
 
       // Get the workspace by ID or name (unified lookup)
       const limit = params.limit ?? 5;
-      const detail = params.detail ?? 'full';
+      const detail = params.detail ?? 'compact';
 
       if (workspaceService.isSystemWorkspaceId(params.workspace)) {
         if (detail === 'compact') {
@@ -546,8 +546,8 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
         detail: {
           type: 'string',
           enum: ['compact', 'full'],
-          default: 'full',
-          description: 'Response detail level. compact returns workspace identity plus ordered navigation references and skips task, memory, file, prompt, and workflow-body expansion. full preserves the legacy comprehensive briefing.'
+          default: 'compact',
+          description: 'Response detail level. compact is the default: workspace identity plus ordered navigation references, skipping task, memory, file, prompt, and workflow-body expansion, with every omitted branch named in `omitted`. full is the explicit escape for inventory, contract diagnosis, or a legacy consumer that depends on the comprehensive briefing.'
         },
         recursive: {
           type: 'boolean',
