@@ -60,7 +60,7 @@ export class WorkspaceIntegrationService {
           if (memoryManager) {
             // Keep chat, #workspace references, and workflow runs on the bounded projection.
             const result = await memoryManager.executeTool('loadWorkspace', {
-              id: resolvedWorkspaceId,
+              workspace: resolvedWorkspaceId,
               limit: 3,
               detail: 'compact'
             }) as LoadWorkspaceToolResult;

@@ -14,14 +14,19 @@ describe('WorkspaceIntegrationService', () => {
   });
 
   it('loads internal chat workspace context through the compact projection', async () => {
-    const executeTool = jest.fn().mockResolvedValue({
-      success: true,
-      data: {
-        responseVersion: 2,
-        detail: 'compact',
-        context: { name: 'Desenvolvedor' },
-        omitted: ['tasks', 'states', 'sessions']
+    const executeTool = jest.fn().mockImplementation(async (_tool, params) => {
+      if (params.workspace !== 'workspace-id') {
+        throw new Error('loadWorkspace requires the workspace parameter');
       }
+      return {
+        success: true,
+        data: {
+          responseVersion: 2,
+          detail: 'compact',
+          context: { name: 'Desenvolvedor' },
+          omitted: ['tasks', 'states', 'sessions']
+        }
+      };
     });
     const workspaceService = {
       getWorkspaceByNameOrId: jest.fn().mockResolvedValue({ id: 'workspace-id' })
@@ -43,7 +48,7 @@ describe('WorkspaceIntegrationService', () => {
     const result = await service.loadWorkspace('Desenvolvedor');
 
     expect(executeTool).toHaveBeenCalledWith('loadWorkspace', {
-      id: 'workspace-id',
+      workspace: 'workspace-id',
       limit: 3,
       detail: 'compact'
     });
