@@ -69,8 +69,8 @@ navigation references without loading tasks, sessions, states, activity,
 prompts, workflow bodies, or the file tree. Follow `mustRead` references first,
 then use the relevant content, state, task, or storage tool only when the request
 requires that branch. Use `--detail full` for the legacy comprehensive briefing;
-it remains the default during migration, and its `--limit` controls sessions,
-states, and recent activity.
+compact is the default, while full mode's `--limit` controls sessions, states,
+and recent activity.
 
 The legacy `nexus use "<command>" ...` form remains supported. If Windows
 PowerShell splits a legacy command at nested double quotes, Nexus rejects it

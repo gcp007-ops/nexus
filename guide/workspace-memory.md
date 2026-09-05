@@ -47,7 +47,7 @@ request:
 - folder structure: `storage list --path <path>`.
 
 Use `--detail full` when the comprehensive legacy briefing is actually needed.
-`full` remains the default during migration. In that mode, `--limit` bounds
+`compact` is the default. In full mode, `--limit` bounds
 sessions, states, and recent activity; compact mode omits all three as well as
 task data, so lowering `--limit` does not make compact mode more compact.
 
