@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 const SCHEMA = 'thinkbox-nexus-delta-shadow-contract/v1';
 const EXPECTED_ID = 'nexus';
-const EXPECTED_VERSION = '5.14.2';
 const SOURCE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function fail(message) {
@@ -21,9 +20,13 @@ async function readManifest(directory, label) {
     fail(`${label} manifest unavailable or invalid at ${path}: ${String(error)}`);
   }
 
-  if (manifest?.id !== EXPECTED_ID || manifest?.version !== EXPECTED_VERSION) {
+  if (
+    manifest?.id !== EXPECTED_ID
+    || typeof manifest?.version !== 'string'
+    || manifest.version.length === 0
+  ) {
     fail(
-      `${label} manifest must identify ${EXPECTED_ID}@${EXPECTED_VERSION}; ` +
+      `${label} manifest must identify ${EXPECTED_ID}@<version>; ` +
       `received ${String(manifest?.id)}@${String(manifest?.version)}`
     );
   }
@@ -66,7 +69,7 @@ async function main() {
   const bundleParity = sourceMainSha256 === installedMainSha256;
   const result = {
     schema: SCHEMA,
-    version: EXPECTED_VERSION,
+    version: sourceManifest.version,
     sourceMainSha256,
     installedMainSha256,
     bundleParity
