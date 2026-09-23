@@ -178,6 +178,60 @@ describe('LoadStateTool', () => {
     expect(result.data).toMatchObject({ tags: [] });
   });
 
+  it('distinguishes a listed state whose content is missing from a state that does not exist', async () => {
+    // The metadata row lives in SQLite and survives a Syncthing conflict on the
+    // workspace shard; the content is read from the JSONL events, which can sit
+    // in an unmerged *.sync-conflict-* copy. listStates shows the state, so
+    // "not found. Use listStates" sent the caller back to the list that already
+    // had it.
+    const matchingState = { id: 'state-1', name: 'Checkpoint', sessionId: 'session-1' };
+    const memoryService = {
+      findState: jest.fn().mockResolvedValue(matchingState),
+      getState: jest.fn().mockResolvedValue(null),
+      getMemoryTraces: jest.fn()
+    };
+    const workspaceService = {
+      getWorkspaceByNameOrId: jest.fn().mockResolvedValue({ id: 'workspace-uuid', name: 'Workspace Name' })
+    };
+    const tool = createTool(memoryService, workspaceService);
+
+    const result = await tool.execute({
+      context: {
+        workspaceId: 'Workspace Name',
+        sessionId: 'session-1',
+        memory: 'Testing load state.',
+        goal: 'Verify missing content message.'
+      },
+      name: 'Checkpoint'
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('state-1');
+    expect(result.error).toMatch(/content could not be read/i);
+    expect(result.error).toMatch(/sync-conflict/);
+    expect(result.error).not.toMatch(/Use listStates/);
+  });
+
+  it('keeps the not-found message when no state matches', async () => {
+    const memoryService = {
+      findState: jest.fn().mockResolvedValue(null),
+      getState: jest.fn()
+    };
+    const workspaceService = {
+      getWorkspaceByNameOrId: jest.fn().mockResolvedValue({ id: 'workspace-uuid', name: 'Workspace Name' })
+    };
+    const tool = createTool(memoryService, workspaceService);
+
+    const result = await tool.execute({
+      context: { workspaceId: 'Workspace Name', sessionId: 'session-1', memory: 'm', goal: 'g' },
+      name: 'Missing'
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found\. Use listStates/);
+    expect(memoryService.getState).not.toHaveBeenCalled();
+  });
+
   it('returns a clear error when the scoped workspace name cannot be resolved', async () => {
     const memoryService = {
       getStates: jest.fn(),
