@@ -188,7 +188,15 @@ export class LoadStateTool extends BaseTool<LoadStateParams, StateResult> {
             // Get full state from memory service by resolved ID/session.
             const loadedState = await memoryService.getState(workspaceId, matchingState.sessionId, matchingState.id);
             if (!loadedState) {
-                return { success: false, error: `State "${stateName}" not found. Use listStates to see available states.` };
+                // The metadata row (SQLite) exists but the content (JSONL events) could not be
+                // read. Seen when a Syncthing conflict moved the shard holding the state event
+                // to a *.sync-conflict-* copy: listStates keeps showing the state, so the generic
+                // "not found. Use listStates" message pointed back at the list that had it.
+                return {
+                    success: false,
+                    error: `State "${stateName}" is listed (id ${matchingState.id}) but its content could not be read from the workspace event log. `
+                        + 'The event may be in an unmerged *.sync-conflict-* copy of a workspace shard; retry after the conflict is resolved.'
+                };
             }
 
             // Get related traces if available using the actual state's session ID
