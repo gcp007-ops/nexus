@@ -235,7 +235,11 @@ export class LoadWorkspaceTool extends BaseTool<LoadWorkspaceParameters, LoadWor
           success: true,
           responseVersion: 2,
           detail,
-          data: this.compactResponseBuilder.build(projectWorkspace),
+          data: {
+            ...this.compactResponseBuilder.build(projectWorkspace),
+            // Workflow preparation reads the definitions from the briefing; the activation drops them again.
+            ...(params.workflow !== undefined ? { workflowDefinitions: (projectWorkspace.context?.workflows || []).map((workflow: WorkspaceWorkflow) => ({ ...workflow })) } : {})
+          },
           workspaceContext: { workspaceId: projectWorkspace.id },
           ...(resolution ? { resolution } : {})
         };

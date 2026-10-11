@@ -33,6 +33,17 @@ export interface LoadWorkspaceCompactData {
     workflows: WorkspaceNavigationReference[];
   };
   omitted: string[];
+  /** Present only while a requested workflow is being prepared. */
+  workflowDefinitions?: WorkspaceWorkflowDefinition[];
+  loadedWorkflow?: Omit<import('../../../services/instructions/types').PreparedWorkflow, 'preloadedTools'> | null;
+  preloadedTools?: import('../../../agents/toolManager/types').CliToolSchema[];
+  workflowActivation?: {
+    workspaceId: string;
+    selection: import('../../../services/instructions/types').WorkflowSelection | null;
+    previousSelection: import('../../../services/instructions/types').WorkflowSelection | null;
+    activeSkills: string[];
+  };
+  prompt?: undefined;
 }
 
 /**

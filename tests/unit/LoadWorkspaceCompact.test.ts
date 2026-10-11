@@ -156,6 +156,20 @@ describe('LoadWorkspaceTool compact detail', () => {
     expect(taskService.getWorkspaceSummary).not.toHaveBeenCalled();
   });
 
+  it('carries workflow definitions in the compact read only while a workflow is requested', async () => {
+    const { tool, workspaceService } = createTool();
+    const workspace = await workspaceService.getWorkspaceByNameOrId('Desenvolvedor');
+    workspace.context.workflows = [{ id: 'wf-1', name: 'Review', when: 'Requested', steps: 'Review evidence.' }];
+
+    const plain = await tool.read({ workspace: 'Desenvolvedor', limit: 1 });
+    expect(plain.detail).toBe('compact');
+    expect(plain.data).not.toHaveProperty('workflowDefinitions');
+
+    const preparing = await tool.read({ workspace: 'Desenvolvedor', limit: 1, workflow: 'Review' });
+    expect(preparing.detail).toBe('compact');
+    expect(preparing.data).toMatchObject({ workflowDefinitions: [{ id: 'wf-1', name: 'Review' }] });
+  });
+
   it('still serves the legacy briefing when full is asked for explicitly', async () => {
     const { taskService, taskSummary, tool } = createTool();
 

@@ -38,6 +38,14 @@ describe('explicit workspace preload versus passive reading',()=>{
     expect(loaded.data.prompt).toBeUndefined();
     expect(loaded.data.preloadedTools).toEqual([]);
   });
+  test('a compact briefing prepares the requested workflow and keeps its definitions out of the response',async()=>{
+    const state=setup();
+    state.read.mockResolvedValue({success:true,detail:'compact',workspaceContext:{workspaceId:'canonical-workspace-id',workspacePath:[]},data:{context:{name:'Display Name',rootFolder:'Root'},navigation:{keyFiles:[],workflows:[]},omitted:[],workflowDefinitions:[{id:'workflow-id',name:'Review',when:'Requested',steps:'Review evidence.',promptId:'prompt-id'}]}});
+    const loaded=await state.service.load(state.params);
+    expect(loaded.success).toBe(true);
+    expect(loaded.data.loadedWorkflow).toMatchObject({id:'workflow-id'});
+    expect(JSON.parse(JSON.stringify(loaded.data))).not.toHaveProperty('workflowDefinitions');
+  });
   test('plain explicit load clears the selection after a successful read',async()=>{
     const state=setup();delete state.params.workflow;
     expect(await state.service.load(state.params)).toMatchObject({success:true,data:{loadedWorkflow:null,workflowActivation:{selection:null,previousSelection:{workflowId:'previous-flow'}}}});
