@@ -169,5 +169,32 @@ function connectWithRetry() {
     }
 }
 
+/**
+ * Exits when the MCP client that spawned this connector goes away
+ *
+ * Without this, the infinite retry loop keeps an orphaned connector alive
+ * forever: it reconnects on every Obsidian restart and holds a session that
+ * nobody reads. Two signals cover the cases:
+ * 1. stdin ends or closes - the client closed its side of the pipe
+ * 2. the parent process changes (re-parented to launchd/init) - the client died
+ *    without closing stdin
+ */
+function exitWhenClientGone() {
+    const originalParent = process.ppid;
+    process.stdin.on('end', () => process.exit(0));
+    process.stdin.on('close', () => process.exit(0));
+    // stdin stays paused until the socket connects (resuming it earlier would
+    // drop the client's first messages), so while waiting only the parent check
+    // can notice the client is gone
+    const parentCheck = global.setInterval(() => {
+        if (process.ppid !== originalParent) {
+            process.exit(0);
+        }
+    }, 5000);
+    parentCheck.unref();
+}
+
+exitWhenClientGone();
+
 // Start the connection process
 connectWithRetry();
