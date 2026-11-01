@@ -1,5 +1,9 @@
 # Nexus Changelog
 
+## Unreleased
+
+- Conditional note edits through `content cas` compare the complete observed text inside Obsidian's `Vault.process` callback. Exact UTF-8 bytes, including BOM and line endings, are preserved. `content cas-status` recovers a durable receipt without repeating an uncertain write; external edits and restored source text are preserved for investigation. No additional external service or network request is introduced.
+
 ## October 2026
 
 **v5.21.2** — Reliable compaction, smaller activity records, and recovery of interrupted replies

@@ -31,6 +31,35 @@ vault (the CLI bridges to the live process).
 
 ## Commands
 
+### Conditional note edits and recovery
+
+`content cas` changes an existing Markdown note only while its full contents
+still match the observed version. Supply a stable `--mutation-id`, the note's
+`--path`, the SHA-256 of the exact UTF-8 source bytes as `--expected-hash`,
+and files through `--expected-content-file` and `--content-file`. Preserve
+BOM, line endings and Unicode; the tool does not normalize either text.
+Discover the complete contract before calling it:
+
+```sh
+nexus tools "content cas, content cas-status"
+```
+
+After a timeout or uncertain result, inspect the same mutation in the same
+workspace before considering another write:
+
+```sh
+nexus use --memory "recovering the conditional edit" --goal "inspect its receipt" -- content cas-status strategy-001
+```
+
+`completed` confirms the stored receipt and current bytes. `recovered` confirms
+the intended result is present without writing the note again; it does not
+attribute authorship. `indeterminate` requires investigation, and a conflict
+preserves the external edit. An already-started mutation never automatically
+reapplies a write, even if someone restored the original text. A new mutation
+ID is a new command, not a retry mechanism. Receipts are scoped to the runtime
+workspace. The guarantee comes from Obsidian's local `Vault.process` API; it is
+not a distributed lock across synced devices.
+
 ```
 nexus tools [selector...]           Discover tools. Drill down as far as you want:
                                       nexus tools                    all agents
