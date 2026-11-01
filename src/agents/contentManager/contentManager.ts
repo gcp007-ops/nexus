@@ -1,4 +1,8 @@
 import { App } from 'obsidian';
+import {ContentCasService} from './services/ContentCasService';
+import {CasTool} from './tools/cas';
+import {CasStatusTool} from './tools/casStatus';
+import type {ToolOperationPersistenceProvider} from '../toolManager/services/ToolOperationService';
 import { BaseAgent } from '../baseAgent';
 import {
   ReadTool,
@@ -41,7 +45,8 @@ export class ContentManagerAgent extends BaseAgent {
     app: App,
     plugin?: NexusPlugin,
     memoryService?: MemoryService | null,
-    workspaceService?: WorkspaceService | null
+    workspaceService?: WorkspaceService | null,
+    casPersistenceProvider?: ToolOperationPersistenceProvider
   ) {
     super(
       'contentManager',
@@ -65,7 +70,14 @@ export class ContentManagerAgent extends BaseAgent {
       this.workspaceService = plugin.services.workspaceService;
     }
 
-    // Register tools (6 tools) - lazy loaded
+    // CAS shares the existing JSONL-first operation repository, never a local cache.
+    const cas = new ContentCasService(app, casPersistenceProvider);
+    // Eager registration preserves the tools' runtime-context opt-in. LazyTool
+    // proxies do not forward this identity channel; no storage is opened here.
+    this.registerTool(new CasTool(cas));
+    this.registerTool(new CasStatusTool(cas));
+
+    // Existing content tools remain unchanged.
     this.registerLazyTool({
       slug: 'read', name: 'Read',
       description: 'Read content from a file with line range',

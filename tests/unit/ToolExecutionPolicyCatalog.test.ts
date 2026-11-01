@@ -90,6 +90,7 @@ describe('Tool execution policy catalog', () => {
     expect(undoable).toEqual([
       'canvasManager/update',
       'canvasManager/write',
+      'contentManager/cas',
       'contentManager/insert',
       'contentManager/removeProperty',
       'contentManager/replace',

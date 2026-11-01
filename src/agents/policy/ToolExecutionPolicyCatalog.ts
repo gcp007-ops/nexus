@@ -40,6 +40,8 @@ export const TOOL_EXECUTION_POLICY_CATALOG: Readonly<Record<string, Readonly<Too
   'composer/compose': vaultWrite,
   'composer/listFormats': readParallel,
 
+  'contentManager/cas': vaultWriteUndo,
+  'contentManager/casStatus': readParallel,
   'contentManager/insert': vaultWriteUndo,
   'contentManager/read': readParallel,
   'contentManager/removeProperty': vaultWriteUndo,

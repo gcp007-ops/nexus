@@ -115,7 +115,12 @@ export class AgentInitializationService {
   initializeContentManager(): void {
     const contentManagerAgent = new ContentManagerAgent(
       this.app,
-      hasSettings(this.plugin) ? this.plugin : undefined
+      hasSettings(this.plugin) ? this.plugin : undefined,
+      undefined,
+      undefined,
+      async () => this.serviceManager
+        ? await this.serviceManager.getService<IStorageAdapter>('hybridStorageAdapter')
+        : null
     );
 
     this.agentManager.registerAgent(contentManagerAgent);

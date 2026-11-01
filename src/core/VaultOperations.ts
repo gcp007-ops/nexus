@@ -42,6 +42,16 @@ export interface FileStats {
 export class VaultOperations {
   private fileCache = new Map<string, { content: string; mtime: number }>();
 
+  /** Existing indexed notes only; preserves the synchronous Vault.process boundary. */
+  static async processNote(vault: Vault, path: VaultPath, update: (current: string) => string): Promise<string> {
+    const file = vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) throw new Error('process_note_missing');
+    return vault.process(file, current => {
+      if (file.path !== path || vault.getAbstractFileByPath(path) !== file) throw new Error('process_note_moved');
+      return update(current);
+    });
+  }
+
   constructor(
     private app: App,
     private vault: Vault,
