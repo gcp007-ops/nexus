@@ -4,6 +4,20 @@ Append-only record of changes made by `protocols/self-refine.md`. Newest on top.
 
 <!-- YYYY-MM-DD | observation | change made | file(s) touched -->
 
+2026-11-01 | Released 5.22.0 in the existing gcp007-ops/nexus fork at
+  691f7729 after Node20.19.0 locked install/build,252 focused assertions,
+  Obsidian QA verification, workflow41369737918 and signed provenance for
+  all five published assets. Installed those exact bytes in ThinkBox;
+  backup extraction, conditional write, receipt recovery and prior state
+  readback passed. Upstream push returned403 before any tag; the configured
+  ADMIN-owned fork was selected and its history/governance files preserved.
+  Historical fork commits produced a reviewed changelog warning for305/306,
+  with no functional diff from the tested candidate. Native CLI could not
+  reach the productive instance; existing Advanced URI toggled Nexus only,
+  with disabled/runtime readbacks, without reloading the app window. |
+  No change to release machinery; operation evidence and fork delta document
+  the selected publication target and transport. | refinement-log.md.
+
 2026-10-08 | Released 5.20.1 from db1d352a after independent Astra review and
   remediation, newest-first model picker checks, clean npm ci/build, shipped
   guidance checks and a clean readiness guard. CI run 37828415997 succeeded;
