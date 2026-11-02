@@ -1,8 +1,15 @@
 # Nexus Changelog
 
-## Unreleased
+## November 2026
+
+**v5.22.0** — Conditional note edits, conversation recovery, and mobile ChatGPT sign-in
 
 - Conditional note edits through `content cas` compare the complete observed text inside Obsidian's `Vault.process` callback. Exact UTF-8 bytes, including BOM and line endings, are preserved. `content cas-status` recovers a durable receipt without repeating an uncertain write; external edits and restored source text are preserved for investigation. No additional external service or network request is introduced.
+- Conversation compaction preserves completed work, unresolved decisions, tool receipts, and recovery context so the next turn can continue without repeating consumed effects ([#427](https://github.com/ProfSynapse/nexus/pull/427)).
+- ChatGPT (Codex) sign-in works on mobile through a device code. Closing the provider modal stops device-code polling, and Codex and GitHub Copilot connection status is checked for the current device instead of trusting a synced sign-in flag ([#428](https://github.com/ProfSynapse/nexus/pull/428), [#430](https://github.com/ProfSynapse/nexus/pull/430), [#431](https://github.com/ProfSynapse/nexus/pull/431)).
+- Provider failures show readable messages, and temporary overloads receive bounded retries with backoff. Cancelling a request interrupts the wait instead of continuing in the background ([#429](https://github.com/ProfSynapse/nexus/pull/429), [#432](https://github.com/ProfSynapse/nexus/pull/432)).
+
+---
 
 ## October 2026
 

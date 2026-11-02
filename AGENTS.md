@@ -426,7 +426,7 @@ liberties never travel into plugin code.
      `generate-*` returns a job, poll `check-generated-artifact <jobId>`.
 
 2. **ContentManager** (`src/agents/contentManager/`) - Note reading/editing operations
-   - `content`: read, write, replace, insert, set-property
+   - `content`: read, write, replace, insert, set-property, cas, cas-status
    - `read` requires `--start-line`. `replace` is pattern-anchored
      `{path, start, end, content}` — anchor TEXT, not line numbers.
 

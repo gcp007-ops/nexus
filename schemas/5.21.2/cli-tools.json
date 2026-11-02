@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-01T21:58:00.640Z",
+  "generatedAt": "2026-10-24T14:49:36.910Z",
   "selector": "--help",
-  "toolCount": 82,
+  "toolCount": 80,
   "agentCount": 14,
   "agents": {
     "baseManager": 5,
     "canvasManager": 4,
     "composer": 2,
-    "contentManager": 8,
+    "contentManager": 6,
     "data": 2,
     "elevenlabs": 3,
     "ingestManager": 2,
@@ -494,78 +494,6 @@
       "arguments": [],
       "examples": [
         "composer list-formats"
-      ]
-    },
-    {
-      "agent": "contentManager",
-      "tool": "cas",
-      "description": "Replace an existing Markdown note only when its exact bytes match; durable mutation receipt.",
-      "command": "content cas",
-      "usage": "content cas <path> <mutationId> <expectedHash> <expectedContent> <content>",
-      "arguments": [
-        {
-          "name": "path",
-          "flag": "--path",
-          "type": "string",
-          "required": true,
-          "positional": true,
-          "description": "[REQUIRED] Existing Markdown note path, relative to vault. (string)"
-        },
-        {
-          "name": "mutationId",
-          "flag": "--mutation-id",
-          "type": "string",
-          "required": true,
-          "positional": true,
-          "description": "[REQUIRED] Stable command identity. Reuse only for the same exact mutation. (string)"
-        },
-        {
-          "name": "expectedHash",
-          "flag": "--expected-hash",
-          "type": "string",
-          "required": true,
-          "positional": true,
-          "description": "[REQUIRED] SHA-256 of the exact UTF-8 expectedContent bytes. (string)"
-        },
-        {
-          "name": "expectedContent",
-          "flag": "--expected-content",
-          "type": "string",
-          "required": true,
-          "positional": true,
-          "description": "[REQUIRED] Exact current text, including BOM and CRLF. Use transport values or a file. (string)"
-        },
-        {
-          "name": "content",
-          "flag": "--content",
-          "type": "string",
-          "required": true,
-          "positional": true,
-          "description": "[REQUIRED] Exact replacement text. No line-ending or Unicode normalization. (string)"
-        }
-      ],
-      "examples": [
-        "content cas \"path-value\" \"mutationId-value\" \"expectedHash-value\" \"expectedContent-value\" \"content-value\""
-      ]
-    },
-    {
-      "agent": "contentManager",
-      "tool": "casStatus",
-      "description": "Read a CAS receipt and current bytes without writing the note. Pending is not confirmation.",
-      "command": "content cas-status",
-      "usage": "content cas-status <mutationId>",
-      "arguments": [
-        {
-          "name": "mutationId",
-          "flag": "--mutation-id",
-          "type": "string",
-          "required": true,
-          "positional": true,
-          "description": "[REQUIRED] Identity of the recorded CAS command in this workspace. (string)"
-        }
-      ],
-      "examples": [
-        "content cas-status \"mutationId-value\""
       ]
     },
     {

@@ -35,6 +35,7 @@ Native chat works on mobile (iOS and Android). Desktop-only features gracefully 
 | Feature | Mobile | Desktop |
 |---------|--------|---------|
 | Native chat | Yes | Yes |
+| ChatGPT (Codex) sign-in | Device code | Browser redirect |
 | Workspace memory and tasks | Yes | Yes |
 | Skills (author and load) | Yes | Yes |
 | MCP clients (Claude Desktop, Cursor, etc.) | No | Yes |

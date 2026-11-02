@@ -136,10 +136,12 @@ Use this if you have an active ChatGPT Plus or Pro subscription and want support
 
 1. In Nexus, go to **Settings -> Providers -> OpenAI**
 2. Click **Connect** under **ChatGPT (Codex)**
-3. Sign in with your ChatGPT account in the browser window that opens
+3. On desktop, sign in with your ChatGPT account in the browser window that opens. On mobile, copy the device code shown in Nexus and complete sign-in at the browser address shown with it.
 4. In chat settings, select a model labeled **(ChatGPT)**
 
-Desktop only. Experimental.
+Desktop and mobile. Experimental. Closing the connection modal cancels device-code polling.
+
+Codex and GitHub Copilot connection status is checked on the current device. A synced sign-in flag does not establish a local connection; reconnect on this device when the provider card asks you to.
 
 If ChatGPT rejects a saved refresh token during a Codex request, Nexus shows a notice and changes the provider card to **Reconnect with ChatGPT**. Open the OpenAI provider settings and reconnect to continue. Opening Settings alone does not check the connection.
 

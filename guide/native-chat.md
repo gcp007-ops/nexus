@@ -165,7 +165,7 @@ Configure providers in **Settings &rarr; Nexus &rarr; Providers**. All configure
 | **Claude Code** | Local CLI | Must be installed and signed in on your computer first; no API key needed |
 | **Antigravity CLI** | Local CLI | Install the Antigravity CLI, then run `agy` once to complete Google sign-in; no API key needed. Text-completion only (no tool calling) |
 | **GitHub Copilot** | OAuth device flow | Requires active Copilot subscription; sign in via code in modal |
-| **Codex (ChatGPT)** | OAuth | Requires ChatGPT Plus/Pro; sign in via browser redirect |
+| **Codex (ChatGPT)** | OAuth | Requires ChatGPT Plus/Pro; browser redirect on desktop, device code on mobile |
 
 See [Provider setup](provider-setup.md) for connection instructions for API key, local, CLI, and OAuth-backed providers.
 
