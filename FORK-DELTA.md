@@ -6,25 +6,27 @@ Ponteiro técnico mínimo do fork `gcp007-ops/nexus` (upstream: `ProfSynapse/nex
 
 ---
 
-## Estado: zero divergência funcional (paridade upstream `5.16.3` / `aa6d8b82`)
+## Estado: transporte CAS local sobre upstream `e4721ac6`
 
-Base funcional: `origin/main` em `aa6d8b82` (`5.16.3`, 2026-08-10). O fork preserva somente os artefatos próprios de governança — este arquivo, [OFFERINGS.md](./OFFERINGS.md) e [.github/workflows/upstream-sync.yml](./.github/workflows/upstream-sync.yml) — sem alteração funcional sobre o upstream.
+Base funcional: `ProfSynapse/nexus` em `e4721ac6`, posterior à versão 5.21.2.
+A versão declarada do fork é 5.22.0. O delta funcional local acrescenta
+`content cas` e `content cas-status`: precondição atômica de conteúdo no
+`Vault.process`, recibo JSONL e recuperação sem repetir efeito incerto.
+Contrato: [escrita condicional](docs/architecture/content-cas.md).
 
-**Sync de 2026-08-10 incorporou 11 commits upstream por merge não destrutivo.** O fork avançou de `fb7c74b7` (pós-5.16.1) para `aa6d8b82` (5.16.3), preservando a história e os três arquivos fork-only. Nesse intervalo, o refinamento local #309 foi absorvido upstream por #312–#315 e saiu de *Active offerings*; ver History em [OFFERINGS.md](./OFFERINGS.md).
+O histórico do fork e seus três arquivos de governança são preservados por
+merge não destrutivo. Catálogos históricos conservam os bytes das respectivas
+versões; a interface atual é publicada no catálogo 5.22.0.
 
-**Sync de 2026-08-06 fechou um gap de 169 commits.** O fork estava parado em `4df1300a` (paridade v5.8.8, 2026-04-29) por três meses. O reset foi para `origin/main` com restauração dos três arquivos fork-only; nenhum cherry-pick funcional foi necessário. Backup do estado anterior: `backup/pre-5161-sync-2026-08-06`.
-
-**Consequência do gap, verificada e registrada:** durante a defasagem, dois refinamentos locais que ainda eram rastreados como patches pendentes já haviam sido absorvidos upstream sem que o fork soubesse — ver History em [OFFERINGS.md](./OFFERINGS.md). Fork parado não é neutro: ele faz um patch absorvido continuar parecendo pendente.
-
-**Nota sobre leitura de paridade.** Conferir versão do upstream por `git tag --sort=-creatordate`, **não** por `--sort=-v:refname`: a ordenação lexical de refname devolve `5.9.7` acima de `5.16.1` e produz uma leitura de defasagem que não existe. Erro cometido e corrigido em 2026-08-05.
-
-**Meta/infra:** este arquivo + [OFFERINGS.md](./OFFERINGS.md) + [.github/workflows/upstream-sync.yml](./.github/workflows/upstream-sync.yml).
+O tracking desta mudança vive em `CicloProducaoPeca-INI` na vault ThinkBox.
+Provas de publicação, instalação, backup e readback são recibos separados;
+versão do manifesto ou build local não comprova instalação produtiva.
 
 ---
 
 ## Política de contribuição
 
-**Corrigir, testar, e só então reportar.** O ciclo é: diagnosticar no fonte → corrigir no fork → testes (TDD, com RED verificado) → suíte completa → build → deploy sobre a versão instalada → smokes ao vivo → **então** abrir a issue, já com commit, diff, cobertura e o antes/depois.
+**Corrigir, testar, e só então reportar.** O ciclo é: diagnosticar no fonte → corrigir no fork → testes causais (TDD, com RED verificado) e consumidores dos contratos alterados → build → deploy sobre a versão instalada → smokes ao vivo → **então** reportar com commit, diff, cobertura e o antes/depois. A qualificação é por impacto: suíte completa quando o alcance transversal não puder ser delimitado ou houver validação periódica explicitamente planejada. Publicação e mudança de SHA, sozinhas, não ampliam a seleção. Falhas conhecidas não são omitidas.
 
 **Issue-first** qualifica a *forma do reporte*, não a ordem: reportamos por **issue no upstream**, não por PR proativo (lição PR #161 → issue #162, 2026-04-18). O maintainer cherry-picka verbatim do nosso fork ou reescreve quando quer absorver.
 

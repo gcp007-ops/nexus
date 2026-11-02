@@ -10,7 +10,11 @@ Propósito: quando `ProfSynapse` convidar PR para uma issue, o bundle de commits
 
 ## Active offerings
 
-Nenhum refinamento local aguarda decisão upstream neste ponto de sincronização. Issues ainda abertas e patches privados em elaboração permanecem no tracking da vault até existir implementação testada e oferta publicável.
+O transporte `content cas` / `content cas-status` está implementado e qualificado
+no fork, com contrato em [content-cas.md](docs/architecture/content-cas.md).
+Não há issue ou PR enviado ao upstream para esse transporte. Publicação e uso
+produtivo são rastreados na `CicloProducaoPeca-INI` da vault ThinkBox; uma
+oferta ao maintainer permanece separada dessa implementação local.
 
 ---
 
