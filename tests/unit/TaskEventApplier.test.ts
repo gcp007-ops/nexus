@@ -110,3 +110,17 @@ describe('TaskEventApplier legacy note paths', () => {
     expect(sqlite.runs).toEqual([]);
   });
 });
+
+describe('coordination event sequence', () => {
+  it('deduplicates identical events and refuses gaps and conflicting receipts', async () => {
+    const { applyCoordinationEvent } = await import('../../src/database/sync/TaskCoordinationEventApplier');
+    const initial = { revision: 4, baselineHash: 'base', receipts: {} };
+    const event = { previousRevision: 4, revision: 5, baselineHash: 'base', operationKey: '__proto__', signature: 'sig', result: { status: 'committed' } };
+    const next = applyCoordinationEvent(initial, event);
+    expect(next.revision).toBe(5);
+    expect(applyCoordinationEvent(next, event)).toEqual(next);
+    expect(() => applyCoordinationEvent(initial, { ...event, previousRevision: 5, revision: 6 })).toThrow();
+    expect(() => applyCoordinationEvent(initial, { ...event, baselineHash: 'other' })).toThrow();
+    expect(() => applyCoordinationEvent(next, { ...event, signature: 'other' })).toThrow();
+  });
+});
