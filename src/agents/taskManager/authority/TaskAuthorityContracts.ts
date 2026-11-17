@@ -22,11 +22,17 @@ function resources(value: unknown): void {
   strings(value, true);
   const list = value as string[];
   for (let i = 0; i < list.length; i++) {
-    if (!/^(project|task|file|folder):.+/.test(list[i]) || (i > 0 && list[i - 1] >= list[i])) invalid();
+    const value = list[i];
+    if (i > 0 && list[i - 1] >= value) invalid();
+    if (/^(project|task):[^:]+$/.test(value)) continue;
+    const match = /^(file|folder):([^:]+):(.+)$/.exec(value);
+    if (!match) invalid();
+    const path = match![3];
+    if (path.includes('\\') || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') || path !== path.normalize('NFC')) invalid();
   }
 }
 function capability(value: unknown): void {
-  const x = object(value); keys(x, ['id', 'version', 'revision', 'hash']); text(x.id); text(x.version); integer(x.revision); hash(x.hash);
+  const x = object(value); keys(x, ['id', 'version', 'revision', 'hash']); text(x.id); integer(x.version); integer(x.revision); if (x.version === 0 || x.revision === 0) invalid(); hash(x.hash);
 }
 const specs: Record<string, string[]> = {
   admitProject: ['baseline_hash'], acquireUnit: ['task_id','resources','lease_ms','capability_ref'],
@@ -48,12 +54,12 @@ const variants: Record<string, { required: string[]; optional: string[] }> = {
 function metadata(value: unknown): void {
   const data = object(value);
   for (const key of Object.keys(data)) {
-    if (/coordination|authority|capability|provenance|lease|receipt/i.test(key)) invalid();
+    if (key === 'dream_priority_v1' || key === 'coordination' || key.startsWith('coordination_')) invalid();
   }
   // Arbitrary JSON metadata is permitted, but not non-JSON values or null.
   const check = (v: unknown): void => {
-    if (v === null || v === undefined || typeof v === 'function' || typeof v === 'symbol' || typeof v === 'bigint' || (typeof v === 'number' && !Number.isFinite(v))) invalid();
-    if (Array.isArray(v)) v.forEach(check); else if (typeof v === 'object') Object.values(object(v)).forEach(check);
+    if (v === undefined || typeof v === 'function' || typeof v === 'symbol' || typeof v === 'bigint' || (typeof v === 'number' && !Number.isFinite(v))) invalid();
+    if (Array.isArray(v)) v.forEach(check); else if (v !== null && typeof v === 'object') Object.values(object(v)).forEach(check);
   };
   Object.values(data).forEach(check);
 }
@@ -62,6 +68,7 @@ function link(value: unknown, allowString: boolean): void {
   const x = object(value); keys(x, ['notePath'], ['linkType']); text(x.notePath);
   if ('linkType' in x) oneOf(x.linkType, ['reference','output','input']);
 }
+function artifact(value: unknown): void { const a = object(value); keys(a, ['artifact_id', 'hash']); text(a.artifact_id); hash(a.hash); }
 function mutation(value: unknown): void {
   const m = object(value); keys(m, ['kind','arguments']); text(m.kind);
   const spec = variants[m.kind as string]; if (!spec || !Object.prototype.hasOwnProperty.call(variants, m.kind as string)) invalid();
@@ -97,13 +104,14 @@ export function normalizeCommand(value: unknown): Obj {
     else if (k === 'resources') resources(v);
     else if (k === 'capability_ref') capability(v);
     else if (k === 'mutation') mutation(v);
-    else if (k === 'evidence_refs') strings(v, true);
+    else if (k === 'evidence_refs') { if (!Array.isArray(v) || v.length === 0) invalid(); (v as unknown[]).forEach(artifact); }
+    else if (['proposal_ref', 'receipt_ref'].includes(k)) artifact(v);
     else if (k === 'result') oneOf(v, ['applied','base_conflict','failed','indeterminate']);
     else if (k === 'expected_status' || k === 'next_status') oneOf(v, ['todo','in_progress','done','cancelled']);
     else text(v);
   }
   if (c.type === 'commitProgress' && !['todo:in_progress','in_progress:in_progress','in_progress:done'].includes(`${c.expected_status}:${c.next_status}`)) invalid();
-  return e;
+  return JSON.parse(JSON.stringify(e)) as Obj;
 }
 export function normalizeQuery(value: unknown): Obj {
   const e = object(value); text(e.type);
@@ -113,5 +121,5 @@ export function normalizeQuery(value: unknown): Obj {
   else invalid();
   if (e.protocol !== 'task-authority-query/v1') invalid();
   base.slice(2).forEach(k => text(e[k])); if (e.type === 'getOperation') text(e.operation_id);
-  return e;
+  return JSON.parse(JSON.stringify(e)) as Obj;
 }
