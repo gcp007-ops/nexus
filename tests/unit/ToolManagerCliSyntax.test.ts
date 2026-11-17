@@ -579,6 +579,11 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
         properties: {
           workspace: { type: 'string', description: 'Workspace name or ID to load' },
           limit: { type: 'number' },
+          detail: {
+            type: 'string',
+            enum: ['compact', 'full'],
+            default: 'full'
+          },
           workspaceId: { type: 'string' },
         },
         required: ['workspace'],
@@ -598,10 +603,18 @@ describe('ToolCliNormalizer — direct parser coverage', () => {
       const [flagCall] = normalizer.normalizeExecutionCalls({
         tool: 'memory load-workspace --workspace "Silicon Zone" --limit 1'
       });
+      const [compactCall] = normalizer.normalizeExecutionCalls({
+        tool: 'memory load-workspace "Silicon Zone" --detail compact'
+      });
 
       expect(positionalCall).toMatchObject({ agent: 'memoryManager', tool: 'loadWorkspace', params: expected });
       expect(flagCall).toMatchObject({ agent: 'memoryManager', tool: 'loadWorkspace', params: expected });
       expect(positionalCall.params).toEqual(flagCall.params);
+      expect(compactCall).toMatchObject({
+        agent: 'memoryManager',
+        tool: 'loadWorkspace',
+        params: { workspace: 'Silicon Zone', detail: 'compact' }
+      });
     });
   });
 

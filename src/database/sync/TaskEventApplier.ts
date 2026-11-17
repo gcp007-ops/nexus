@@ -46,6 +46,32 @@ async function normalizeWorkspaceId(
   return result.id ?? workspaceId;
 }
 
+/**
+ * Older clients could persist a singular unlink path inside a one-element
+ * array. The JSONL event is still unambiguous, but passing that runtime object
+ * to SQLite aborts the entire synced-data reconciliation.
+ */
+function normalizeUnlinkedNotePath(
+  notePath: unknown,
+  eventId: string,
+  taskId: string
+): string | null {
+  if (typeof notePath === 'string') {
+    return notePath || null;
+  }
+
+  if (Array.isArray(notePath)
+    && notePath.length === 1
+    && typeof notePath[0] === 'string') {
+    return notePath[0];
+  }
+
+  throw new Error(
+    `[TaskEventApplier] task_note_unlinked event ${eventId} for task ${taskId} `
+    + 'has an ambiguous notePath; expected a string or singleton string array'
+  );
+}
+
 export class TaskEventApplier {
   private sqliteCache: ISQLiteCacheManager;
 
@@ -246,11 +272,13 @@ export class TaskEventApplier {
   }
 
   private async applyNoteUnlinked(event: TaskNoteUnlinkedEvent): Promise<void> {
-    if (!event.taskId || !event.notePath) return;
+    if (!event.taskId) return;
+    const notePath = normalizeUnlinkedNotePath(event.notePath, event.id, event.taskId);
+    if (!notePath) return;
 
     await this.sqliteCache.run(
       'DELETE FROM task_note_links WHERE taskId = ? AND notePath = ?',
-      [event.taskId, event.notePath]
+      [event.taskId, notePath]
     );
   }
 }

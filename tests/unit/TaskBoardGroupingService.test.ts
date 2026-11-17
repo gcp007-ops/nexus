@@ -1,5 +1,6 @@
 import type { TaskBoardViewState } from '../../src/ui/tasks/taskBoardNavigation';
 import type { TaskBoardTask } from '../../src/ui/tasks/taskBoardTypes';
+import type { TaskStatus } from '../../src/database/repositories/interfaces/ITaskRepository';
 import { TaskBoardGroupingService } from '../../src/ui/tasks/services/TaskBoardGroupingService';
 
 function createTask(overrides: Partial<TaskBoardTask> = {}): TaskBoardTask {
@@ -71,6 +72,52 @@ describe('TaskBoardGroupingService', () => {
     );
 
     expect(groups[0].progress).toEqual({ done: 1, total: 1 });
+  });
+
+  it('keeps a todo parent visible when all of its children are terminal', () => {
+    const parent = createTask({ id: 'parent', title: 'Parent task', status: 'todo' });
+    const doneChild = createTask({
+      id: 'done-child',
+      parentTaskId: 'parent',
+      status: 'done'
+    });
+    const cancelledChild = createTask({
+      id: 'cancelled-child',
+      parentTaskId: 'parent',
+      status: 'cancelled'
+    });
+
+    const groups = TaskBoardGroupingService.groupTasksByParent(
+      [parent, doneChild, cancelledChild],
+      [parent],
+      {}
+    );
+
+    expect(groups).toEqual([
+      expect.objectContaining({
+        parentId: 'parent',
+        parentTask: parent,
+        children: [],
+        progress: { done: 1, total: 2 }
+      })
+    ]);
+  });
+
+  it('counts a parent only in the column matching the parent status', () => {
+    const parent = createTask({ id: 'parent', title: 'Parent task', status: 'todo' });
+    const doneChild = createTask({
+      id: 'done-child',
+      parentTaskId: 'parent',
+      status: 'done'
+    });
+    const allTasks = [parent, doneChild];
+
+    const todoGroups = TaskBoardGroupingService.groupTasksByParent(allTasks, [parent], {});
+    const doneGroups = TaskBoardGroupingService.groupTasksByParent(allTasks, [doneChild], {});
+
+    expect(TaskBoardGroupingService.countVisibleTasks(todoGroups, 'todo' as TaskStatus)).toBe(1);
+    expect(TaskBoardGroupingService.countVisibleTasks(doneGroups, 'done' as TaskStatus)).toBe(1);
+    expect(todoGroups[0].children).toEqual([]);
   });
 
   it('sorts parent swimlanes using the configured sort field and order', () => {
