@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-17T17:43:25.009Z",
+  "generatedAt": "2026-11-17T18:06:08.418Z",
   "selector": "--help",
   "toolCount": 84,
   "agentCount": 14,
@@ -2990,19 +2990,19 @@
       "tool": "coordinationStatus",
       "description": "Query authority admission, resources, revisions and durable operation receipts without mutation.",
       "command": "task coordination-status",
-      "usage": "task coordination-status <envelope>",
+      "usage": "task coordination-status --envelope <envelope>",
       "arguments": [
         {
           "name": "envelope",
           "flag": "--envelope",
-          "type": "unknown",
+          "type": "object",
           "required": true,
-          "positional": true,
-          "description": "[REQUIRED] No description provided"
+          "positional": false,
+          "description": "[REQUIRED] No description provided (object)"
         }
       ],
       "examples": [
-        "task coordination-status \"envelope-value\""
+        "task coordination-status --envelope '{\"key\":\"value\"}'"
       ]
     },
     {

@@ -1,7 +1,10 @@
-import { normalizeCommand, normalizeQuery } from '../../src/agents/taskManager/authority/TaskAuthorityContracts';
+import { normalizeCommand, normalizeQuery, taskAuthorityEnvelopeSchema } from '../../src/agents/taskManager/authority/TaskAuthorityContracts';
 const hash = 'a'.repeat(64);
 const envelope = { protocol: 'task-authority-command/v1', vault_scope: 'v', authority_id: 'a', project_id: 'p', issuer_id: 'i', operation_id: 'o', expected_revision: 0 };
 describe('task authority closed contracts', () => {
+  it('advertises query envelopes as objects for CLI file transport', () => {
+    expect(taskAuthorityEnvelopeSchema(true)).toMatchObject({ type: 'object' });
+  });
   it('accepts the command variants with all required fields', () => {
     const capability_ref = { id: 'c', version: 1, revision: 1, hash };
     const resources = ['project:p', 'task:t'];
