@@ -97,12 +97,14 @@ export async function participantMode(options) {
     const result=evaluate(target.name,async input=>{
       const f=window.__authorityQA?.fixture;
       if(app.vault.adapter.getBasePath()!==input.identity.path||!f||f.scope!==input.config.vault_scope||f.p!==input.config.project_id)throw Error('Wrong authority fixture');
-      const service=window.__authorityQA.service,a=service.getTaskAuthority(),c=input.config;
-      const q={protocol:'task-authority-query/v1',type:'getOperation',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:c.project_id,issuer_id:c.issuer_id,operation_id:'participant-create-'+c.run_id};
-      const operation=await a.query(q);if(operation.state!=='committed')throw Error('No committed client operation');
+      const c=input.config;
       const source=await window.__authorityQAHost.readProjectSnapshot({project_id:c.project_id});
-      const priority=await window.__authorityQAHost.readPriorityEvidence({project_id:c.project_id,task_id:operation.result.entity_id});
-      return {receipt:operation.result,native_count:source.tasks.filter(t=>t.id===operation.result.entity_id).length,priority_source_issuer:priority?.source_issuer_id};
+      // Read the replayed canonical repository locally. Never impersonate the
+      // remote issuer through the authority's human facade.
+      const receipt=await window.__authorityQA.adapter.taskCoordination.getReceipt(c.project_id,c.issuer_id,'participant-create-'+c.run_id);
+      if(!receipt?.result||receipt.error||receipt.result.status!=='committed')throw Error('No committed client operation');
+      const priority=await window.__authorityQAHost.readPriorityEvidence({project_id:c.project_id,task_id:receipt.result.entity_id});
+      return {receipt:receipt.result,native_count:source.tasks.filter(t=>t.id===receipt.result.entity_id).length,priority_source_issuer:priority?.source_issuer_id};
     },input);
     exclusive(join(root,'authority-client-readback.json'),{protocol:'task-authority-client-readback/v1',state:'passed',run_id:run,scope:c.vault_scope,project_id:c.project_id,...result});return;
   }
