@@ -34,7 +34,6 @@ import { MemoryService } from '../../agents/memoryManager/services/MemoryService
 import { WorkspaceService } from '../WorkspaceService';
 import { UsageTracker } from '../UsageTracker';
 import type { VaultOperations } from '../../core/VaultOperations';
-import type { HybridStorageAdapter } from '../../database/adapters/HybridStorageAdapter';
 import type { IStorageAdapter } from '../../database/interfaces/IStorageAdapter';
 import type { MigratableDatabase } from '../../database/schema/SchemaMigrator';
 import type { NexusPluginWithServices } from '../../agents/memoryManager/tools/utils/pluginTypes';
