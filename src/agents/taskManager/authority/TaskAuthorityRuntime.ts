@@ -64,6 +64,11 @@ function validateConfig(value: unknown): TaskAuthorityConfiguration {
 /** One shared runtime per storage object. Authentication/eligibility validators
  * are supplied only by the trusted host integration, never accepted on wire. */
 export class TaskAuthorityRuntime {
+  private lifecycle:Promise<void>=Promise.resolve();
+  private async serializeLifecycle<T>(work:()=>Promise<T>):Promise<T> {
+    const prior=this.lifecycle;let release!:()=>void;this.lifecycle=new Promise<void>(resolve=>{release=resolve;});
+    await prior;try{return await work();}finally{release();}
+  }
   private config: TaskAuthorityConfiguration | null = null;
   private client:TaskAuthorityHttpClient|null=null;
   private clientConfig:TaskAuthorityClientConfiguration|null=null;
@@ -75,7 +80,8 @@ export class TaskAuthorityRuntime {
   private healthy = false;
   constructor(private readonly storage: IStorageAdapter) {}
   private repository(): TaskCoordinationRepository { return this.storage.taskCoordination ?? fail('protocol_incompatible'); }
-  async configure(value: unknown): Promise<void> {
+  async configure(value: unknown): Promise<void> { return this.serializeLifecycle(()=>this.configureLocked(value)); }
+  private async configureLocked(value: unknown): Promise<void> {
     if(value && typeof value==='object' && (value as Obj).mode==='client') {
       if(this.config)fail('protocol_incompatible');const config=validateClientConfiguration(value);
       if(this.storage.waitForQueryReady&&!await this.storage.waitForQueryReady())fail('authority_unavailable');
@@ -112,13 +118,16 @@ export class TaskAuthorityRuntime {
     return config ? serializeAuthority(config.vault_scope, config.authority_id, collect) : { state: 'suspended', pending_operation_ids: [] };
   }
   /** Lifecycle cleanup does not resolve any pending external effect. */
-  async close(): Promise<void> { await this.suspend(); const config = this.config; if (config && this.journal) await serializeAuthority(config.vault_scope, config.authority_id, () => this.journal!.deactivate()); this.healthy = false; }
+  async close(): Promise<void> { return this.serializeLifecycle(async()=>{ await this.suspend(); const config = this.config; if (config && this.journal) await serializeAuthority(config.vault_scope, config.authority_id, () => this.journal!.deactivate()); this.healthy = false; }); }
   async isAdmitted(projectId: string): Promise<boolean> { if (this.storage.waitForQueryReady && !await this.storage.waitForQueryReady()) fail('authority_unavailable'); await this.repository().replay();if(this.client&&this.clientConfig){const c=this.clientConfig;const status=await this.client.query({protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:projectId,issuer_id:c.issuer_id}) as {admitted:boolean};if(!status.admitted&&await this.repository().isAdmitted(projectId))fail('fence_rejected');return status.admitted;} if(this.config)await this.repository().assertProjectScope(projectId,this.config.vault_scope,this.config.authority_id); return this.repository().isAdmitted(projectId); }
   private async scopedState(projectId:string,c:TaskAuthorityConfiguration):Promise<AuthorityProjectState|null> {
     const repo=this.repository();await repo.assertProjectScope(projectId,c.vault_scope,c.authority_id);return repo.getState(projectId);
   }
   private async scopedReceipt(projectId:string,issuerId:string,operationId:string,c:TaskAuthorityConfiguration):Promise<AuthorityReceipt|null> {
     const repo=this.repository();await repo.assertProjectScope(projectId,c.vault_scope,c.authority_id);return repo.getReceipt(projectId,issuerId,operationId);
+  }
+  private serializeCurrent<T>(c:TaskAuthorityConfiguration,work:()=>Promise<T>):Promise<T> {
+    const generation=this.generation;return serializeAuthority(c.vault_scope,c.authority_id,async()=>{if(generation!==this.generation||this.config!==c||!this.healthy)fail('authority_unavailable');return work();});
   }
   private scope(envelope: Obj, query = false, authenticatedIssuer?: string): TaskAuthorityConfiguration {
     const c = this.config; if (!c || !this.healthy || !this.journal) fail('authority_unavailable');
@@ -131,7 +140,7 @@ export class TaskAuthorityRuntime {
   }
   async query(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
     const e = normalizeQuery(value);if(this.client)return this.client.query(e); const c = this.scope(e, true, authenticatedIssuer);
-    return serializeAuthority(c.vault_scope, c.authority_id, async () => {
+    return this.serializeCurrent(c, async () => {
       await this.repository().replay(); const state = await this.scopedState(e.project_id as string,c);
       if (e.type === 'getOperation') { const receipt = await this.scopedReceipt(e.project_id as string,e.issuer_id as string,e.operation_id as string,c); const result = receipt?.result ?? null; return { state: receipt?.error ? 'rejected' : result ? result.status === 'admitted' || result.status === 'acquired' || result.status === 'renewed' || result.status === 'released' ? 'committed' : result.status === 'confirmed' ? 'confirmed' : result.status === 'started' ? 'started' : result.status === 'dispatched' ? 'dispatched' : result.status : 'not_found', revision: state?.revision ?? 0, result, error: receipt?.error ?? null }; }
       const resources = state ? this.resourceView(state) : [];
@@ -140,7 +149,7 @@ export class TaskAuthorityRuntime {
   }
   async readProjectSnapshot(input:{project_id:string}):Promise<TaskProjectSource> {
     const c=this.config;if(!c||!this.healthy||this.client||typeof input?.project_id!=='string'||!input.project_id)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+    return this.serializeCurrent(c,async()=>{
       await this.journal!.assertActive();await this.repository().replay();
       const state=await this.scopedState(input.project_id,c);if(!state?.admitted)fail('protocol_incompatible');
       const rows=await this.repository().operationalSource(input.project_id) as Record<string,unknown>[][];
@@ -187,16 +196,16 @@ export class TaskAuthorityRuntime {
   }
   private async readProgressConsumption(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskProgressConsumptionReadback|null>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,project_id'||Object.values(input).some(v=>typeof v!=='string'||!v))fail('invalid_command');const c=this.config;if(!c||this.client)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{const repo=this.repository();await repo.replay();const state=await this.scopedState(input.project_id,c),effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');if(effect.state!=='committed'||!effect.progressConsumption||!effect.receiptRef||!effect.recordOperationId||!effect.recordOperationSignature)return null;return copy({protocol:'task-progress-consumption/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,state:'committed',binding:effect.progressConsumption,producer_receipt_ref:effect.receiptRef,record_operation_id:effect.recordOperationId,record_operation_signature:effect.recordOperationSignature,revision:effect.lastRevision});});
+    return this.serializeCurrent(c,async()=>{const repo=this.repository();await repo.replay();const state=await this.scopedState(input.project_id,c),effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');if(effect.state!=='committed'||!effect.progressConsumption||!effect.receiptRef||!effect.recordOperationId||!effect.recordOperationSignature)return null;return copy({protocol:'task-progress-consumption/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,state:'committed',binding:effect.progressConsumption,producer_receipt_ref:effect.receiptRef,record_operation_id:effect.recordOperationId,record_operation_signature:effect.recordOperationSignature,revision:effect.lastRevision});});
   }
   private async readClosure(input:{project_id:string;closure_id:string;operation_id?:string}):Promise<unknown>{
     if(!input||Object.keys(input).some(k=>!['project_id','closure_id','operation_id'].includes(k))||typeof input.project_id!=='string'||!input.project_id||typeof input.closure_id!=='string'||!input.closure_id||(input.operation_id!==undefined&&(typeof input.operation_id!=='string'||!input.operation_id)))fail('invalid_command');
     const c=this.config;if(!c||this.client)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.scopedState(input.project_id,c);if(!state?.admitted)fail('protocol_incompatible');return copy({protocol:'task-closure-state/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,closure_id:input.closure_id,revision:state.revision,epoch:this.epoch,closure:closureRecord(state,input.closure_id),effects:Object.values(state.effects).filter(effect=>effect.subject?.closure_id===input.closure_id),operation:input.operation_id?await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c):null});});
+    return this.serializeCurrent(c,async()=>{await this.repository().replay();const state=await this.scopedState(input.project_id,c);if(!state?.admitted)fail('protocol_incompatible');return copy({protocol:'task-closure-state/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,closure_id:input.closure_id,revision:state.revision,epoch:this.epoch,closure:closureRecord(state,input.closure_id),effects:Object.values(state.effects).filter(effect=>effect.subject?.closure_id===input.closure_id),operation:input.operation_id?await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c):null});});
   }
   private async executeClosureCommand(value:unknown):Promise<unknown>{
     const e=normalizeClosureCommand(value),c=this.scope(e as unknown as Obj,false,this.config?.host_id);if(!c.closureValidator||!c.closure_timeout_ms)fail('protocol_incompatible');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+    return this.serializeCurrent(c,async()=>{
       if((this.suspended&&e.command.type!=='commitClosureStep')||!this.healthy)fail('authority_unavailable');const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash(e),old=await this.scopedReceipt(e.project_id,c.host_id,e.operation_id,c);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
       const previous=await this.scopedState(e.project_id,c);if(!previous?.admitted)fail('protocol_incompatible');let state=copy(previous),delta:OperationalTaskEvent[]=[],result:CommandResult|null=null,error:AuthorityError|null=null;
@@ -215,7 +224,7 @@ export class TaskAuthorityRuntime {
   }
   async executeCommand(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
     const e = normalizeCommand(value);if(this.client){if(this.suspended&&['admitProject','acquireUnit','renewLease','dispatchEffect','beginEffect','interactiveMutation'].includes(String((e.command as Obj).type)))fail('authority_unavailable');return this.client.executeCommand(e);} const c = this.scope(e, false, authenticatedIssuer);
-    return serializeAuthority(c.vault_scope, c.authority_id, async () => {
+    return this.serializeCurrent(c, async () => {
       const repo = this.repository();
       try { await this.journal!.assertActive(); await repo.replay(); } catch { this.healthy = false; fail('authority_unavailable'); }
       const signature = await authorityHash(e); const projectId = e.project_id as string; const issuer = e.issuer_id as string; const operation = e.operation_id as string;
@@ -343,7 +352,7 @@ export class TaskAuthorityRuntime {
     const keys=['commit_operation_id','commit_operation_signature','dispatch_id','effect_id','operation_id','project_id'];
     if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!==keys.join(',')||keys.some(k=>typeof input[k as keyof CommittedLeaseRelease]!=='string'||!input[k as keyof CommittedLeaseRelease].trim())||!/^[a-f0-9]{64}$/.test(input.commit_operation_signature))fail('invalid_command');
     const c=this.config;if(!c||!this.healthy||!this.journal)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+    return this.serializeCurrent(c,async()=>{
       if(generation!==this.generation)fail('unauthorized');
       const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash({protocol:'task-committed-lease-release/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
@@ -374,7 +383,7 @@ export class TaskAuthorityRuntime {
   private async cancelDispatchedEffect(input:DispatchedEffectCancellation):Promise<unknown>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,operation_id,project_id,proof_ref'||['project_id','effect_id','dispatch_id','operation_id'].some(k=>{const v=input[k as keyof DispatchedEffectCancellation];return typeof v!=='string'||!v.trim();})||!input.proof_ref||Object.keys(input.proof_ref).sort().join(',')!=='artifact_id,hash'||typeof input.proof_ref.artifact_id!=='string'||!input.proof_ref.artifact_id||!/^[a-f0-9]{64}$/.test(input.proof_ref.hash))fail('invalid_command');
     const c=this.config;if(!c||!this.healthy||!this.journal)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+    return this.serializeCurrent(c,async()=>{
       const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash({protocol:'task-dispatch-cancellation/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
       const oldReceipt=await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c);if(oldReceipt){if(oldReceipt.signature!==signature)fail('operation_signature_conflict');if(oldReceipt.error)fail(oldReceipt.error);return oldReceipt.result;}
@@ -397,7 +406,7 @@ export class TaskAuthorityRuntime {
   private async recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,lease_ms,operation_id,project_id,proof_ref'||['project_id','effect_id','dispatch_id','operation_id'].some(k=>{const value=input[k as keyof ConfirmedEffectRecovery];return typeof value!=='string'||!value.trim();})||!Number.isSafeInteger(input.lease_ms)||input.lease_ms<=0||!input.proof_ref||Object.keys(input.proof_ref).sort().join(',')!=='artifact_id,hash'||typeof input.proof_ref.artifact_id!=='string'||!input.proof_ref.artifact_id||!/^[a-f0-9]{64}$/.test(input.proof_ref.hash))fail('invalid_command');
     const c=this.config;if(!c||!this.healthy||!this.journal)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+    return this.serializeCurrent(c,async()=>{
       const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash({protocol:'task-authority-confirmed-recovery/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
       const previousReceipt=await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c);if(previousReceipt){if(previousReceipt.signature!==signature)fail('operation_signature_conflict');if(previousReceipt.error)fail(previousReceipt.error);return previousReceipt.result;}
@@ -418,12 +427,12 @@ export class TaskAuthorityRuntime {
   private async readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>{
     if(!input||Object.keys(input).sort().join(',')!=='project_id,task_id'||Object.values(input).some(v=>typeof v!=='string'||!v.trim()))fail('invalid_command');
     const c=this.config;if(!c||this.client)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();await this.repository().assertProjectScope(input.project_id,c.vault_scope,c.authority_id);return this.repository().readPriorityEvidence(input.project_id,input.task_id,c.vault_scope,c.authority_id);});
+    return this.serializeCurrent(c,async()=>{await this.repository().replay();await this.repository().assertProjectScope(input.project_id,c.vault_scope,c.authority_id);return this.repository().readPriorityEvidence(input.project_id,input.task_id,c.vault_scope,c.authority_id);});
   }
   async readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,project_id'||Object.values(input).some(v=>typeof v!=='string'||!v.trim()))fail('invalid_command');
     if(this.client)fail('protocol_incompatible');const c=this.config;if(!c)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.scopedState(input.project_id,c);const effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
+    return this.serializeCurrent(c,async()=>{await this.repository().replay();const state=await this.scopedState(input.project_id,c);const effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
       if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');
       return {protocol:'task-effect-verification/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,host_id:effect.hostId,revision:effect.recordRevision??effect.lastRevision,state:effect.state,proposal_ref:copy(effect.proposalRef) as ArtifactRef,proposal_hash:effect.proposalHash,precondition_hash:effect.preconditionHash,capability_ref:copy(effect.capabilityRef) as TaskEffectEvidence['capability_ref'],receipt_ref:effect.receiptRef?copy(effect.receiptRef):null,receipt_hash:effect.receiptRef?.hash??null,record_operation_id:effect.recordOperationId??null,record_operation_signature:effect.recordOperationSignature??null};
     });
