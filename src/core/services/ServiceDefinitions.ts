@@ -51,6 +51,16 @@ const defineService = (create: (context: ServiceCreationContext) => Promise<unkn
  * Note: Events are handled via Obsidian's built-in Events API (plugin.on/trigger)
  */
 export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
+    {
+        name: 'taskService',
+        dependencies: ['hybridStorageAdapter'],
+        create: defineService(async context => {
+            const { getSharedTaskService } = await import('../../agents/taskManager/services/TaskServiceFactory');
+            const adapter = await context.serviceManager.getService<import('../../database/adapters/HybridStorageAdapter').HybridStorageAdapter>('hybridStorageAdapter');
+            if (!adapter) throw new Error('Task storage is unavailable');
+            return getSharedTaskService(adapter);
+        })
+    },
     // VaultOperations - centralized vault operations using Obsidian API
     {
         name: 'vaultOperations',

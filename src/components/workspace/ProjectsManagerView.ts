@@ -9,11 +9,9 @@ import { WorkspaceDetailRenderer, DetailCallbacks } from './WorkspaceDetailRende
 import { TaskDetailRenderer, TaskDeps, TaskDetailCallbacks } from './TaskDetailRenderer';
 import { ProjectWorkspace } from '../../database/workspace-types';
 import { TaskService } from '../../agents/taskManager/services/TaskService';
-import { DAGService } from '../../agents/taskManager/services/DAGService';
 import type { ServiceManager } from '../../core/ServiceManager';
 import { resolveEmbeddingService } from '../../services/embeddings/embeddingAccess';
 import { getNexusPlugin } from '../../utils/pluginLocator';
-import type { HybridStorageAdapter } from '../../database/adapters/HybridStorageAdapter';
 import type { ProjectMetadata } from '../../database/repositories/interfaces/IProjectRepository';
 import type { LinkType, NoteLink, TaskMetadata, TaskPriority, TaskStatus } from '../../database/repositories/interfaces/ITaskRepository';
 
@@ -300,6 +298,9 @@ export class ProjectsManagerView {
 
         try {
             if (this.currentTask.id) {
+                const projectChanged = this.editingTaskOriginal && this.currentTask.projectId !== this.editingTaskOriginal.projectId;
+                const parentChanged = this.editingTaskOriginal && (this.currentTask.parentTaskId || '') !== (this.editingTaskOriginal.parentTaskId || '');
+                if (projectChanged) await taskService.assertTaskMoveAllowed(this.currentTask.id, this.currentTask.projectId);
                 await taskService.updateTask(this.currentTask.id, {
                     title: this.currentTask.title.trim(),
                     description: this.currentTask.description.trim() || undefined,
@@ -310,8 +311,6 @@ export class ProjectsManagerView {
                     tags: normalizedTags.length > 0 ? normalizedTags : undefined
                 });
 
-                const projectChanged = this.editingTaskOriginal && this.currentTask.projectId !== this.editingTaskOriginal.projectId;
-                const parentChanged = this.editingTaskOriginal && (this.currentTask.parentTaskId || '') !== (this.editingTaskOriginal.parentTaskId || '');
                 if (projectChanged || parentChanged) {
                     await taskService.moveTask(this.currentTask.id, {
                         projectId: projectChanged ? this.currentTask.projectId : undefined,
@@ -519,16 +518,7 @@ export class ProjectsManagerView {
         }
 
         try {
-            const adapter = await this.serviceManager.getService<HybridStorageAdapter>('hybridStorageAdapter');
-            const { TaskBoardEvents } = await import('../../services/task/TaskBoardEvents');
-            this.taskService = new TaskService(
-                adapter.projects,
-                adapter.tasks,
-                new DAGService(),
-                undefined,
-                TaskBoardEvents,
-                async () => typeof adapter.waitForQueryReady === 'function' ? adapter.waitForQueryReady() : adapter.isReady()
-            );
+            this.taskService = await this.serviceManager.getService<TaskService>('taskService');
             return this.taskService;
         } catch {
             this.taskService = null;

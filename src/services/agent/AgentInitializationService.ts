@@ -37,7 +37,6 @@ import type { VaultOperations } from '../../core/VaultOperations';
 import type { HybridStorageAdapter } from '../../database/adapters/HybridStorageAdapter';
 import type { IStorageAdapter } from '../../database/interfaces/IStorageAdapter';
 import type { MigratableDatabase } from '../../database/schema/SchemaMigrator';
-import { TaskBoardEvents } from '../task/TaskBoardEvents';
 import type { NexusPluginWithServices } from '../../agents/memoryManager/tools/utils/pluginTypes';
 
 /**
@@ -382,44 +381,11 @@ export class AgentInitializationService {
     }
 
     const { TaskManagerAgent } = await import('../../agents/taskManager/taskManager');
-    const { TaskService } = await import('../../agents/taskManager/services/TaskService');
-    const { DAGService } = await import('../../agents/taskManager/services/DAGService');
-
-    // Get adapter — may need to await if not yet ready
-    let adapter = this.serviceManager.getServiceIfReady<HybridStorageAdapter>('hybridStorageAdapter');
-    if (!adapter) {
-      adapter = await this.serviceManager.getService('hybridStorageAdapter');
-    }
-    if (!adapter) {
-      logger.systemWarn('HybridStorageAdapter not available — TaskManager skipped');
+    const taskService = await this.serviceManager.getService<import('../../agents/taskManager/services/TaskService').TaskService>('taskService');
+    if (!taskService) {
+      logger.systemWarn('TaskService is unavailable — TaskManager skipped');
       return;
     }
-
-    const dagService = new DAGService();
-
-    // Workspace resolver: checks by ID first, then by name, returns resolved UUID or null
-    const { resolveWorkspaceId } = await import('../../database/sync/resolveWorkspaceId');
-    const sqliteCache = adapter.cache;
-    const validateWorkspace = async (workspaceId: string): Promise<string | null> => {
-      const result = await resolveWorkspaceId(workspaceId, sqliteCache);
-      if (result.warning) {
-        console.error(`[TaskService] ${result.warning}`);
-      }
-      // Ambiguous name — fail with nudge listing all matching UUIDs
-      if (result.matchingIds && result.matchingIds.length > 1) {
-        throw new Error(result.warning);
-      }
-      return result.id;
-    };
-
-    const taskService = new TaskService(
-      adapter.projects,
-      adapter.tasks,
-      dagService,
-      validateWorkspace,
-      TaskBoardEvents,
-      async () => typeof adapter.waitForQueryReady === 'function' ? adapter.waitForQueryReady() : adapter.isReady()
-    );
     const taskManagerAgent = new TaskManagerAgent(this.app, this.plugin as NexusPlugin, taskService);
 
     this.agentManager.registerAgent(taskManagerAgent);

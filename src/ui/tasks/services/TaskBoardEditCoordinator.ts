@@ -85,7 +85,12 @@ export class TaskBoardEditCoordinator {
       .map(tag => tag.trim())
       .filter(Boolean);
 
-    await taskService.updateTask(originalTask.id, {
+    const projectChanged = updatedTask.projectId !== originalTask.projectId;
+    const parentChanged = (updatedTask.parentTaskId || '') !== (originalTask.parentTaskId || '');
+    // Refuse unsupported transfers before committing unrelated field edits.
+    if (projectChanged) await taskService.assertTaskMoveAllowed(originalTask.id, updatedTask.projectId);
+
+    const fields = {
       title: updatedTask.title.trim(),
       description: updatedTask.description.trim() || undefined,
       status: updatedTask.status,
@@ -93,33 +98,34 @@ export class TaskBoardEditCoordinator {
       dueDate: this.deps.fromDateInputValue(updatedTask.dueDate),
       assignee: updatedTask.assignee.trim() || undefined,
       tags: normalizedTags.length > 0 ? normalizedTags : undefined
+    };
+    const originalLinks = new Map(originalTask.noteLinks.map(link => [link.notePath, link.linkType]));
+    const updatedLinks = new Map<string, LinkType>(updatedTask.noteLinks
+      .filter(link => link.notePath.trim()).map(link => [link.notePath.trim(), link.linkType || 'reference']));
+    const removeNoteLinks = [...originalLinks.keys()].filter(path => !updatedLinks.has(path));
+    const addNoteLinks = [...updatedLinks].filter(([path, type]) => originalLinks.get(path) !== type)
+      .map(([notePath, linkType]) => ({ notePath, linkType }));
+    const coordinated = await taskService.tryCoordinateTaskUpdate({
+      taskId: originalTask.id, ...fields, addNoteLinks, removeNoteLinks,
     });
+    if (!coordinated) await taskService.updateTask(originalTask.id, fields);
 
-    const projectChanged = updatedTask.projectId !== originalTask.projectId;
-    const parentChanged = (updatedTask.parentTaskId || '') !== (originalTask.parentTaskId || '');
-    if (projectChanged || parentChanged) {
-      await taskService.moveTask(originalTask.id, {
-        projectId: projectChanged ? updatedTask.projectId : undefined,
-        parentTaskId: parentChanged ? (updatedTask.parentTaskId || null) : undefined
-      });
-    }
-
-    const originalPaths = new Set(originalTask.noteLinks.map(link => link.notePath));
-    const updatedLinks = updatedTask.noteLinks.filter(link => link.notePath.trim());
-    const updatedPaths = new Map<string, LinkType>(
-      updatedLinks.map(link => [link.notePath.trim(), link.linkType || 'reference'])
-    );
-
-    for (const path of originalPaths) {
-      if (!updatedPaths.has(path)) {
-        await taskService.unlinkNote(originalTask.id, path);
+    // v1 keeps parent movement a separate receipted command. A failure here
+    // leaves the modal draft intact; it must not pretend the first commit rolled back.
+    try {
+      if (projectChanged || parentChanged) {
+        await taskService.moveTask(originalTask.id, {
+          projectId: projectChanged ? updatedTask.projectId : undefined,
+          parentTaskId: parentChanged ? (updatedTask.parentTaskId || null) : undefined
+        });
       }
-    }
-
-    for (const [path, linkType] of updatedPaths) {
-      if (!originalPaths.has(path)) {
-        await taskService.linkNote(originalTask.id, path, linkType);
+      if (!coordinated) {
+        for (const path of removeNoteLinks) await taskService.unlinkNote(originalTask.id, path);
+        for (const { notePath, linkType } of addNoteLinks) await taskService.linkNote(originalTask.id, notePath, linkType);
       }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Task update interrupted';
+      throw new Error(`${reason}. Earlier changes were saved. Your draft remains open; reload the task before retrying.`);
     }
 
     await this.deps.reloadBoard();

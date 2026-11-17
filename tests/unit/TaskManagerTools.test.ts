@@ -38,6 +38,7 @@ function createMockTaskService(): jest.Mocked<TaskService> {
     createTask: jest.fn(),
     listTasks: jest.fn(),
     updateTask: jest.fn(),
+    tryCoordinateTaskUpdate: jest.fn().mockResolvedValue(false),
     moveTask: jest.fn(),
     addDependency: jest.fn(),
     removeDependency: jest.fn(),
