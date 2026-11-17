@@ -20,6 +20,10 @@ O listener HTTPS é opcional e só abre com certificado, chave e credenciais pre
 
 A prova local usa testes de disco e SQLite nativo para a sequência, a repetição, as falhas intermediárias, a concorrência e a reconstrução. Ela não substitui o ensaio no Obsidian, a prova TLS com certificado confiável, a validação concreta de capacidades/artefatos pelo host ou a concessão administrativa para projetos produtivos.
 
+A porta interna `readProjectSnapshot({project_id})` devolve projeto, tarefas, dependências, vínculos e filhos externos completos, sem paginação, junto à revisão e ao hash operacional. A leitura ocorre sob a mesma serialização da autoridade, após replay, e recusa projeção divergente do hash canônico. As linhas conservam os nomes nativos, inclusive `metadataJson`; o host normaliza o material para a preparação. Essa leitura não amplia o protocolo público de consultas.
+
+O verificador `scripts/verify-task-authority.mjs` executa autoridade local, WASM, CLI, editor e recarga no Obsidian real. Exige uma vault descartável com nome contendo `authority-qa-`, caminho físico explicitamente conferido e marcador `.task-authority-qa.json` com `protocol: task-authority-disposable-qa/v1`. Recebe `--vault`, `--expected-path` e `--artifacts-dir`. O relatório registra o hash do bundle instalado; nenhuma compilação ou instalação é presumida. A concessão sintética permite apenas reserva: todo efeito externo é recusado. O ensaio não prova aplicação pelo host nem participante remoto com TLS.
+
 Iniciativa: `Producao/ThinkBox/Iniciativas/Dream-INI/_index.md`.
 
 

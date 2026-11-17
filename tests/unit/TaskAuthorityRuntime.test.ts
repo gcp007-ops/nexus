@@ -58,6 +58,17 @@ describe('task authority closed contracts', () => {
 import { fixture } from '../helpers/taskAuthorityFixture';
 import { TaskAuthorityRuntime, getTaskAuthorityRuntime } from '../../src/agents/taskManager/authority/TaskAuthorityRuntime';
 const cap = {id:'cap',version:1,revision:1,hash};
+describe('complete authoritative project source',()=>{
+  it('returns all native tasks and dependency edges beyond legacy pagination',async()=>{const f=await fixture();try{
+    const insert=f.cache.db.prepare("INSERT INTO tasks(id,projectId,workspaceId,title,status,priority,created,updated) VALUES (?,'p','w',?,'todo','medium',1,1)");
+    for(let n=0;n<10001;n++)insert.run('bulk-'+n,'bulk-'+n);
+    await f.cache.run("INSERT INTO task_dependencies VALUES ('t','bulk-10000',1)");await f.admit();
+    const source=await f.host.readProjectSnapshot({project_id:'p'});
+    expect(source).toMatchObject({protocol:'task-project-source/v1',complete:true,revision:1,project:{id:'p',workspaceId:'w',status:'active'},dependencies:[{taskId:'t',dependsOnTaskId:'bulk-10000'}]});expect(source.tasks).toHaveLength(10003);expect(source.tasks.some(t=>t.id==='bulk-10000')).toBe(true);
+    await f.service.updateTask('t',{title:'New authoritative revision'});const next=await f.host.readProjectSnapshot({project_id:'p'});expect(next.revision).toBe(2);expect(next.operational_hash).not.toBe(source.operational_hash);
+  }finally{await f.cleanup();}});
+  it('refuses a projection that diverges from the canonical operational hash',async()=>{const f=await fixture();try{await f.admit();await f.cache.run("UPDATE tasks SET title='Unrecorded' WHERE id='t'");await expect(f.host.readProjectSnapshot({project_id:'p'})).rejects.toThrow();}finally{await f.cleanup();}});
+});
 describe('authority state machine with real disk and SQL',()=>{
   it('shares runtime by storage identity and excludes a second activating runtime',async()=>{
     const f=await fixture();try{expect(getTaskAuthorityRuntime(f.storage)).toBe(getTaskAuthorityRuntime(f.storage));const second=new TaskAuthorityRuntime(f.storage);await expect(second.configure(f.config)).rejects.toThrow();await f.admit();expect(await f.repository.isAdmitted('p')).toBe(true);}finally{await f.cleanup();}

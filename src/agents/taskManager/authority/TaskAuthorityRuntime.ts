@@ -1,7 +1,7 @@
 import type { IStorageAdapter } from '../../../database/interfaces/IStorageAdapter';
 import type { TaskCoordinationRepository } from '../../../database/repositories/TaskCoordinationRepository';
 import type { AuthorityProjectState, AuthorityLease, AuthorityEffect, AuthorityJournal, AuthorityReceipt, CoordinationCommittedEvent, OperationalTaskEvent, PriorityAssignment } from '../../../database/repositories/interfaces/ITaskCoordinationRepository';
-import { normalizeCommand, normalizeQuery, normalizeResourceList, type CommandResult, type AuthorityError, type ArtifactRef, type TaskEffectEvidence, type TaskPriorityEvidence } from './TaskAuthorityContracts';
+import { normalizeCommand, normalizeQuery, normalizeResourceList, type CommandResult, type AuthorityError, type ArtifactRef, type TaskEffectEvidence, type TaskPriorityEvidence, type TaskProjectSource } from './TaskAuthorityContracts';
 import { authorityHash, canonicalJson, type InteractiveMutation } from './TaskAuthorityPlanning';
 import { serializeAuthority } from '../services/TaskCoordinationService';
 import { TaskAuthorityHttpClient,validateClientConfiguration,type TaskAuthorityClientConfiguration } from './TaskAuthorityHttpClient';
@@ -9,7 +9,7 @@ import { TaskAuthorityHttpsServer,validateServerConfiguration,type TaskAuthority
 import { v4 as uuid } from '../../../utils/uuid';
 type Obj = Record<string, unknown>;
 export interface AuthorityAuthorization { resources: string[]; max_lease_ms: number }
-export interface TaskAuthorityHostPort { readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>; executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>; recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown> }
+export interface TaskAuthorityHostPort { readProjectSnapshot(input:{project_id:string}):Promise<TaskProjectSource>;readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>; executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>; recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown> }
 export interface ConfirmedEffectRecovery {project_id:string;effect_id:string;dispatch_id:string;operation_id:string;proof_ref:ArtifactRef;lease_ms:number}
 export interface TaskAuthorityConfiguration {
   bindHost?: (port:TaskAuthorityHostPort)=>void;
@@ -80,7 +80,7 @@ export class TaskAuthorityRuntime {
         await journal.append({ type: 'task_authority_activated', protocol: 'task-authority-activation/v1', vaultScope: config.vault_scope, authorityId: config.authority_id, epoch, tokenHash: await authorityHash(uuid()) });
         this.epoch = epoch; this.generation++;this.config = config; this.journal = journal;
         await repo.replay(); this.healthy = true; this.suspended = false;
-        const generation=this.generation;config.bindHost?.({readPriorityEvidence:input=>this.readPriorityEvidence(input),executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input),recoverConfirmedEffect:input=>{if(generation!==this.generation)fail('unauthorized');return this.recoverConfirmedEffect(input);}});
+        const generation=this.generation;config.bindHost?.({readProjectSnapshot:input=>{if(generation!==this.generation)fail('unauthorized');return this.readProjectSnapshot(input);},readPriorityEvidence:input=>this.readPriorityEvidence(input),executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input),recoverConfirmedEffect:input=>{if(generation!==this.generation)fail('unauthorized');return this.recoverConfirmedEffect(input);}});
         if(config.transport){const server=new TaskAuthorityHttpsServer(validateServerConfiguration(config.transport),repo.secretStore(),this);await server.start();this.server=server;}
       } catch (error) { this.suspended=true;this.healthy=false;this.journal = journal; throw error; }
     });
@@ -112,6 +112,16 @@ export class TaskAuthorityRuntime {
       if (e.type === 'getOperation') { const receipt = await this.repository().getReceipt(e.project_id as string,e.issuer_id as string,e.operation_id as string); const result = receipt?.result ?? null; return { state: receipt?.error ? 'rejected' : result ? result.status === 'admitted' || result.status === 'acquired' || result.status === 'renewed' || result.status === 'released' ? 'committed' : result.status === 'confirmed' ? 'confirmed' : result.status === 'started' ? 'started' : result.status === 'dispatched' ? 'dispatched' : result.status : 'not_found', revision: state?.revision ?? 0, result, error: receipt?.error ?? null }; }
       const resources = state ? this.resourceView(state) : [];
       return { admitted: state?.admitted ?? false, revision: state?.revision ?? 0, epoch: this.epoch, resources };
+    });
+  }
+  async readProjectSnapshot(input:{project_id:string}):Promise<TaskProjectSource> {
+    const c=this.config;if(!c||!this.healthy||this.client||typeof input?.project_id!=='string'||!input.project_id)fail('authority_unavailable');
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+      await this.journal!.assertActive();await this.repository().replay();
+      const state=await this.repository().getState(input.project_id);if(!state?.admitted)fail('protocol_incompatible');
+      const rows=await this.repository().operationalSource(input.project_id) as Record<string,unknown>[][];
+      const digest=await authorityHash(rows);if(digest!==state.operationalHash||rows[0]?.length!==1)fail('fence_rejected');
+      return copy({protocol:'task-project-source/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,revision:state.revision,operational_hash:digest,complete:true,project:rows[0][0],tasks:rows[1],dependencies:rows[2],note_links:rows[3],external_children:rows[4]??[]});
     });
   }
   private resourceView(state: AuthorityProjectState): unknown[] {

@@ -9,7 +9,7 @@ import type { SQLiteCacheManager } from '../storage/SQLiteCacheManager';
 import type { QueryCache } from '../optimizations/QueryCache';
 import { TaskEventApplier } from '../sync/TaskEventApplier';
 import { readAuthorityJournals } from '../storage/TaskAuthorityJournalReader';
-import { prepareMutation, type InteractiveMutation, projectHash, canonicalJson } from '../../agents/taskManager/authority/TaskAuthorityPlanning';
+import { prepareMutation, type InteractiveMutation, projectHash, canonicalJson, operationalSnapshot } from '../../agents/taskManager/authority/TaskAuthorityPlanning';
 import type { AuthorityJournalEvent, AuthorityProjectState, AuthorityReceipt, CoordinationCommittedEvent, ITaskCoordinationRepository } from './interfaces/ITaskCoordinationRepository';
 const key = (issuer: string, operation: string): string => JSON.stringify([issuer, operation]);
 export interface CoordinationRepositoryOptions { app: App; sqliteCache: SQLiteCacheManager; queryCache: QueryCache; getDataPath(): string | null }
@@ -23,6 +23,7 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
   async requireActiveProject(projectId:string):Promise<void>{const row=await this.options.sqliteCache.queryOne<{status:string}>('SELECT status FROM projects WHERE id=?',[projectId]);if(row?.status!=='active')throw new Error('fence_rejected');}
   async requireTask(projectId: string, taskId: string): Promise<{status: string}> { const row = await this.options.sqliteCache.queryOne<{projectId: string; status: string}>('SELECT projectId,status FROM tasks WHERE id=?', [taskId]); if (!row || row.projectId !== projectId) throw new Error('invalid_command'); return row; }
   async currentHash(projectId: string): Promise<string> { return projectHash(this.options.sqliteCache, projectId); }
+  async operationalSource(projectId:string):Promise<unknown[]> { return operationalSnapshot(this.options.sqliteCache,projectId); }
   async prepare(projectId: string, mutation: InteractiveMutation, priorityProvenance?: {value:string;decision_ref:string;source_operation_id:string}) { return prepareMutation(this.options.sqliteCache, projectId, mutation, priorityProvenance); }
   async validateEligibility(projectId:string, taskId:string, vaultScope:string, authorityId:string):Promise<void> {
     const cache=this.options.sqliteCache;

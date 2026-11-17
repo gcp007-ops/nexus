@@ -171,6 +171,12 @@ export interface TaskEffectEvidence {
   receipt_ref:ArtifactRef|null;receipt_hash:string|null;record_operation_id:string|null;record_operation_signature:string|null;
 }
 
+/** Complete native rows under the authority lock. No pagination or wire query. */
+export interface TaskProjectSource {
+  protocol:'task-project-source/v1';vault_scope:string;authority_id:string;project_id:string;revision:number;operational_hash:string;complete:true;
+  project:Record<string,unknown>;tasks:Record<string,unknown>[];dependencies:Record<string,unknown>[];note_links:Record<string,unknown>[];external_children:Record<string,unknown>[];
+}
+
 /** Advisory discovery schema; runtime normalization above remains mandatory. */
 export function taskAuthorityEnvelopeSchema(query=false):import('../../../types/schema/JSONSchemaTypes').JSONSchema {
   type Schema=import('../../../types/schema/JSONSchemaTypes').JSONSchema;
