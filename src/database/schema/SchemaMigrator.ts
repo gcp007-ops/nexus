@@ -75,7 +75,7 @@ export interface MigratableDatabase {
 // Alias for backward compatibility
 type Database = MigratableDatabase;
 
-export const CURRENT_SCHEMA_VERSION = 18;
+export const CURRENT_SCHEMA_VERSION = 19;
 
 export interface Migration {
   version: number;
@@ -654,6 +654,16 @@ export const MIGRATIONS: Migration[] = [
     ],
     // Older message events did not record metadata, so a replay cannot recover
     // it. Existing rows remain NULL; new events populate this additive column.
+    requiresRebuild: false
+  },
+  {
+    version: 19,
+    description: 'Add reconstructible task coordination projections',
+    sql: [
+      'CREATE TABLE IF NOT EXISTS task_coordination_state (vaultScope TEXT NOT NULL, authorityId TEXT NOT NULL, projectId TEXT NOT NULL, revision INTEGER NOT NULL, epoch INTEGER NOT NULL, baselineHash TEXT NOT NULL, stateJson TEXT NOT NULL, PRIMARY KEY (vaultScope, authorityId, projectId))',
+      'CREATE TABLE IF NOT EXISTS task_coordination_receipts (vaultScope TEXT NOT NULL, authorityId TEXT NOT NULL, projectId TEXT NOT NULL, issuerId TEXT NOT NULL, operationId TEXT NOT NULL, signature TEXT NOT NULL, revision INTEGER NOT NULL, resultJson TEXT NOT NULL, PRIMARY KEY (vaultScope, authorityId, projectId, issuerId, operationId))',
+    ],
+    // No coordination events exist before this feature is installed.
     requiresRebuild: false
   },
 ];
