@@ -52,6 +52,14 @@ const defineService = (create: (context: ServiceCreationContext) => Promise<unkn
  */
 export const CORE_SERVICE_DEFINITIONS: ServiceDefinition[] = [
     {
+        name: 'taskAuthorityProvisioning',
+        dependencies: [],
+        create: defineService(async context => {
+            const { TaskAuthorityProvisioning } = await import('../../agents/taskManager/authority/TaskAuthorityProvisioning');
+            return new TaskAuthorityProvisioning(context.app);
+        })
+    },
+    {
         name: 'taskService',
         dependencies: ['hybridStorageAdapter'],
         create: defineService(async context => {
