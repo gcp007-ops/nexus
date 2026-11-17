@@ -4,7 +4,7 @@ export const CLOSURE_STEPS=['gate_confirmed','note_terminal_confirmed','project_
 export type ClosureStep=typeof CLOSURE_STEPS[number]|'physical_archive_deferred';
 export interface ClosureRecord {id:string;initiative_id:string;criteria_ref:ArtifactRef;source_revision:number;steps:Array<{kind:ClosureStep;effect_id:string;receipt_ref:ArtifactRef;proof_refs:ArtifactRef[];revision:number}>}
 export interface ClosureSubject {kind:'closure';closure_id:string;step:ClosureStep}
-export interface ClosureValidationRequest {protocol:'task-closure-validation/v1';operation:string;envelope:Record<string,unknown>;source:TaskProjectSource;closure:ClosureRecord|null;effect:AuthorityEffect|null;step:ClosureStep;proof_refs:ArtifactRef[]}
+export interface ClosureValidationRequest {protocol:'task-closure-validation/v1';operation:string;envelope:Record<string,unknown>;source:TaskProjectSource;closure:ClosureRecord|null;effect:AuthorityEffect|null;archive_effect:AuthorityEffect|null;step:ClosureStep;proof_refs:ArtifactRef[]}
 export interface ClosureAuthorization {protocol:'task-closure-authorization/v1';authorized:true;step:ClosureStep;criteria_ref:ArtifactRef;allow_physical_deferred:boolean}
 export interface ClosureEnvelope {protocol:'task-closure-command/v1';vault_scope:string;authority_id:string;project_id:string;issuer_id:string;operation_id:string;expected_revision:number;command:Record<string,unknown>}
 const invalid=():never=>{throw Error('invalid_command');};

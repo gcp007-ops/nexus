@@ -29,7 +29,7 @@ export class TaskAuthorityClosureService {
   if(source.tasks.some(task=>task.status!=='done')||source.external_children.length||!['active','archived'].includes(String(source.project.status)))return refuse();
   if(source.project.status==='archived'&&(!record||record.steps.length<3)&&!(subject.step==='project_archived_confirmed'&&effect?.closureArchive&&['recordEffect','commitClosureStep','recoverConfirmedEffect'].includes(operation)))return refuse();
   const criteria=record?.criteria_ref??closureRef((envelope.command as Obj).criteria_ref);
-  const request:ClosureValidationRequest={protocol:'task-closure-validation/v1',operation,envelope:JSON.parse(JSON.stringify(envelope)) as Obj,source,closure:record,effect,step:subject.step,proof_refs};
+  const request:ClosureValidationRequest={protocol:'task-closure-validation/v1',operation,envelope:JSON.parse(JSON.stringify(envelope)) as Obj,source,closure:record,effect,archive_effect:record?.steps[2]?(state.effects[record.steps[2].effect_id]??null):null,step:subject.step,proof_refs};
   let value:unknown;try{value=await finiteClosure(()=>c.closureValidator!(JSON.parse(JSON.stringify(request)) as ClosureValidationRequest),c.closure_timeout_ms);}catch{return refuse();}
   let result:Obj;try{result=closureObject(value,['protocol','authorized','step','criteria_ref','allow_physical_deferred']);}catch{return refuse();}
   if(result.protocol!=='task-closure-authorization/v1'||result.authorized!==true||result.step!==subject.step||!same(result.criteria_ref,criteria)||typeof result.allow_physical_deferred!=='boolean'||(subject.step==='physical_archive_deferred'&&result.allow_physical_deferred!==true))return refuse();
