@@ -1,7 +1,7 @@
 /** Internal live-driver modes. All mutations are confined to a marked QA project. */
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 
@@ -45,7 +45,9 @@ function identity(options) {
   requireValue(options['--require-obsidian'] && /authority-qa-/.test(name||''), 'Explicit marked QA vault and --require-obsidian required');
   requireValue(json(join(path,'.task-authority-qa.json')).protocol==='task-authority-disposable-qa/v1', 'Disposable QA marker required');
   const actual=evaluate(name,()=>({name:app.vault.getName(),path:app.vault.adapter.getBasePath()}));
-  requireValue(equal(actual,{name,path}), 'Wrong native vault');return actual;
+  requireValue(equal(actual,{name,path}), 'Wrong native vault');
+  const outputRelative=relative(path,resolve(options['--output-root']));
+  requireValue(outputRelative!==''&&(outputRelative.startsWith('..')||isAbsolute(outputRelative)), 'Evidence must stay outside the vault');return actual;
 }
 function config(options) {
   const value=json(options['--participant-file']);
@@ -54,7 +56,8 @@ function config(options) {
   requireValue(value.protocol==='task-authority-qa-participant/v1' && value.run_id===options['--run-id'], 'Participant run mismatch');
   for (const key of fields) requireValue(typeof value[key]==='string' && value[key].length>0, 'Missing participant field');
   requireValue(value.vault_scope==='qa-'+value.run_id && value.authority_id==='qa-authority-'+value.run_id, 'Participant does not match synthetic fixture');
-  requireValue(new URL(value.service_origin).protocol==='https:' && /^nexus-task-authority-client-credential-/.test(value.credential_secret_id), 'System TLS and namespaced preprovisioned credential required');
+  const origin=new URL(value.service_origin);
+  requireValue(origin.protocol==='https:' && !origin.username && !origin.password && value.service_origin===origin.origin && /^nexus-task-authority-client-credential-/.test(value.credential_secret_id), 'System TLS and namespaced preprovisioned credential required');
   return value;
 }
 async function connect(input) {

@@ -14,6 +14,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { parseLiveOptions, participantMode } from './task-authority-participant.mjs';
 const originalArgs=process.argv.slice(2),live=originalArgs.includes('--mode')?parseLiveOptions(originalArgs):null;
+if(live?.['--mode']==='authority'&&!live['--require-obsidian'])throw Error('Authority mode requires --require-obsidian');
 if(live && (live['--mode']!=='authority'||live['--phase']==='readback')) {
   await participantMode(live);process.exit(0);
 }
