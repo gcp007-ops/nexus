@@ -12,7 +12,7 @@ Recursos de projeto, tarefa, arquivo e pasta são excluídos globalmente. Os rec
 
 A atribuição explícita de prioridade gera `dream_priority_v1` a partir do recibo autenticado da atribuição. O padrão `medium` não gera procedência. A aquisição confere novamente tarefa, projeto ativo, dependências e vínculo da procedência ao recibo canônico. Metadados livres não substituem esse recibo.
 
-`task coordinate-project` recebe `{envelope}` no protocolo `task-authority-command/v1`; `task coordination-status` recebe o protocolo de consulta. A identidade da operação é fornecida pelo chamador e deve ser preservada. O ingresso público local usa o emissor interativo configurado; declarar o ID do host no corpo não autentica o chamador. O host recebe uma fachada interna por `bindHost`; suas funções capturam identidade e geração, e a recarga invalida fachadas antigas. `readEffectEvidence` é somente leitura e recupera do registro canônico a associação entre despacho, efeito, recibo, operação confirmadora e assinatura. Não constitui uma nova consulta de rede.
+`task coordinate-project` recebe `{envelope}` no protocolo `task-authority-command/v1`; `task coordination-status` recebe o protocolo de consulta. A identidade da operação é fornecida pelo chamador e deve ser preservada. O ingresso público local usa o emissor interativo configurado; declarar o ID do host no corpo não autentica o chamador. O host recebe uma fachada interna por `bindHost`; suas funções capturam identidade e geração, e a recarga invalida fachadas antigas. `readEffectEvidence` é somente leitura e recupera do registro canônico a associação entre despacho, efeito, recibo, operação confirmadora e assinatura. Não constitui uma nova consulta de rede. A fachada vinculada ao host também oferece `readPriorityEvidence`, derivado da tarefa e do recibo autenticado, inclusive quando a tarefa está bloqueada; e `recoverConfirmedEffect`, que exige prova imutável de quiescência e permite retomar somente o consumo de efeito já confirmado.
 
 O modo `client` exige HTTPS com confiança TLS do sistema, credencial individual no `SecretStore`, limite de bytes e tempo configurados. Não há HTTP, certificado inválido, segredo em `data.json` ou escrita local alternativa. Uma única intenção pendente é preservada no armazenamento seguro local antes do envio. Após resultado incerto ou reinício, o cliente apenas consulta aquela identidade; ausência observada não autoriza reenvio. Enquanto a incerteza persiste, outra mutação é recusada. Esse registro local é uma intenção de transporte, não uma fonte de tarefas.
 
@@ -21,3 +21,13 @@ O listener HTTPS é opcional e só abre com certificado, chave e credenciais pre
 A prova local usa testes de disco e SQLite nativo para a sequência, a repetição, as falhas intermediárias, a concorrência e a reconstrução. Ela não substitui o ensaio no Obsidian, a prova TLS com certificado confiável, a validação concreta de capacidades/artefatos pelo host ou a concessão administrativa para projetos produtivos.
 
 Iniciativa: `Producao/ThinkBox/Iniciativas/Dream-INI/_index.md`.
+
+
+Para reproduzir os testes desta integração localmente, criar primeiro o temporário externo e definir `TMPDIR` na chamada. Exemplo do ambiente de qualificação:
+
+```sh
+mkdir -p /Volumes/Dados/qa-temp/thinkbox-dream-continuity/tmp
+TMPDIR=/Volumes/Dados/qa-temp/thinkbox-dream-continuity/tmp npx jest --runInBand --no-coverage tests/unit/TaskAuthorityRuntime.test.ts tests/unit/TaskCoordinationRepository.test.ts tests/integration/TaskCoordinationReplay.test.ts tests/integration/TaskAuthoritySurfaces.test.ts tests/integration/TaskAuthorityRestart.test.ts
+```
+
+As primeiras execuções da implementação usaram `os.tmpdir()` sem fixar `TMPDIR`; os diretórios foram removidos nos blocos de limpeza. As execuções posteriores ao ajuste usam a raiz externa indicada. Essa limitação de proveniência não foi ocultada nem apresentada como execução em disco externo.

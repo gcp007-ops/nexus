@@ -1,3 +1,4 @@
+import type { TaskPriorityEvidence } from '../../agents/taskManager/authority/TaskAuthorityContracts';
 import type { App } from 'obsidian';
 import { SecretStore } from '../../services/secrets/SecretStore';
 import { isDesktop } from '../../utils/platform';
@@ -19,6 +20,7 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
   constructor(private readonly options: CoordinationRepositoryOptions) {}
   secretStore(): SecretStore { return new SecretStore(this.options.app); }
   async allStates(): Promise<AuthorityProjectState[]> { const rows = await this.options.sqliteCache.query<{stateJson: string}>('SELECT stateJson FROM task_coordination_state'); return rows.map(row => JSON.parse(row.stateJson) as AuthorityProjectState); }
+  async requireActiveProject(projectId:string):Promise<void>{const row=await this.options.sqliteCache.queryOne<{status:string}>('SELECT status FROM projects WHERE id=?',[projectId]);if(row?.status!=='active')throw new Error('fence_rejected');}
   async requireTask(projectId: string, taskId: string): Promise<{status: string}> { const row = await this.options.sqliteCache.queryOne<{projectId: string; status: string}>('SELECT projectId,status FROM tasks WHERE id=?', [taskId]); if (!row || row.projectId !== projectId) throw new Error('invalid_command'); return row; }
   async currentHash(projectId: string): Promise<string> { return projectHash(this.options.sqliteCache, projectId); }
   async prepare(projectId: string, mutation: InteractiveMutation, priorityProvenance?: {value:string;decision_ref:string;source_operation_id:string}) { return prepareMutation(this.options.sqliteCache, projectId, mutation, priorityProvenance); }
@@ -29,13 +31,20 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
     if(project?.status!=='active'||!task||task.projectId!==projectId||!['todo','in_progress'].includes(task.status)||!Number.isFinite(task.created)||task.created<0)throw new Error('fence_rejected');
     const dependencies=await cache.query<{status:string|null;projectId:string|null}>('SELECT t.status,t.projectId FROM task_dependencies d LEFT JOIN tasks t ON t.id=d.dependsOnTaskId WHERE d.taskId=?',[taskId]);
     if(dependencies.some(dep=>dep.projectId!==projectId||!['done','cancelled'].includes(dep.status??'')))throw new Error('fence_rejected');
-    const metadata=JSON.parse(task.metadataJson??'{}') as Record<string,unknown>;const provenance=metadata.dream_priority_v1 as {value?:unknown;decision_ref?:unknown;source_operation_id?:unknown}|undefined;
-    if(!provenance||Object.keys(provenance).sort().join(',')!=='decision_ref,source_operation_id,value'||provenance.value!==task.priority||typeof provenance.decision_ref!=='string'||typeof provenance.source_operation_id!=='string')throw new Error('fence_rejected');
-    const prefix='task-authority-decision/v1/';if(!provenance.decision_ref.startsWith(prefix))throw new Error('fence_rejected');
-    const parts=provenance.decision_ref.slice(prefix.length).split('/').map(decodeURIComponent);
-    if(parts.length!==5||parts[0]!==vaultScope||parts[1]!==authorityId||parts[2]!==projectId||parts[4]!==provenance.source_operation_id)throw new Error('fence_rejected');
+    if(!await this.readPriorityEvidence(projectId,taskId,vaultScope,authorityId))throw new Error('fence_rejected');
+  }
+  async readPriorityEvidence(projectId:string,taskId:string,vaultScope:string,authorityId:string):Promise<TaskPriorityEvidence|null>{
+    const task=await this.options.sqliteCache.queryOne<{projectId:string;priority:string;metadataJson:string|null}>('SELECT projectId,priority,metadataJson FROM tasks WHERE id=?',[taskId]);
+    if(!task||task.projectId!==projectId||!['critical','high','medium','low'].includes(task.priority))return null;
+    let provenance:{value?:unknown;decision_ref?:unknown;source_operation_id?:unknown}|undefined;
+    try{const metadata=JSON.parse(task.metadataJson??'{}') as Record<string,unknown>;provenance=metadata.dream_priority_v1 as typeof provenance;}catch{return null;}
+    if(!provenance||Object.keys(provenance).sort().join(',')!=='decision_ref,source_operation_id,value'||provenance.value!==task.priority||typeof provenance.decision_ref!=='string'||typeof provenance.source_operation_id!=='string')return null;
+    const prefix='task-authority-decision/v1/';if(!provenance.decision_ref.startsWith(prefix))return null;
+    let parts:string[];try{parts=provenance.decision_ref.slice(prefix.length).split('/').map(decodeURIComponent);}catch{return null;}
+    if(parts.length!==5||parts[0]!==vaultScope||parts[1]!==authorityId||parts[2]!==projectId||parts[4]!==provenance.source_operation_id)return null;
     const receipt=await this.getReceipt(projectId,parts[3],parts[4]);
-    if(receipt?.error||!receipt?.priorityAssignment||canonicalJson(receipt.priorityAssignment)!==canonicalJson({taskId,value:task.priority,decisionRef:provenance.decision_ref}))throw new Error('fence_rejected');
+    if(receipt?.error||!receipt?.priorityAssignment||canonicalJson(receipt.priorityAssignment)!==canonicalJson({taskId,value:task.priority,decisionRef:provenance.decision_ref}))return null;
+    return {protocol:'task-priority-verification/v1',vault_scope:vaultScope,authority_id:authorityId,project_id:projectId,task_id:taskId,value:task.priority as TaskPriorityEvidence['value'],decision_ref:provenance.decision_ref,source_operation_id:provenance.source_operation_id,source_issuer_id:parts[3],operation_signature:receipt.signature,revision:receipt.revision};
   }
   async journal(vaultScope: string, authorityId: string): Promise<TaskAuthorityDurableJournal> {
     if (!isDesktop()) throw new Error('authority_unavailable');

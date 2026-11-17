@@ -182,3 +182,4 @@ export function taskAuthorityEnvelopeSchema(query=false):import('../../../types/
   if(query)return {oneOf:[closed({...common,type:{const:'getOperation'},operation_id:string}),closed({...common,type:{const:'getProjectCoordination'}})]};
   return closed({...common,operation_id:string,expected_revision:int,command:{oneOf:Object.entries(specs).map(([type,fields])=>closed({type:{const:type},...Object.fromEntries(fields.map(name=>[name,field(name)]))}))}});
 }
+export interface TaskPriorityEvidence {protocol:'task-priority-verification/v1';vault_scope:string;authority_id:string;project_id:string;task_id:string;value:'critical'|'high'|'medium'|'low';decision_ref:string;source_operation_id:string;source_issuer_id:string;operation_signature:string;revision:number}

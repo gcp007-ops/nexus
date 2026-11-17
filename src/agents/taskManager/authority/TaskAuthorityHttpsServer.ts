@@ -19,6 +19,7 @@ export class TaskAuthorityHttpsServer {
   async start():Promise<void>{
     if(!isDesktop()||!this.secrets.isAvailable()||this.server)throw new Error('authority_unavailable');
     const cert=this.secrets.get(this.config.certificate_secret_id),key=this.secrets.get(this.config.key_secret_id);if(!cert||!key||this.config.clients.some(c=>!this.secrets.get(c.credential_secret_id)))throw new Error('authority_unavailable');
+    if(new Set(this.config.clients.map(client=>this.secrets.get(client.credential_secret_id))).size!==this.config.clients.length)throw new Error('authority_unavailable');
     const https=desktopRequire<typeof import('node:https')>('node:https');const crypto=desktopRequire<typeof import('node:crypto')>('node:crypto');
     const server=https.createServer({cert,key,minVersion:'TLSv1.2'},(request,response)=>{
       const send=(status:number,value:unknown):void=>{if(!response.writableEnded){response.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});response.end(JSON.stringify(value));}};

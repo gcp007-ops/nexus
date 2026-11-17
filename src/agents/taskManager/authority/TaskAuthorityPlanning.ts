@@ -14,9 +14,10 @@ export interface PreparedMutation { delta: OperationalTaskEvent[]; entityId: str
 export async function operationalSnapshot(cache: Pick<SQLiteCacheManager, 'query'>, projectId: string): Promise<unknown[]> {
   const projects = await cache.query('SELECT * FROM projects WHERE id = ? ORDER BY id', [projectId]);
   const tasks = await cache.query('SELECT * FROM tasks WHERE projectId = ? ORDER BY id', [projectId]);
-  const edges = await cache.query('SELECT d.taskId,d.dependsOnTaskId FROM task_dependencies d JOIN tasks t ON t.id=d.taskId WHERE t.projectId=? ORDER BY d.taskId,d.dependsOnTaskId', [projectId]);
+  const edges = await cache.query('SELECT d.taskId,d.dependsOnTaskId FROM task_dependencies d LEFT JOIN tasks t ON t.id=d.taskId LEFT JOIN tasks target ON target.id=d.dependsOnTaskId WHERE t.projectId=? OR target.projectId=? ORDER BY d.taskId,d.dependsOnTaskId', [projectId,projectId]);
   const links = await cache.query('SELECT l.taskId,l.notePath,l.linkType FROM task_note_links l JOIN tasks t ON t.id=l.taskId WHERE t.projectId=? ORDER BY l.taskId,l.notePath', [projectId]);
-  return [projects, tasks, edges, links];
+  const externalChildren=await cache.query('SELECT child.id,child.projectId,child.parentTaskId FROM tasks child JOIN tasks parent ON parent.id=child.parentTaskId WHERE parent.projectId=? AND child.projectId<>parent.projectId ORDER BY child.id',[projectId]);
+  return externalChildren.length ? [projects, tasks, edges, links, externalChildren] : [projects, tasks, edges, links];
 }
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';

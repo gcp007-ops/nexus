@@ -118,6 +118,7 @@ export class TaskRepository
 
   async create(data: CreateTaskData): Promise<string> {
     await this.taskMutationGuard?.(data.projectId);
+    if (data.parentTaskId) await this.guardReferencedTask(data.parentTaskId);
     const id = this.generateId();
     const now = Date.now();
     const tagsJson = data.tags ? JSON.stringify(data.tags) : null;
@@ -186,6 +187,7 @@ export class TaskRepository
 
   async update(id: string, data: UpdateTaskData): Promise<void> {
     if (data.projectId) await this.taskMutationGuard?.(data.projectId);
+    if (data.parentTaskId) await this.guardReferencedTask(data.parentTaskId);
     try {
       const existing = await this.getById(id);
       if (existing) await this.taskMutationGuard?.(existing.projectId);
@@ -479,6 +481,7 @@ export class TaskRepository
   }
 
   async addDependency(taskId: string, dependsOnTaskId: string): Promise<void> {
+    await this.guardReferencedTask(dependsOnTaskId);
     try {
       const task = await this.getById(taskId);
       if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -514,6 +517,7 @@ export class TaskRepository
   }
 
   async removeDependency(taskId: string, dependsOnTaskId: string): Promise<void> {
+    await this.guardReferencedTask(dependsOnTaskId);
     try {
       const task = await this.getById(taskId);
       if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -657,6 +661,11 @@ export class TaskRepository
   // ============================================================================
   // Protected Methods
   // ============================================================================
+
+  private async guardReferencedTask(taskId:string):Promise<void>{
+    if(!this.taskMutationGuard)return;
+    const task=await this.getById(taskId);if(task)await this.taskMutationGuard(task.projectId);
+  }
 
   private async resolveMetadataInTransaction(
     id: string,
