@@ -7,6 +7,7 @@ import { serializeAuthority } from '../services/TaskCoordinationService';
 import { TaskAuthorityHttpClient,validateClientConfiguration,type TaskAuthorityClientConfiguration } from './TaskAuthorityHttpClient';
 import { TaskAuthorityHttpsServer,validateServerConfiguration,type TaskAuthorityServerConfiguration } from './TaskAuthorityHttpsServer';
 import { v4 as uuid } from '../../../utils/uuid';
+import {normalizeProgressAuthorization,type TaskProgressValidationRequest,type TaskProgressAuthorization} from './TaskAuthorityProgressContracts';
 import {normalizeClosureCommand,type ClosureValidationRequest,type ClosureAuthorization} from './TaskAuthorityClosureContracts';
 import {TaskAuthorityClosureService,closureRecord,finiteClosure} from './TaskAuthorityClosureService';
 type Obj = Record<string, unknown>;
@@ -21,6 +22,8 @@ export interface TaskAuthorityConfiguration {
   max_lease_ms: number; eligible_project_ids: string[];
   selection_timeout_ms:number;
   selectionValidator(request:TaskAcquisitionSelectionRequest):Promise<TaskAcquisitionSelectionDecision>;
+  progress_timeout_ms?:number;
+  progressValidator?(request:TaskProgressValidationRequest):Promise<TaskProgressAuthorization>;
   closure_timeout_ms?:number;
   closureValidator?(request:ClosureValidationRequest):Promise<ClosureAuthorization>;
   capabilityValidator(envelope: Obj, effect?: AuthorityEffect): Promise<AuthorityAuthorization>;
@@ -42,11 +45,12 @@ function validateConfig(value: unknown): TaskAuthorityConfiguration {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid_command');
   const c = value as Obj;
   const required = ['protocol','mode','vault_scope','authority_id','issuer_id','host_id','max_lease_ms','eligible_project_ids','selection_timeout_ms','selectionValidator','capabilityValidator','artifactValidator'];
-  if (Object.keys(c).some(key => !required.includes(key) && !['transport','bindHost','closure_timeout_ms','closureValidator'].includes(key)) || required.some(key => !(key in c)) || c.protocol !== 'task-authority-config/v1' || c.mode !== 'authority') fail('invalid_command');
+  if (Object.keys(c).some(key => !required.includes(key) && !['transport','bindHost','closure_timeout_ms','closureValidator','progress_timeout_ms','progressValidator'].includes(key)) || required.some(key => !(key in c)) || c.protocol !== 'task-authority-config/v1' || c.mode !== 'authority') fail('invalid_command');
   for (const key of ['vault_scope','authority_id','issuer_id','host_id']) if (typeof c[key] !== 'string' || !(c[key]).trim()) fail('invalid_command');
   if (!Number.isSafeInteger(c.max_lease_ms) || (c.max_lease_ms as number) <= 0 || !Array.isArray(c.eligible_project_ids) || c.eligible_project_ids.some(id => typeof id !== 'string' || !id.trim()) || typeof c.capabilityValidator !== 'function' || typeof c.artifactValidator !== 'function') fail('invalid_command');
   if(c.host_id===c.issuer_id)fail('invalid_command');
   if(typeof c.selectionValidator!=='function'||!Number.isSafeInteger(c.selection_timeout_ms)||(c.selection_timeout_ms as number)<=0||(c.selection_timeout_ms as number)>2147483647)fail('invalid_command');
+  if(c.progressValidator!==undefined||c.progress_timeout_ms!==undefined)if(typeof c.progressValidator!=='function'||!Number.isSafeInteger(c.progress_timeout_ms)||(c.progress_timeout_ms as number)<=0||(c.progress_timeout_ms as number)>2147483647)fail('invalid_command');
   if(c.closureValidator!==undefined||c.closure_timeout_ms!==undefined)if(typeof c.closureValidator!=='function'||!Number.isSafeInteger(c.closure_timeout_ms)||(c.closure_timeout_ms as number)<=0||(c.closure_timeout_ms as number)>2147483647)fail('invalid_command');
   if(c.bindHost!==undefined&&typeof c.bindHost!=='function')fail('invalid_command');
   if(c.transport!==undefined)validateServerConfiguration(c.transport);
@@ -301,10 +305,14 @@ export class TaskAuthorityRuntime {
     } else if (cmd.type === 'commitProgress') {
       const lease=requireLease(); const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined);
       if (!effect || effect.subject || lease.subject || effect.state!=='confirmed' || effect.leaseId!==lease.id || lease.taskId!==cmd.task_id || !same(effect.receiptRef,cmd.receipt_ref)) fail('fence_rejected');
+      if(!c.progressValidator||!c.progress_timeout_ms)fail('protocol_incompatible');
       const sourceRows=await this.repository().operationalSource(project) as Obj[][];
       const sourceHash=await authorityHash(sourceRows);if(sourceHash!==state.operationalHash||sourceRows[0]?.length!==1)fail('fence_rejected');
       validationContext={authority_source:{protocol:'task-project-source/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:project,revision:state.revision,operational_hash:sourceHash,complete:true,project:sourceRows[0][0],tasks:sourceRows[1],dependencies:sourceRows[2],note_links:sourceRows[3],external_children:sourceRows[4]??[]}};
-      await authorization(effect); await artifact(cmd.receipt_ref,'receipt',effect); for (const ref of cmd.evidence_refs as ArtifactRef[]) await artifact(ref,'evidence');
+      await artifact(cmd.receipt_ref,'receipt',effect); for (const ref of cmd.evidence_refs as ArtifactRef[]) await artifact(ref,'evidence');
+      let consumption:TaskProgressAuthorization;try{consumption=normalizeProgressAuthorization(await finiteClosure(()=>c.progressValidator!(copy({protocol:'task-progress-validation/v1',envelope:e,source:validationContext!.authority_source,effect,transition:{task_id:String(cmd.task_id),expected_status:String(cmd.expected_status),next_status:String(cmd.next_status),receipt_ref:cmd.receipt_ref as ArtifactRef,evidence_refs:cmd.evidence_refs as ArtifactRef[]}})),c.progress_timeout_ms));}catch{fail('fence_rejected');}
+      if(same(consumption.consumption_capability_ref,effect.capabilityRef))fail('capability_revoked');
+      effect.progressConsumption={consumption_capability_ref:consumption.consumption_capability_ref,consumption_profile_ref:consumption.consumption_profile_ref,proof_refs:consumption.proof_refs,source_revision:state.revision,operational_hash:sourceHash};
       if(await this.repository().currentHash(project)!==sourceHash||(await this.repository().getState(project))?.revision!==state.revision)fail('fence_rejected');
       await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id); const task=await this.repository().requireTask(project,String(cmd.task_id)); if (task.status!==cmd.expected_status) fail('revision_conflict');
       const prepared=await this.repository().prepare(project,{kind:'updateTask',arguments:{taskId:cmd.task_id,status:cmd.next_status,metadata:{dream_effect_receipt_v1:{effect_id:effect.id,receipt_ref:cmd.receipt_ref,evidence_refs:cmd.evidence_refs}}}});
