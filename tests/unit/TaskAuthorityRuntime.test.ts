@@ -51,3 +51,34 @@ describe('task authority closed contracts', () => {
     expect(() => normalizeQuery({ ...query, type: 'getProjectCoordination', operation_id: 'o' })).toThrow();
   });
 });
+
+import { fixture } from '../helpers/taskAuthorityFixture';
+import { TaskAuthorityRuntime, getTaskAuthorityRuntime } from '../../src/agents/taskManager/authority/TaskAuthorityRuntime';
+const cap = {id:'cap',version:1,revision:1,hash};
+describe('authority state machine with real disk and SQL',()=>{
+  it('shares runtime by storage identity and excludes a second activating runtime',async()=>{
+    const f=await fixture();try{expect(getTaskAuthorityRuntime(f.storage)).toBe(getTaskAuthorityRuntime(f.storage));const second=new TaskAuthorityRuntime(f.storage);await expect(second.configure(f.config)).rejects.toThrow();await f.admit();expect(await f.repository.isAdmitted('p')).toBe(true);}finally{await f.cleanup();}
+  });
+  it('serializes concurrent CAS and returns one durable winner',async()=>{
+    const f=await fixture();try{await f.admit();await f.service.updateTask('t',{priority:'high'});const body={type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap};const a=await f.command('p',body);const b=await f.command('p',body);const results=await Promise.allSettled([f.runtime.executeCommand(a),f.runtime.executeCommand(b)]);expect(results.filter(x=>x.status==='fulfilled')).toHaveLength(1);expect(results.filter(x=>x.status==='rejected')).toHaveLength(1);expect(await f.repository.getState('p')).toMatchObject({revision:3});}finally{await f.cleanup();}
+  });
+  it('keeps an in-flight repository directory reserved globally after lease expiry',async()=>{
+    const f=await fixture();try{
+      await f.admit();await f.admit('q');const resources=['project:p','repository_directory:repo:src','task:t'];
+      await f.service.updateTask('t',{priority:'high'});await f.service.updateTask('x',{priority:'high'});
+      const realNow=Date.now; const now=realNow();
+      const lease=await f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources,lease_ms:1000,capability_ref:cap})) as Record<string,unknown>;
+      const dispatch=await f.runtime.executeCommand(await f.command('p',{type:'dispatchEffect',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:'e',capability_ref:cap,resources,precondition_hash:await f.repository.currentHash('p'),proposal_ref:{artifact_id:'proposal',hash},proposal_hash:hash})) as Record<string,unknown>;
+      await f.host.executeCommand(await f.command('p',{type:'beginEffect',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:'e',dispatch_id:dispatch.dispatch_id,host_id:'host',proposal_hash:hash}));
+      Date.now=()=>now+20000;
+      try{await expect(f.runtime.executeCommand(await f.command('q',{type:'acquireUnit',task_id:'x',resources:['project:q','repository_file:repo:src/main.ts','task:x'],lease_ms:1000,capability_ref:cap}))).rejects.toThrow('lease_busy');}finally{Date.now=realNow;}
+      const suspended=await f.runtime.suspend();expect(suspended.pending_operation_ids).toHaveLength(1);
+      await expect(f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources,lease_ms:1000,capability_ref:cap}))).rejects.toThrow('authority_unavailable');
+      await f.host.executeCommand(await f.command('p',{type:'recordEffect',dispatch_id:dispatch.dispatch_id,effect_id:'e',receipt_ref:{artifact_id:'receipt',hash},receipt_hash:hash,result:'applied'}));
+      const status=await f.runtime.query({protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:'v',authority_id:'a',project_id:'p',issuer_id:'human'});expect(status).toMatchObject({admitted:true});
+    }finally{await f.cleanup();}
+  });
+  it('refuses malformed repository resource identities',()=>{
+    for(const resource of ['repository_file:r:/absolute','repository_directory:r:a/../b','repository_file:r:a\\b','repository_file:r:a//b','repository_file:r:C:/x'])expect(()=>normalizeCommand({...envelope,command:{type:'acquireUnit',task_id:'t',resources:[resource],lease_ms:1,capability_ref:cap}})).toThrow('invalid_command');
+  });
+});

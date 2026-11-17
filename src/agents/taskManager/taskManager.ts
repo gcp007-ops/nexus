@@ -13,6 +13,8 @@ import { BaseAgent } from '../baseAgent';
 import { TaskService } from './services/TaskService';
 
 // Project tools
+import { CoordinateProjectTool } from './tools/projects/coordinateProject';
+import { CoordinationStatusTool } from './tools/projects/coordinationStatus';
 import { CreateProjectTool } from './tools/projects/createProject';
 import { ListProjectsTool } from './tools/projects/listProjects';
 import { UpdateProjectTool } from './tools/projects/updateProject';
@@ -54,6 +56,9 @@ export class TaskManagerAgent extends BaseAgent {
     void plugin;
     this.app = app;
     this.taskService = taskService;
+
+    this.registerLazyTool({slug:'coordinateProject',name:'Coordinate project',description:'Execute a conditional authority envelope with stable identity; configured authority required.',version:'1.0.0',factory:()=>new CoordinateProjectTool(this.taskService)});
+    this.registerLazyTool({slug:'coordinationStatus',name:'Coordination status',description:'Query authority admission, resources, revisions and durable operation receipts without mutation.',version:'1.0.0',factory:()=>new CoordinationStatusTool(this.taskService)});
 
     // Register project tools (4) — lazy loaded
     this.registerLazyTool({

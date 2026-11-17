@@ -71,6 +71,7 @@ export type TaskUpdateMutation = UpdateTaskData & Pick<UpdateTaskParameters,
 
 /** Internal dependency; never constructed from tool metadata or wire fields. */
 export interface TaskAuthorityPort {
+  readEffectEvidence?(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<unknown>;
   configure(config: unknown): Promise<void>;
   suspend(): Promise<{ state: 'suspended'; pending_operation_ids: string[] }>;
   executeCommand(envelope: unknown): Promise<unknown>;
@@ -121,11 +122,13 @@ export class TaskService {
 
   getTaskAuthority(): {
     protocol: 'task-authority/v1';
+    readEffectEvidence:(input:{project_id:string;effect_id:string;dispatch_id:string})=>Promise<unknown>;
     executeCommand: (envelope: unknown) => Promise<unknown>;
     query: (envelope: unknown) => Promise<unknown>;
   } {
     return {
       protocol: 'task-authority/v1',
+      readEffectEvidence:async input=>{if(!this.authority?.readEffectEvidence)throw new Error('protocol_incompatible');return this.authority.readEffectEvidence(input);},
       executeCommand: async envelope => {
         if (!this.authority) throw new Error('authority_unavailable');
         return this.authority.executeCommand(envelope);
@@ -156,7 +159,7 @@ export class TaskService {
     // Resolve human-facing references before the runtime signs the command.
     const canonicalArgs = { ...args };
     for (const key of ['taskId', 'parentTaskId']) {
-      if (typeof canonicalArgs[key] === 'string') canonicalArgs[key] = await this.resolveTaskId(canonicalArgs[key] as string);
+      if (typeof canonicalArgs[key] === 'string') canonicalArgs[key] = await this.resolveTaskId(canonicalArgs[key]);
     }
     for (const key of ['dependsOn', 'addDependencies', 'removeDependencies']) {
       const values = canonicalArgs[key];

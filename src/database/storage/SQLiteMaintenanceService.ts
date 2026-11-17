@@ -149,6 +149,8 @@ export class SQLiteMaintenanceService {
     await this.transaction(() => {
       const db = this.getDb();
       this.bridge.exec(db, `
+        DELETE FROM task_coordination_receipts;
+        DELETE FROM task_coordination_state;
         DELETE FROM task_note_links;
         DELETE FROM task_dependencies;
         DELETE FROM tasks;

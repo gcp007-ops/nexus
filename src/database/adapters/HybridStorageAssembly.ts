@@ -38,6 +38,7 @@ import { TraceRepository } from '../repositories/TraceRepository';
 import { ConversationRepository } from '../repositories/ConversationRepository';
 import { MessageRepository } from '../repositories/MessageRepository';
 import { ProjectRepository } from '../repositories/ProjectRepository';
+import { TaskCoordinationRepository } from '../repositories/TaskCoordinationRepository';
 import { TaskRepository } from '../repositories/TaskRepository';
 import { ToolOperationRepository } from '../repositories/ToolOperationRepository';
 // Import services
@@ -60,6 +61,7 @@ export interface HybridStorageAssemblyOptions {
   plugin: Plugin;
   /** Base path for storage (already defaulted by the adapter) */
   basePath: string;
+  getCanonicalDataPath(): string | null;
   /** Query cache TTL in ms (default: 60000) */
   cacheTTL?: number;
   /** Query cache max size (default: 500) */
@@ -70,6 +72,7 @@ export interface HybridStorageAssemblyOptions {
  * The assembled collaborators handed back to the adapter constructor.
  */
 export interface HybridStorageAssembly {
+  coordinationRepo: TaskCoordinationRepository;
   storageCoordinator: PluginScopedStorageCoordinator;
   jsonlWriter: JSONLWriter;
   cacheBlobStore: CacheBlobStore;
@@ -133,11 +136,15 @@ export function assembleHybridStorage(options: HybridStorageAssemblyOptions): Hy
     maxSize: options.cacheMaxSize ?? 500
   });
 
+  const coordinationRepo = new TaskCoordinationRepository({ app, sqliteCache, queryCache, getDataPath: () => options.getCanonicalDataPath() });
+  syncCoordinator.setTaskAuthorityReplay(() => coordinationRepo.replay());
+
   // Create repository dependencies
   const deps: RepositoryDependencies = {
     jsonlWriter,
     sqliteCache,
-    queryCache
+    queryCache,
+    taskMutationGuard: projectId => coordinationRepo.assertLegacyMutationAllowed(projectId)
   };
 
   // Initialize all repositories
@@ -163,6 +170,7 @@ export function assembleHybridStorage(options: HybridStorageAssemblyOptions): Hy
   });
 
   return {
+    coordinationRepo,
     storageCoordinator,
     jsonlWriter,
     cacheBlobStore,

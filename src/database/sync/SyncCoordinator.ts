@@ -110,6 +110,8 @@ export class SyncCoordinator {
 
   /** Guards against overlapping sync() calls. */
   private syncing = false;
+  private taskAuthorityReplay: (() => Promise<void>) | null = null;
+  setTaskAuthorityReplay(replay: () => Promise<void>): void { this.taskAuthorityReplay = replay; }
   /**
    * The follow-up run owed to callers that arrived while a sync was in flight.
    * They all wait on it, so a caller's `await sync()` means its changes are in
@@ -234,6 +236,7 @@ export class SyncCoordinator {
           );
         }
 
+        await this.taskAuthorityReplay?.();
         await this.sqliteCache.updateSyncState(this.deviceId, Date.now(), {});
         await this.sqliteCache.save();
         options.onProgress?.('Complete', 1, 1);
@@ -273,6 +276,7 @@ export class SyncCoordinator {
 
       // Update sync state and save
       await this.sqliteCache.updateSyncState(this.deviceId, Date.now(), nextFileTimestamps);
+      await this.taskAuthorityReplay?.();
       await this.sqliteCache.save();
 
       options.onProgress?.('Complete', 1, 1);
@@ -330,6 +334,10 @@ export class SyncCoordinator {
       eventsApplied += taskResult.applied;
       filesProcessed.push(...taskResult.files);
 
+      // New coordination history is strict: unlike legacy file warnings, a
+      // missing baseline/gap/corruption aborts rebuild and cannot be saved green.
+      await this.taskAuthorityReplay?.();
+
       // Surface skipped files so a persistent bad input file is visible in the
       // console, but do NOT abort: per-file errors are recoverable. Aborting
       // here (the previous behavior) discarded the entire good rebuild and never
@@ -348,6 +356,7 @@ export class SyncCoordinator {
       options.onProgress?.('Rebuilding search indexes', 0, 1);
       await this.sqliteCache.rebuildFTSIndexes();
       await this.sqliteCache.updateSyncState(this.deviceId, Date.now(), {});
+      await this.taskAuthorityReplay?.();
       await this.sqliteCache.save();
 
       options.onProgress?.('Complete', 1, 1);

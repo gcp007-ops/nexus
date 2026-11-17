@@ -723,6 +723,26 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
     }
   }
 
+  /** Isolated, disposable clone for business-rule planning. The clone has no
+   * autosave/blob-store/event-store and cannot mutate the live connection. */
+  createPlanningClone(): { cache: SQLiteCacheManager; dispose(): void } {
+    const module = this.getSqlite3OrThrow();
+    const db = this.bridge.deserializeDatabase(module, new Uint8Array(this.bridge.exportDatabase(module, this.getDbOrThrow())));
+    const bridge = this.bridge;
+    const coordinator = new SQLiteTransactionCoordinator();
+    const facade = {
+      query: <T>(sql: string, params?: QueryParams): Promise<T[]> => Promise.resolve(bridge.query<T>(db, sql, params)),
+      queryOne: <T>(sql: string, params?: QueryParams): Promise<T | null> => Promise.resolve(bridge.queryOne<T>(db, sql, params)),
+      run: (sql: string, params?: QueryParams): Promise<RunResult> => Promise.resolve(bridge.run(db, module, sql, params)),
+      transaction: <T>(fn: () => Promise<T>): Promise<T> => coordinator.run(
+        () => { bridge.exec(db, 'BEGIN'); return Promise.resolve(); }, () => { bridge.exec(db, 'COMMIT'); return Promise.resolve(); },
+        () => { bridge.exec(db, 'ROLLBACK'); return Promise.resolve(); }, fn)
+    };
+    // RepositoryDependencies historically names the concrete manager. This
+    // narrow facade implements exactly its repository capability, not I/O.
+    return { cache: facade as unknown as SQLiteCacheManager, dispose: () => bridge.close(db) };
+  }
+
   /**
    * Begin a transaction
    */

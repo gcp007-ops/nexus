@@ -1,3 +1,4 @@
+import type { TaskCoordinationRepository } from '../repositories/TaskCoordinationRepository';
 /**
  * Storage Adapter Interface
  *
@@ -67,6 +68,7 @@ export interface QueryOptions extends PaginationParams {
  * API that hides the complexity of the hybrid storage architecture.
  */
 export interface IStorageAdapter {
+  readonly taskCoordination?: TaskCoordinationRepository;
   // ============================================================================
   // Lifecycle Management
   // ============================================================================

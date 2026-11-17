@@ -25,10 +25,10 @@ function resources(value: unknown): void {
     const value = list[i];
     if (i > 0 && list[i - 1] >= value) invalid();
     if (/^(project|task):[^:]+$/.test(value)) continue;
-    const match = /^(file|folder):([^:]+):(.+)$/.exec(value);
+    const match = /^(file|folder|repository_file|repository_directory):([A-Za-z0-9_.-]+):(.+)$/.exec(value);
     if (!match) invalid();
     const path = match![3];
-    if (path.includes('\\') || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') || path !== path.normalize('NFC')) invalid();
+    if (path.includes('\\') || path.includes(':') || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') || path !== path.normalize('NFC')) invalid();
   }
 }
 function capability(value: unknown): void {
@@ -91,6 +91,7 @@ function mutation(value: unknown): void {
   if (Array.isArray(a.removeMetadataKeys) && a.removeMetadataKeys.some(key => typeof key === 'string' && reservedMetadata(key))) invalid();
   if (a.metadataMode === 'replace' && (!('metadata' in a) || 'removeMetadataKeys' in a)) invalid();
 }
+export function normalizeResourceList(value: unknown): string[] { resources(value); return [...value as string[]]; }
 export function normalizeCommand(value: unknown): Obj {
   const e = object(value); keys(e, ['protocol','vault_scope','authority_id','project_id','issuer_id','operation_id','expected_revision','command']);
   if (e.protocol !== 'task-authority-command/v1') invalid();
@@ -112,7 +113,7 @@ export function normalizeCommand(value: unknown): Obj {
     else if (k === 'expected_status' || k === 'next_status') oneOf(v, ['todo','in_progress','done','cancelled']);
     else text(v);
   }
-  if (c.type === 'commitProgress' && !['todo:in_progress','in_progress:in_progress','in_progress:done'].includes(`${c.expected_status}:${c.next_status}`)) invalid();
+  if (c.type === 'commitProgress' && !['todo:in_progress','in_progress:in_progress','in_progress:done'].includes(`${String(c.expected_status)}:${String(c.next_status)}`)) invalid();
   return JSON.parse(JSON.stringify(e)) as Obj;
 }
 export function normalizeQuery(value: unknown): Obj {
@@ -144,3 +145,39 @@ export type CommandResult = OperationIdentity & CommandOutcome;
 export type QueryResult =
   | { state: 'not_found' | 'prepared' | 'dispatched' | 'started' | 'confirmed' | 'committed' | 'failed' | 'indeterminate' | 'rejected'; revision: number; result: CommandResult | null; error: AuthorityError | null }
   | { admitted: boolean; revision: number; epoch: number; resources: Array<{ resource_id: string; state: 'free' | 'leased' | 'effect_pending' | 'indeterminate'; lease_id: string | null; expires_at: string | null; effect_id: string | null }> };
+
+export function normalizeCommandResult(value: unknown): CommandResult {
+  const r=object(value);text(r.status);
+  const identity=['vault_scope','authority_id','project_id','issuer_id','operation_id','revision'];
+  const statuses:Record<string,string[]>={admitted:['epoch','baseline_hash'],acquired:['epoch','lease_id','expires_at','resources'],renewed:['epoch','lease_id','expires_at'],released:[],dispatched:['epoch','effect_id','dispatch_id'],started:['dispatch_id','effect_id'],confirmed:['effect_id'],rejected:['effect_id'],failed:['effect_id'],indeterminate:['effect_id'],committed:'entity_id' in r?['kind','entity_id']:['effect_id','task_id','receipt_ref']};
+  const fields=statuses[r.status as string];if(!fields || !Object.prototype.hasOwnProperty.call(statuses,r.status as string))invalid();
+  keys(r,[...identity,'status',...fields]);identity.slice(0,-1).forEach(k=>text(r[k]));integer(r.revision);
+  for(const field of fields){if(field==='epoch')integer(r[field]);else if(field==='baseline_hash')hash(r[field]);else if(field==='resources')resources(r[field]);else if(field==='receipt_ref')artifact(r[field]);else{text(r[field]);if(field==='expires_at' && (typeof r[field]!=='string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(r[field]) || !Number.isFinite(Date.parse(r[field]))))invalid();}}
+  return JSON.parse(JSON.stringify(r)) as CommandResult;
+}
+export function normalizeQueryResult(value:unknown):QueryResult {
+  const r=object(value);
+  if('admitted' in r){keys(r,['admitted','revision','epoch','resources']);if(typeof r.admitted!=='boolean')invalid();integer(r.revision);integer(r.epoch);if(!Array.isArray(r.resources))invalid();for(const row of r.resources as unknown[]){const v=object(row);keys(v,['resource_id','state','lease_id','expires_at','effect_id']);resources([v.resource_id]);oneOf(v.state,['free','leased','effect_pending','indeterminate']);for(const k of ['lease_id','expires_at','effect_id'])if(v[k]!==null)text(v[k]);}}
+  else{keys(r,['state','revision','result','error']);oneOf(r.state,['not_found','prepared','dispatched','started','confirmed','committed','failed','indeterminate','rejected']);integer(r.revision);if(r.result!==null)normalizeCommandResult(r.result);if(r.error!==null)oneOf(r.error,['authority_unavailable','revision_conflict','lease_busy','stale_epoch','fence_rejected','operation_signature_conflict','effect_indeterminate','capability_revoked','protocol_incompatible','invalid_command','unauthorized']);}
+  return JSON.parse(JSON.stringify(r)) as QueryResult;
+}
+
+/** Internal same-process readback; never accepted as a wire query. */
+export interface TaskEffectEvidence {
+  protocol:'task-effect-verification/v1';vault_scope:string;authority_id:string;project_id:string;effect_id:string;dispatch_id:string;host_id:string;revision:number;
+  state:'dispatched'|'started'|'confirmed'|'rejected'|'failed'|'indeterminate'|'committed';
+  proposal_ref:ArtifactRef;proposal_hash:string;precondition_hash:string;capability_ref:{id:string;version:number;revision:number;hash:string};
+  receipt_ref:ArtifactRef|null;receipt_hash:string|null;record_operation_id:string|null;record_operation_signature:string|null;
+}
+
+/** Advisory discovery schema; runtime normalization above remains mandatory. */
+export function taskAuthorityEnvelopeSchema(query=false):import('../../../types/schema/JSONSchemaTypes').JSONSchema {
+  type Schema=import('../../../types/schema/JSONSchemaTypes').JSONSchema;
+  const string:Schema={type:'string',minLength:1};const int:Schema={type:'integer',minimum:0};const digest:Schema={type:'string',pattern:'^[a-f0-9]{64}$'};
+  const closed=(properties:Record<string,Schema>,required=Object.keys(properties)):Schema=>({type:'object',properties,required,additionalProperties:false});
+  const ref=closed({artifact_id:string,hash:digest});
+  const field=(name:string):Schema=>name.endsWith('_hash')?digest:name==='epoch'?int:name==='lease_ms'?{type:'integer',minimum:1}:name==='resources'?{type:'array',items:string,minItems:1,uniqueItems:true}:name==='capability_ref'?closed({id:string,version:{type:'integer',minimum:1},revision:{type:'integer',minimum:1},hash:digest}):['proposal_ref','receipt_ref'].includes(name)?ref:name==='evidence_refs'?{type:'array',items:ref,minItems:1}:name==='mutation'?{oneOf:Object.entries(variants).map(([kind,spec])=>closed({kind:{const:kind},arguments:closed(Object.fromEntries([...spec.required,...spec.optional].map(k=>[k,k==='metadata'?{type:'object'}:k==='dueDate'?{type:'number'}:['tags','dependsOn','addDependencies','removeDependencies','removeMetadataKeys','removeNoteLinks'].includes(k)?{type:'array',items:string}:['linkedNotes','addNoteLinks'].includes(k)?{type:'array',items:{oneOf:[string,closed({notePath:string,linkType:{type:'string',enum:['reference','output','input']}},['notePath'])]}}:k==='parentTaskId'&&kind==='moveTask'?{type:['string','null']}:string])),spec.required)}))}:string;
+  const common={protocol:{const:query?'task-authority-query/v1':'task-authority-command/v1'},vault_scope:string,authority_id:string,project_id:string,issuer_id:string};
+  if(query)return {oneOf:[closed({...common,type:{const:'getOperation'},operation_id:string}),closed({...common,type:{const:'getProjectCoordination'}})]};
+  return closed({...common,operation_id:string,expected_revision:int,command:{oneOf:Object.entries(specs).map(([type,fields])=>closed({type:{const:type},...Object.fromEntries(fields.map(name=>[name,field(name)]))}))}});
+}

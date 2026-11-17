@@ -1,3 +1,4 @@
+import { closeTaskAuthorityRuntime } from '../../agents/taskManager/authority/TaskAuthorityRuntime';
 /**
  * Location: src/database/adapters/HybridStorageAdapter.ts
  *
@@ -74,6 +75,7 @@ import { TraceRepository } from '../repositories/TraceRepository';
 import { ConversationRepository } from '../repositories/ConversationRepository';
 import { MessageRepository } from '../repositories/MessageRepository';
 import { ProjectRepository } from '../repositories/ProjectRepository';
+import { TaskCoordinationRepository } from '../repositories/TaskCoordinationRepository';
 import { TaskRepository } from '../repositories/TaskRepository';
 import { ToolOperationRepository } from '../repositories/ToolOperationRepository';
 // Import services
@@ -172,6 +174,8 @@ export class HybridStorageAdapter implements IStorageAdapter {
   private taskRepo!: TaskRepository;
   private toolOperationRepo!: ToolOperationRepository;
 
+  private coordinationRepo: TaskCoordinationRepository;
+
   // Services
   private exportService!: ExportService;
 
@@ -188,8 +192,10 @@ export class HybridStorageAdapter implements IStorageAdapter {
       plugin: this.plugin,
       basePath: this.basePath,
       cacheTTL: options.cacheTTL,
+      getCanonicalDataPath: () => this.vaultEventStore?.getRootPath() ?? null,
       cacheMaxSize: options.cacheMaxSize
     });
+    this.coordinationRepo = assembly.coordinationRepo;
     this.storageCoordinator = assembly.storageCoordinator;
     this.jsonlWriter = assembly.jsonlWriter;
     this.cacheBlobStore = assembly.cacheBlobStore;
@@ -685,6 +691,8 @@ export class HybridStorageAdapter implements IStorageAdapter {
    * Get the task repository instance.
    * Used by TaskService for task operations.
    */
+  get taskCoordination(): TaskCoordinationRepository { return this.coordinationRepo; }
+
   get tasks(): TaskRepository {
     return this.taskRepo;
   }
@@ -720,6 +728,7 @@ export class HybridStorageAdapter implements IStorageAdapter {
       }
 
       this.stopJsonlVaultWatcher();
+      await closeTaskAuthorityRuntime(this);
       this.queryCache.clear();
       await this.sqliteCache.close();
     } catch (error) {

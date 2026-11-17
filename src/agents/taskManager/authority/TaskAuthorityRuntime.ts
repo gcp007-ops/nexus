@@ -1,0 +1,251 @@
+import type { IStorageAdapter } from '../../../database/interfaces/IStorageAdapter';
+import type { TaskCoordinationRepository } from '../../../database/repositories/TaskCoordinationRepository';
+import type { AuthorityProjectState, AuthorityLease, AuthorityEffect, AuthorityJournal, AuthorityReceipt, CoordinationCommittedEvent, OperationalTaskEvent, PriorityAssignment } from '../../../database/repositories/interfaces/ITaskCoordinationRepository';
+import { normalizeCommand, normalizeQuery, normalizeResourceList, type CommandResult, type AuthorityError, type ArtifactRef, type TaskEffectEvidence } from './TaskAuthorityContracts';
+import { authorityHash, canonicalJson, type InteractiveMutation } from './TaskAuthorityPlanning';
+import { serializeAuthority } from '../services/TaskCoordinationService';
+import { TaskAuthorityHttpClient,validateClientConfiguration,type TaskAuthorityClientConfiguration } from './TaskAuthorityHttpClient';
+import { TaskAuthorityHttpsServer,validateServerConfiguration,type TaskAuthorityServerConfiguration } from './TaskAuthorityHttpsServer';
+import { v4 as uuid } from '../../../utils/uuid';
+type Obj = Record<string, unknown>;
+export interface AuthorityAuthorization { resources: string[]; max_lease_ms: number }
+export interface TaskAuthorityHostPort { executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null> }
+export interface TaskAuthorityConfiguration {
+  bindHost?: (port:TaskAuthorityHostPort)=>void;
+  transport?: TaskAuthorityServerConfiguration;
+  protocol: 'task-authority-config/v1'; mode: 'authority'; vault_scope: string; authority_id: string; issuer_id: string; host_id: string;
+  max_lease_ms: number; eligible_project_ids: string[];
+  capabilityValidator(envelope: Obj, effect?: AuthorityEffect): Promise<AuthorityAuthorization>;
+  artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence', envelope: Obj, effect?: AuthorityEffect): Promise<boolean>;
+}
+const errors: AuthorityError[] = ['authority_unavailable','revision_conflict','lease_busy','stale_epoch','fence_rejected','operation_signature_conflict','effect_indeterminate','capability_revoked','protocol_incompatible','invalid_command','unauthorized'];
+function fail(error: AuthorityError): never { throw new Error(error); }
+function copy<T>(x: T): T { return JSON.parse(JSON.stringify(x)) as T; }
+function errorCode(error: unknown): AuthorityError { return error instanceof Error && errors.includes(error.message as AuthorityError) ? error.message as AuthorityError : 'invalid_command'; }
+function same(a: unknown, b: unknown): boolean { return canonicalJson(a) === canonicalJson(b); }
+function overlaps(a: string, b: string): boolean {
+  if (a === b) return true;
+  const parse = (r: string): string[] | null => /^(file|folder|repository_file|repository_directory):([^:]+):(.+)$/.exec(r);
+  const x = parse(a), y = parse(b); if (!x || !y || x[2] !== y[2]) return false;
+  if (x[1].startsWith('repository_') !== y[1].startsWith('repository_')) return false;
+  return ((x[1] === 'folder' || x[1] === 'repository_directory') && (y[3] === x[3] || y[3].startsWith(x[3] + '/'))) || ((y[1] === 'folder' || y[1] === 'repository_directory') && (x[3] === y[3] || x[3].startsWith(y[3] + '/')));
+}
+function validateConfig(value: unknown): TaskAuthorityConfiguration {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid_command');
+  const c = value as Obj;
+  const required = ['protocol','mode','vault_scope','authority_id','issuer_id','host_id','max_lease_ms','eligible_project_ids','capabilityValidator','artifactValidator'];
+  if (Object.keys(c).some(key => !required.includes(key) && !['transport','bindHost'].includes(key)) || required.some(key => !(key in c)) || c.protocol !== 'task-authority-config/v1' || c.mode !== 'authority') fail('invalid_command');
+  for (const key of ['vault_scope','authority_id','issuer_id','host_id']) if (typeof c[key] !== 'string' || !(c[key]).trim()) fail('invalid_command');
+  if (!Number.isSafeInteger(c.max_lease_ms) || (c.max_lease_ms as number) <= 0 || !Array.isArray(c.eligible_project_ids) || c.eligible_project_ids.some(id => typeof id !== 'string' || !id.trim()) || typeof c.capabilityValidator !== 'function' || typeof c.artifactValidator !== 'function') fail('invalid_command');
+  if(c.bindHost!==undefined&&typeof c.bindHost!=='function')fail('invalid_command');
+  if(c.transport!==undefined)validateServerConfiguration(c.transport);
+  return { ...c, eligible_project_ids: [...c.eligible_project_ids as string[]] } as unknown as TaskAuthorityConfiguration;
+}
+/** One shared runtime per storage object. Authentication/eligibility validators
+ * are supplied only by the trusted host integration, never accepted on wire. */
+export class TaskAuthorityRuntime {
+  private config: TaskAuthorityConfiguration | null = null;
+  private client:TaskAuthorityHttpClient|null=null;
+  private clientConfig:TaskAuthorityClientConfiguration|null=null;
+  private server:TaskAuthorityHttpsServer|null=null;
+  private journal: AuthorityJournal | null = null;
+  private epoch = 0;
+  private generation = 0;
+  private suspended = true;
+  private healthy = false;
+  constructor(private readonly storage: IStorageAdapter) {}
+  private repository(): TaskCoordinationRepository { return this.storage.taskCoordination ?? fail('protocol_incompatible'); }
+  async configure(value: unknown): Promise<void> {
+    if(value && typeof value==='object' && (value as Obj).mode==='client') {
+      if(this.config)fail('protocol_incompatible');const config=validateClientConfiguration(value);
+      if(this.storage.waitForQueryReady&&!await this.storage.waitForQueryReady())fail('authority_unavailable');
+      const client=new TaskAuthorityHttpClient(config,this.repository().secretStore());await client.initialize();
+      this.client=client;this.clientConfig=config;this.healthy=true;this.suspended=false;return;
+    }
+    if(this.client)fail('protocol_incompatible');
+    const config = validateConfig(value);
+    if (this.config && !same([this.config.vault_scope,this.config.authority_id], [config.vault_scope,config.authority_id])) fail('protocol_incompatible');
+    await serializeAuthority(config.vault_scope, config.authority_id, async () => {
+      this.suspended = true; this.healthy = false;await this.server?.stop();this.server=null;
+      if (this.storage.waitForQueryReady && !await this.storage.waitForQueryReady()) fail('authority_unavailable');
+      const repo = this.repository(); await repo.replay();
+      const journal = this.journal ?? await repo.journal(config.vault_scope, config.authority_id);
+      await journal.activate();
+      try {
+        const history = await journal.read(); repo.validateHistory(history);
+        const previousEpoch = history.filter(e => e.type === 'task_authority_activated').reduce((n,e) => e.type === 'task_authority_activated' ? e.epoch : n, 0);
+        const epoch = previousEpoch + 1;
+        await journal.append({ type: 'task_authority_activated', protocol: 'task-authority-activation/v1', vaultScope: config.vault_scope, authorityId: config.authority_id, epoch, tokenHash: await authorityHash(uuid()) });
+        this.epoch = epoch; this.generation++;this.config = config; this.journal = journal;
+        await repo.replay(); this.healthy = true; this.suspended = false;
+        const generation=this.generation;config.bindHost?.({executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input)});
+        if(config.transport){const server=new TaskAuthorityHttpsServer(validateServerConfiguration(config.transport),repo.secretStore(),this);await server.start();this.server=server;}
+      } catch (error) { this.suspended=true;this.healthy=false;this.journal = journal; throw error; }
+    });
+  }
+  async suspend(): Promise<{state: 'suspended'; pending_operation_ids: string[]}> {
+    this.suspended = true;
+    await this.server?.stop();this.server=null;
+    if(this.client){const pending=this.client.pendingEnvelope();return {state:'suspended',pending_operation_ids:pending?[String(pending.operation_id)]:[]};}
+    const config = this.config;
+    const collect = async () => ({ state: 'suspended' as const, pending_operation_ids: (await this.repository().allStates()).flatMap(state => Object.values(state.effects).filter(effect => ['dispatched','started','indeterminate'].includes(effect.state)).map(effect => effect.operationId)) });
+    return config ? serializeAuthority(config.vault_scope, config.authority_id, collect) : { state: 'suspended', pending_operation_ids: [] };
+  }
+  /** Lifecycle cleanup does not resolve any pending external effect. */
+  async close(): Promise<void> { await this.suspend(); const config = this.config; if (config && this.journal) await serializeAuthority(config.vault_scope, config.authority_id, () => this.journal!.deactivate()); this.healthy = false; }
+  async isAdmitted(projectId: string): Promise<boolean> { if (this.storage.waitForQueryReady && !await this.storage.waitForQueryReady()) fail('authority_unavailable'); await this.repository().replay();if(this.client&&this.clientConfig){const c=this.clientConfig;const status=await this.client.query({protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:projectId,issuer_id:c.issuer_id}) as {admitted:boolean};if(!status.admitted&&await this.repository().isAdmitted(projectId))fail('fence_rejected');return status.admitted;} return this.repository().isAdmitted(projectId); }
+  private scope(envelope: Obj, query = false, authenticatedIssuer?: string): TaskAuthorityConfiguration {
+    const c = this.config; if (!c || !this.healthy || !this.journal) fail('authority_unavailable');
+    if (envelope.vault_scope !== c.vault_scope || envelope.authority_id !== c.authority_id) fail('unauthorized');
+    const command = envelope.command as Obj | undefined;
+    const hostOnly = command && ['beginEffect','recordEffect'].includes(String(command.type));
+    const issuer = authenticatedIssuer ?? c.issuer_id;
+    if (envelope.issuer_id !== issuer || (!query && hostOnly && issuer !== c.host_id)) fail('unauthorized');
+    return c;
+  }
+  async query(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
+    const e = normalizeQuery(value);if(this.client)return this.client.query(e); const c = this.scope(e, true, authenticatedIssuer);
+    return serializeAuthority(c.vault_scope, c.authority_id, async () => {
+      await this.repository().replay(); const state = await this.repository().getState(e.project_id as string);
+      if (e.type === 'getOperation') { const receipt = await this.repository().getReceipt(e.project_id as string,e.issuer_id as string,e.operation_id as string); const result = receipt?.result ?? null; return { state: receipt?.error ? 'rejected' : result ? result.status === 'admitted' || result.status === 'acquired' || result.status === 'renewed' || result.status === 'released' ? 'committed' : result.status === 'confirmed' ? 'confirmed' : result.status === 'started' ? 'started' : result.status === 'dispatched' ? 'dispatched' : result.status : 'not_found', revision: state?.revision ?? 0, result, error: receipt?.error ?? null }; }
+      const resources = state ? this.resourceView(state) : [];
+      return { admitted: state?.admitted ?? false, revision: state?.revision ?? 0, epoch: this.epoch, resources };
+    });
+  }
+  private resourceView(state: AuthorityProjectState): unknown[] {
+    const map = new Map<string, unknown>();
+    for (const lease of Object.values(state.leases)) for (const resource of lease.resources) { const effect = Object.values(state.effects).find(e => e.leaseId === lease.id && ['dispatched','started','confirmed','indeterminate'].includes(e.state)); const live = lease.epoch === this.epoch && lease.expiresAt > Date.now(); map.set(resource, {resource_id: resource,state: effect ? effect.state === 'indeterminate' ? 'indeterminate' : 'effect_pending' : live ? 'leased' : 'free',lease_id: effect || live ? lease.id : null,expires_at: effect || live ? new Date(lease.expiresAt).toISOString() : null,effect_id: effect?.id ?? null}); }
+    return [...map.values()];
+  }
+  async executeCommand(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
+    const e = normalizeCommand(value);if(this.client){if(this.suspended&&['admitProject','acquireUnit','renewLease','dispatchEffect','beginEffect','interactiveMutation'].includes(String((e.command as Obj).type)))fail('authority_unavailable');return this.client.executeCommand(e);} const c = this.scope(e, false, authenticatedIssuer);
+    return serializeAuthority(c.vault_scope, c.authority_id, async () => {
+      const repo = this.repository();
+      try { await this.journal!.assertActive(); await repo.replay(); } catch { this.healthy = false; fail('authority_unavailable'); }
+      const signature = await authorityHash(e); const projectId = e.project_id as string; const issuer = e.issuer_id as string; const operation = e.operation_id as string;
+      const old = await repo.getReceipt(projectId, issuer, operation);
+      if (old) { if (old.signature !== signature) fail('operation_signature_conflict'); if (old.error) fail(old.error); return old.result; }
+      const previous = await repo.getState(projectId); const base = previous ?? {admitted:false, revision:0,epoch:this.epoch,baselineHash:await repo.currentHash(projectId),operationalHash:await repo.currentHash(projectId),leases:{},effects:{}};
+      let state = copy(base); let delta: OperationalTaskEvent[] = []; let priorityAssignment:PriorityAssignment|undefined; let result: CommandResult | null = null; let error: AuthorityError | null = null;
+      try {
+        if (e.expected_revision !== base.revision) fail('revision_conflict');
+        const command = e.command as Obj;
+        if (this.suspended && ['admitProject','acquireUnit','renewLease','dispatchEffect','beginEffect','interactiveMutation'].includes(String(command.type))) fail('authority_unavailable');
+        const outcome = await this.reduce(c,e,state);
+        state = outcome.state; delta = outcome.delta; priorityAssignment = outcome.priorityAssignment;
+        state.revision = base.revision + 1;
+        result = {vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:projectId,issuer_id:issuer,operation_id:operation,revision:state.revision,...outcome.result} as CommandResult;
+      } catch (caught) { error = errorCode(caught); state = copy(base); delta = []; }
+      const receipt: AuthorityReceipt = {...(priorityAssignment?{priorityAssignment}:{}),signature,revision:state.revision,result,error};
+      const event: CoordinationCommittedEvent = {id:uuid(),deviceId:'task-authority',timestamp:Date.now(),type:'project_coordination_committed',protocol:'task-coordination-event/v1',vaultScope:c.vault_scope,authorityId:c.authority_id,projectId,previousRevision:base.revision,revision:state.revision,operationKey:JSON.stringify([issuer,operation]),signature,issuerId:issuer,operationId:operation,state,receipt,delta};
+      try { await this.journal!.append(event); await repo.apply(event); }
+      catch { this.healthy = false; this.suspended = true; fail('authority_unavailable'); }
+      if (error) fail(error); return result;
+    });
+  }
+  private async reduce(c: TaskAuthorityConfiguration, e: Obj, state: AuthorityProjectState): Promise<{state: AuthorityProjectState; delta: OperationalTaskEvent[]; result: Obj;priorityAssignment?: PriorityAssignment}> {
+    const cmd = e.command as Obj; const project = e.project_id as string; const issuer = e.issuer_id as string; const now = Date.now();
+    let priorityAssignment:PriorityAssignment|undefined; let delta: OperationalTaskEvent[] = []; let result: Obj;
+    if (cmd.type === 'admitProject') {
+      if (state.admitted || !c.eligible_project_ids.includes(project) || cmd.baseline_hash !== await this.repository().currentHash(project)) fail('fence_rejected');
+      state.admitted = true; state.epoch = this.epoch; state.baselineHash = cmd.baseline_hash; state.operationalHash = state.baselineHash;
+      result = {status:'admitted',epoch:this.epoch,baseline_hash:state.baselineHash}; return {state,delta,result};
+    }
+    if (!state.admitted) fail('protocol_incompatible');
+    const pending = (effect: AuthorityEffect): boolean => ['dispatched','started','confirmed','indeterminate'].includes(effect.state);
+    const requireLease = (allowExpired = false): AuthorityLease => { const lease = state.leases[String(cmd.lease_id)]; if (!lease || lease.issuer !== issuer || lease.epoch !== cmd.epoch || cmd.epoch !== this.epoch) fail('stale_epoch'); if (!allowExpired && lease.expiresAt <= now) fail('stale_epoch'); return lease; };
+    const busy = async (resources: string[], ownLease?: string): Promise<boolean> => {
+      for (const other of await this.repository().allStates()) for (const lease of Object.values(other.leases)) {
+        if (lease.id === ownLease) continue;
+        const inflight = Object.values(other.effects).some(effect => effect.leaseId === lease.id && pending(effect));
+        if ((inflight || lease.expiresAt > now) && resources.some(a => lease.resources.some(b => overlaps(a,b)))) return true;
+      }
+      return false;
+    };
+    const authorization = async (effect?: AuthorityEffect): Promise<AuthorityAuthorization> => {
+      let auth: AuthorityAuthorization; try { auth = await c.capabilityValidator(e,effect); } catch { fail('capability_revoked'); }
+      if (!auth || !Array.isArray(auth.resources) || !Number.isSafeInteger(auth.max_lease_ms) || auth.max_lease_ms <= 0 || auth.resources.some(r => typeof r !== 'string')) fail('capability_revoked');
+      try { normalizeResourceList(auth.resources); } catch { fail('capability_revoked'); }
+      return auth;
+    };
+    const artifact = async (ref: unknown, kind: 'proposal'|'receipt'|'evidence', effect?:AuthorityEffect): Promise<void> => { let valid=false; try {valid=await c.artifactValidator(ref as ArtifactRef,kind,e,effect);} catch { /* refuse */ } if (!valid) fail('fence_rejected'); };
+    if (cmd.type === 'interactiveMutation') {
+      const mutation = cmd.mutation as InteractiveMutation;
+      const derived = [`project:${project}`]; const task = mutation.arguments.taskId; if (typeof task === 'string') derived.push(`task:${task}`);
+      if (typeof mutation.arguments.parentTaskId === 'string') derived.push(`task:${mutation.arguments.parentTaskId}`);
+      for (const id of (mutation.arguments.dependsOn ?? []) as string[]) derived.push(`task:${id}`);
+      for (const id of (mutation.arguments.addDependencies ?? []) as string[]) derived.push(`task:${id}`);
+      for (const id of (mutation.arguments.removeDependencies ?? []) as string[]) derived.push(`task:${id}`);
+      const resources = [...new Set(derived)].sort();
+      if (!same(resources,cmd.resources)) fail('fence_rejected');
+      if (await busy(resources)) fail('lease_busy');
+      const explicitPriority=mutation.arguments.priority;
+      const decisionRef='task-authority-decision/v1/'+[c.vault_scope,c.authority_id,project,issuer,String(e.operation_id)].map(encodeURIComponent).join('/');
+      const provenance=typeof explicitPriority==='string'?{value:explicitPriority,decision_ref:decisionRef,source_operation_id:String(e.operation_id)}:undefined;
+      const prepared = await this.repository().prepare(project,mutation,provenance);
+      if(provenance)priorityAssignment={taskId:prepared.entityId,value:provenance.value,decisionRef}; delta = prepared.delta; state.operationalHash = prepared.operationalHash;
+      result = {status:'committed',kind:mutation.kind,entity_id:prepared.entityId};
+    } else if (cmd.type === 'acquireUnit') {
+      await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id);
+      const auth = await authorization(); const required = [`project:${project}`,`task:${String(cmd.task_id)}`];
+      if (!same(auth.resources,cmd.resources) || required.some(r => !auth.resources.includes(r)) || (cmd.lease_ms as number) > Math.min(c.max_lease_ms,auth.max_lease_ms)) fail('fence_rejected');
+      if (await busy(auth.resources)) fail('lease_busy');
+      const lease: AuthorityLease = {id:uuid(),issuer,epoch:this.epoch,taskId:String(cmd.task_id),expiresAt:now+(cmd.lease_ms as number),maxLeaseMs:Math.min(c.max_lease_ms,auth.max_lease_ms),resources:[...auth.resources]}; state.leases[lease.id] = lease; state.epoch=this.epoch;
+      result={status:'acquired',epoch:this.epoch,lease_id:lease.id,expires_at:new Date(lease.expiresAt).toISOString(),resources:lease.resources};
+    } else if (cmd.type === 'renewLease') {
+      const lease = requireLease(); if ((cmd.lease_ms as number) > Math.min(c.max_lease_ms,lease.maxLeaseMs)) fail('fence_rejected'); lease.expiresAt = now+(cmd.lease_ms as number);
+      result={status:'renewed',epoch:this.epoch,lease_id:lease.id,expires_at:new Date(lease.expiresAt).toISOString()};
+    } else if (cmd.type === 'releaseLease') {
+      const lease = requireLease(); if (Object.values(state.effects).some(effect => effect.leaseId === lease.id && pending(effect))) fail('effect_indeterminate'); delete state.leases[lease.id]; result={status:'released'};
+    } else if (cmd.type === 'dispatchEffect') {
+      const lease = requireLease(); const auth=await authorization();
+      if ((await this.repository().allStates()).some(other=>Object.prototype.hasOwnProperty.call(other.effects,String(cmd.effect_id)))) fail('fence_rejected');
+      if (!same(lease.resources,cmd.resources) || !same(auth.resources,cmd.resources) || Object.values(state.effects).some(effect => effect.leaseId===lease.id && pending(effect)) || (Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined)) fail('fence_rejected');
+      await artifact(cmd.proposal_ref,'proposal');
+      const effect: AuthorityEffect={id:String(cmd.effect_id),operationId:String(e.operation_id),dispatchId:uuid(),leaseId:lease.id,issuer,hostId:c.host_id,proposalHash:String(cmd.proposal_hash),preconditionHash:String(cmd.precondition_hash),capabilityRef:cmd.capability_ref,proposalRef:cmd.proposal_ref,lastRevision:state.revision+1,resources:lease.resources,state:'dispatched'}; state.effects={...state.effects,[effect.id]:effect};
+      result={status:'dispatched',epoch:this.epoch,effect_id:effect.id,dispatch_id:effect.dispatchId};
+    } else if (cmd.type === 'beginEffect') {
+      const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined); const lease=state.leases[String(cmd.lease_id)];
+      if (!effect || !lease || effect.dispatchId!==cmd.dispatch_id || effect.leaseId!==lease.id || effect.hostId!==issuer || cmd.host_id!==issuer || cmd.epoch!==this.epoch || lease.epoch!==this.epoch || lease.expiresAt<=now || effect.state!=='dispatched' || effect.proposalHash!==cmd.proposal_hash) fail('fence_rejected');
+      await authorization(effect); await artifact(effect.proposalRef,'proposal',effect);
+      effect.state='started';effect.lastRevision=state.revision+1; result={status:'started',dispatch_id:effect.dispatchId,effect_id:effect.id};
+    } else if (cmd.type === 'recordEffect') {
+      const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined); if (!effect || effect.dispatchId!==cmd.dispatch_id || effect.hostId!==issuer || !['started','indeterminate'].includes(effect.state)) fail('fence_rejected');
+      await artifact(cmd.receipt_ref,'receipt',effect); if ((cmd.receipt_ref as ArtifactRef).hash!==cmd.receipt_hash) fail('fence_rejected');
+      effect.state=cmd.result==='applied'?'confirmed':cmd.result==='base_conflict'?'rejected':cmd.result==='failed'?'failed':'indeterminate'; effect.receiptRef=cmd.receipt_ref as ArtifactRef;effect.recordOperationId=String(e.operation_id);effect.recordOperationSignature=await authorityHash(e);effect.recordRevision=state.revision+1;effect.lastRevision=state.revision+1;
+      result={status:effect.state,effect_id:effect.id};
+    } else if (cmd.type === 'commitProgress') {
+      const lease=requireLease(); const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined);
+      if (!effect || effect.state!=='confirmed' || effect.leaseId!==lease.id || lease.taskId!==cmd.task_id || !same(effect.receiptRef,cmd.receipt_ref)) fail('fence_rejected');
+      await authorization(effect); await artifact(cmd.receipt_ref,'receipt',effect); for (const ref of cmd.evidence_refs as ArtifactRef[]) await artifact(ref,'evidence');
+      await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id); const task=await this.repository().requireTask(project,String(cmd.task_id)); if (task.status!==cmd.expected_status) fail('revision_conflict');
+      const prepared=await this.repository().prepare(project,{kind:'updateTask',arguments:{taskId:cmd.task_id,status:cmd.next_status,metadata:{dream_effect_receipt_v1:{effect_id:effect.id,receipt_ref:cmd.receipt_ref,evidence_refs:cmd.evidence_refs}}}});
+      delta=prepared.delta; state.operationalHash=prepared.operationalHash; effect.state='committed';effect.lastRevision=state.revision+1; result={status:'committed',effect_id:effect.id,task_id:cmd.task_id,receipt_ref:cmd.receipt_ref};
+    } else fail('protocol_incompatible');
+    return {state,delta,result,priorityAssignment};
+  }
+  async readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>{
+    if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,project_id'||Object.values(input).some(v=>typeof v!=='string'||!v.trim()))fail('invalid_command');
+    if(this.client)fail('protocol_incompatible');const c=this.config;if(!c)fail('authority_unavailable');
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.repository().getState(input.project_id);const effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
+      if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');
+      return {protocol:'task-effect-verification/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,host_id:effect.hostId,revision:effect.recordRevision??effect.lastRevision,state:effect.state,proposal_ref:copy(effect.proposalRef) as ArtifactRef,proposal_hash:effect.proposalHash,precondition_hash:effect.preconditionHash,capability_ref:copy(effect.capabilityRef) as TaskEffectEvidence['capability_ref'],receipt_ref:effect.receiptRef?copy(effect.receiptRef):null,receipt_hash:effect.receiptRef?.hash??null,record_operation_id:effect.recordOperationId??null,record_operation_signature:effect.recordOperationSignature??null};
+    });
+  }
+  async routeInteractiveMutation(input: {projectId:string;mutation:InteractiveMutation}): Promise<unknown> {
+    if(this.client&&this.clientConfig){
+      const pending=this.client.pendingEnvelope();if(pending){if(!same((pending.command as Obj).mutation,input.mutation)||pending.project_id!==input.projectId)fail('effect_indeterminate');return this.client.executeCommand(pending);}
+      const c=this.clientConfig;const status=await this.client.query({protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.projectId,issuer_id:c.issuer_id}) as {revision:number;admitted:boolean};if(!status.admitted)fail('protocol_incompatible');
+      const a=input.mutation.arguments;const resources=[`project:${input.projectId}`];if(typeof a.taskId==='string')resources.push(`task:${a.taskId}`);if(typeof a.parentTaskId==='string')resources.push(`task:${a.parentTaskId}`);for(const id of [...((a.dependsOn??[]) as string[]),...((a.addDependencies??[]) as string[]),...((a.removeDependencies??[]) as string[])])resources.push(`task:${id}`);
+      return this.executeCommand({protocol:'task-authority-command/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.projectId,issuer_id:c.issuer_id,operation_id:uuid(),expected_revision:status.revision,command:{type:'interactiveMutation',resources:[...new Set(resources)].sort(),mutation:input.mutation}});
+    }
+    const c=this.config;if(!c) fail('authority_unavailable'); const state=await this.repository().getState(input.projectId); if(!state?.admitted) fail('protocol_incompatible');
+    const a=input.mutation.arguments; const resources=[`project:${input.projectId}`]; if(typeof a.taskId==='string')resources.push(`task:${a.taskId}`);if(typeof a.parentTaskId==='string')resources.push(`task:${a.parentTaskId}`);for(const id of [...((a.dependsOn??[]) as string[]),...((a.addDependencies??[]) as string[]),...((a.removeDependencies??[]) as string[])])resources.push(`task:${id}`);
+    const result=await this.executeCommand({protocol:'task-authority-command/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.projectId,issuer_id:c.issuer_id,operation_id:uuid(),expected_revision:state.revision,command:{type:'interactiveMutation',resources:[...new Set(resources)].sort(),mutation:input.mutation}}) as CommandResult;
+    return result;
+  }
+}
+const runtimes = new WeakMap<IStorageAdapter,TaskAuthorityRuntime>();
+export function getTaskAuthorityRuntime(storage: IStorageAdapter): TaskAuthorityRuntime { let runtime=runtimes.get(storage);if(!runtime){runtime=new TaskAuthorityRuntime(storage);runtimes.set(storage,runtime);}return runtime; }
+
+export async function closeTaskAuthorityRuntime(storage:IStorageAdapter):Promise<void>{await runtimes.get(storage)?.close();}

@@ -4,6 +4,7 @@ import { resolveWorkspaceId } from '../../../database/sync/resolveWorkspaceId';
 import { TaskBoardEvents } from '../../../services/task/TaskBoardEvents';
 import { DAGService } from './DAGService';
 import { TaskService } from './TaskService';
+import { getTaskAuthorityRuntime } from '../authority/TaskAuthorityRuntime';
 
 const services = new WeakMap<HybridStorageAdapter, TaskService>();
 
@@ -25,6 +26,7 @@ export function getSharedTaskService(adapter: HybridStorageAdapter): TaskService
     async () => typeof adapter.waitForQueryReady === 'function'
       ? adapter.waitForQueryReady()
       : adapter.isReady(),
+    getTaskAuthorityRuntime(adapter),
   );
   services.set(adapter, service);
   return service;

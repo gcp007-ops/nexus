@@ -113,6 +113,8 @@ export const TOOL_EXECUTION_POLICY_CATALOG: Readonly<Record<string, Readonly<Too
   'taskManager/move': vaultWrite,
   'taskManager/open': readSerial,
   'taskManager/query': readParallel,
+  'taskManager/coordinationStatus': readParallel,
+  'taskManager/coordinateProject': vaultWrite,
   'taskManager/update': vaultWrite,
   'taskManager/updateProject': vaultWrite,
 
