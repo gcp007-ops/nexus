@@ -88,5 +88,12 @@ try{
   if(status.status!==0)throw Error(status.stdout+status.stderr);const publicResult=JSON.parse(status.stdout);if(!publicResult.success||publicResult.result.epoch!==2)throw Error(status.stdout);step('public CLI after restart',publicResult);
   const receipt=evaluate(async()=>{const{service,fixture:f}=window.__authorityQA;return service.getTaskAuthority().query({protocol:'task-authority-query/v1',type:'getOperation',vault_scope:f.scope,authority_id:f.authority,project_id:f.p,issuer_id:f.human,operation_id:'create-once'});});
   if(receipt.result?.entity_id!==report.steps[0].result.receipt.entity_id)throw Error('Receipt changed across restart');step('durable receipt after restart',receipt);
+  step('real WASM cache reconstruction',evaluate(async()=>{
+    const c=window.__authorityQA,f=c.fixture,a=c.service.getTaskAuthority(),query={protocol:'task-authority-query/v1',type:'getOperation',vault_scope:f.scope,authority_id:f.authority,project_id:f.p,issuer_id:f.human,operation_id:'create-once'};
+    const before=await a.query(query),suspension=await c.service.suspendTaskAuthority();await c.adapter.rebuildCache();
+    const after=await a.query(query),source=await window.__authorityQAHost.readProjectSnapshot({project_id:f.p});let error;try{await c.service.updateTask(f.t,{title:'Forbidden while suspended'});}catch(e){error=e.message;}
+    if(JSON.stringify(before)!==JSON.stringify(after)||source.tasks.length!==2||error!=='authority_unavailable')throw Error('Rebuild lost receipt/source or bypassed suspension');
+    return{suspension,receipt:after,source_revision:source.revision,task_count:source.tasks.length,suspended_mutation_error:error};
+  }));
   report.state='passed';report.finished_at=new Date().toISOString();save();console.log(JSON.stringify({state:report.state,proof:join(artifacts,'authority-app-proof.json')}));
 }catch(error){report.state='failed';report.error=String(error);save();console.error(error);process.exitCode=1;}
