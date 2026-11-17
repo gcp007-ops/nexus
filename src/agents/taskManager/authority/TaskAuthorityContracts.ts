@@ -125,3 +125,22 @@ export function normalizeQuery(value: unknown): Obj {
   base.slice(2).forEach(k => text(e[k])); if (e.type === 'getOperation') text(e.operation_id);
   return JSON.parse(JSON.stringify(e)) as Obj;
 }
+
+/** Public wire response types. Producers must also validate these at the trust boundary. */
+export type AuthorityError = 'authority_unavailable' | 'revision_conflict' | 'lease_busy' | 'stale_epoch' | 'fence_rejected' | 'operation_signature_conflict' | 'effect_indeterminate' | 'capability_revoked' | 'protocol_incompatible' | 'invalid_command' | 'unauthorized';
+export interface OperationIdentity { vault_scope: string; authority_id: string; project_id: string; issuer_id: string; operation_id: string; revision: number }
+export type CommandOutcome =
+  | { status: 'admitted'; epoch: number; baseline_hash: string }
+  | { status: 'acquired'; epoch: number; lease_id: string; expires_at: string; resources: string[] }
+  | { status: 'renewed'; epoch: number; lease_id: string; expires_at: string }
+  | { status: 'released' }
+  | { status: 'dispatched'; epoch: number; effect_id: string; dispatch_id: string }
+  | { status: 'started'; dispatch_id: string; effect_id: string }
+  | { status: 'confirmed' | 'rejected' | 'failed' | 'indeterminate'; effect_id: string }
+  | { status: 'committed'; effect_id: string; task_id: string; receipt_ref: ArtifactRef }
+  | { status: 'committed'; kind: string; entity_id: string };
+export interface ArtifactRef { artifact_id: string; hash: string }
+export type CommandResult = OperationIdentity & CommandOutcome;
+export type QueryResult =
+  | { state: 'not_found' | 'prepared' | 'dispatched' | 'started' | 'confirmed' | 'committed' | 'failed' | 'indeterminate' | 'rejected'; revision: number; result: CommandResult | null; error: AuthorityError | null }
+  | { admitted: boolean; revision: number; epoch: number; resources: Array<{ resource_id: string; state: 'free' | 'leased' | 'effect_pending' | 'indeterminate'; lease_id: string | null; expires_at: string | null; effect_id: string | null }> };
