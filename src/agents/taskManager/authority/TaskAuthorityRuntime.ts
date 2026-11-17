@@ -13,6 +13,7 @@ type Obj = Record<string, unknown>;
 export interface AuthorityAuthorization { resources: string[]; max_lease_ms: number }
 export interface TaskAuthorityHostPort { closureCommand(envelope:unknown):Promise<unknown>;readClosure(input:{project_id:string;closure_id:string;operation_id?:string}):Promise<unknown>;readProjectSnapshot(input:{project_id:string}):Promise<TaskProjectSource>;readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>; executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>; recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown> }
 export interface ConfirmedEffectRecovery {project_id:string;effect_id:string;dispatch_id:string;operation_id:string;proof_ref:ArtifactRef;lease_ms:number}
+export interface TaskArtifactValidationContext {authority_source:TaskProjectSource}
 export interface TaskAuthorityConfiguration {
   bindHost?: (port:TaskAuthorityHostPort)=>void;
   transport?: TaskAuthorityServerConfiguration;
@@ -23,7 +24,7 @@ export interface TaskAuthorityConfiguration {
   closure_timeout_ms?:number;
   closureValidator?(request:ClosureValidationRequest):Promise<ClosureAuthorization>;
   capabilityValidator(envelope: Obj, effect?: AuthorityEffect): Promise<AuthorityAuthorization>;
-  artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence' | 'recovery', envelope: Obj, effect?: AuthorityEffect): Promise<boolean>;
+  artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence' | 'recovery', envelope: Obj, effect?: AuthorityEffect, validationContext?:TaskArtifactValidationContext): Promise<boolean>;
 }
 const errors: AuthorityError[] = ['authority_unavailable','revision_conflict','lease_busy','stale_epoch','fence_rejected','operation_signature_conflict','effect_indeterminate','capability_revoked','protocol_incompatible','invalid_command','unauthorized'];
 function fail(error: AuthorityError): never { throw new Error(error); }
@@ -245,7 +246,8 @@ export class TaskAuthorityRuntime {
       try { normalizeResourceList(auth.resources); } catch { fail('capability_revoked'); }
       return auth;
     };
-    const artifact = async (ref: unknown, kind: 'proposal'|'receipt'|'evidence', effect?:AuthorityEffect): Promise<void> => { let valid=false; try {valid=await (effect?.subject?finiteClosure(()=>c.artifactValidator(ref as ArtifactRef,kind,e,effect),c.closure_timeout_ms):c.artifactValidator(ref as ArtifactRef,kind,e,effect));} catch { /* refuse */ } if (!valid) fail('fence_rejected'); };
+    let validationContext:TaskArtifactValidationContext|undefined;
+    const artifact = async (ref: unknown, kind: 'proposal'|'receipt'|'evidence', effect?:AuthorityEffect): Promise<void> => { let valid=false; try {const context=validationContext?copy(validationContext):undefined;valid=await (effect?.subject?finiteClosure(()=>c.artifactValidator(ref as ArtifactRef,kind,e,effect,context),c.closure_timeout_ms):c.artifactValidator(ref as ArtifactRef,kind,e,effect,context));} catch { /* refuse */ } if (!valid) fail('fence_rejected'); };
     if (cmd.type === 'interactiveMutation') {
       const mutation = cmd.mutation as InteractiveMutation;
       const derived = [`project:${project}`]; const task = mutation.arguments.taskId; if (typeof task === 'string') derived.push(`task:${task}`);
@@ -299,7 +301,11 @@ export class TaskAuthorityRuntime {
     } else if (cmd.type === 'commitProgress') {
       const lease=requireLease(); const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined);
       if (!effect || effect.subject || lease.subject || effect.state!=='confirmed' || effect.leaseId!==lease.id || lease.taskId!==cmd.task_id || !same(effect.receiptRef,cmd.receipt_ref)) fail('fence_rejected');
+      const sourceRows=await this.repository().operationalSource(project) as Obj[][];
+      const sourceHash=await authorityHash(sourceRows);if(sourceHash!==state.operationalHash||sourceRows[0]?.length!==1)fail('fence_rejected');
+      validationContext={authority_source:{protocol:'task-project-source/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:project,revision:state.revision,operational_hash:sourceHash,complete:true,project:sourceRows[0][0],tasks:sourceRows[1],dependencies:sourceRows[2],note_links:sourceRows[3],external_children:sourceRows[4]??[]}};
       await authorization(effect); await artifact(cmd.receipt_ref,'receipt',effect); for (const ref of cmd.evidence_refs as ArtifactRef[]) await artifact(ref,'evidence');
+      if(await this.repository().currentHash(project)!==sourceHash||(await this.repository().getState(project))?.revision!==state.revision)fail('fence_rejected');
       await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id); const task=await this.repository().requireTask(project,String(cmd.task_id)); if (task.status!==cmd.expected_status) fail('revision_conflict');
       const prepared=await this.repository().prepare(project,{kind:'updateTask',arguments:{taskId:cmd.task_id,status:cmd.next_status,metadata:{dream_effect_receipt_v1:{effect_id:effect.id,receipt_ref:cmd.receipt_ref,evidence_refs:cmd.evidence_refs}}}});
       delta=prepared.delta; state.operationalHash=prepared.operationalHash; effect.state='committed';effect.lastRevision=state.revision+1; result={status:'committed',effect_id:effect.id,task_id:cmd.task_id,receipt_ref:cmd.receipt_ref};
