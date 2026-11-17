@@ -12,3 +12,8 @@ describe('coordination cache schema', () => {
     }
   });
 });
+
+import { fixture } from '../helpers/taskAuthorityFixture';
+describe('strict canonical history validation',()=>{
+  it('accepts byte-identical duplicates but rejects a revision gap and conflicting duplicate',async()=>{const f=await fixture();try{await f.admit();const history=await(await f.repository.journal('v','a')).read();const event=history.find(item=>item.type==='project_coordination_committed');if(!event||event.type!=='project_coordination_committed')throw new Error('missing event');expect(()=>f.repository.validateHistory([...history,event])).not.toThrow();expect(()=>f.repository.validateHistory([...history,{...event,revision:3,previousRevision:2,operationId:'new',operationKey:'["human","new"]',state:{...event.state,revision:3},receipt:{...event.receipt,revision:3}}])).toThrow('revision gap');expect(()=>f.repository.validateHistory([...history,{...event,id:'different'}])).toThrow('conflicting');}finally{await f.cleanup();}});
+});

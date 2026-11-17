@@ -29,7 +29,7 @@ export class TaskAuthorityHttpClient {
       if(new TextEncoder().encode(response.text).byteLength>this.config.max_request_bytes)throw new Error('protocol_incompatible');return response.json as unknown;
     }finally{if(timer)window.clearTimeout(timer);}
   }
-  async query(value:unknown):Promise<unknown>{const e=normalizeQuery(value);return normalizeQueryResult(await this.send('/v1/task-authority/query',e));}
+  async query(value:unknown):Promise<unknown>{const e=normalizeQuery(value);const response=normalizeQueryResult(await this.send('/v1/task-authority/query',e));if(e.type==='getOperation'&&'result' in response&&response.result){for(const k of ['vault_scope','authority_id','project_id','issuer_id','operation_id'])if(response.result[k as keyof CommandResult]!==e[k])throw new Error('protocol_incompatible');}return response;}
   async executeCommand(value:unknown):Promise<unknown>{const e=normalizeCommand(value);this.scope(e);const key=JSON.stringify([e.project_id,e.issuer_id,e.operation_id]);const signature=canonicalJson(e);
     if(this.pending && canonicalJson(this.pending)!==signature)throw new Error('effect_indeterminate');
     const old=this.uncertain.get(key);if(old){if(old!==signature)throw new Error('operation_signature_conflict');const result=await this.query({protocol:'task-authority-query/v1',type:'getOperation',vault_scope:e.vault_scope,authority_id:e.authority_id,project_id:e.project_id,issuer_id:e.issuer_id,operation_id:e.operation_id}) as {result:CommandResult|null;error:string|null};if(result.error){this.forget();this.uncertain.delete(key);throw new Error(result.error);}if(result.result){this.forget();this.uncertain.delete(key);return result.result;}throw new Error('effect_indeterminate');}

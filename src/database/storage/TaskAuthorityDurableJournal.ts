@@ -14,6 +14,7 @@ export class TaskAuthorityDurableJournal implements AuthorityJournal {
     if (this.token) { await this.assertActive(); return; }
     const { fs, crypto } = this.modules();
     await fs.mkdir(this.directory, { recursive: true });
+    if(await fs.realpath(this.directory)!==this.directory)throw new Error('authority storage symlink');
     // Flush the directory link as well as its content before claiming ownership.
     const path = desktopRequire<typeof import('node:path')>('node:path');
     const parent = await fs.open(path.dirname(this.directory), 'r'); try { await parent.sync(); } finally { await parent.close(); }
@@ -45,7 +46,8 @@ export class TaskAuthorityDurableJournal implements AuthorityJournal {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const row = { type: 'task_authority_journal/v1', sequence, previousHash: prior, event };
     const hash = crypto.createHash('sha256').update(canonicalJson(row)).digest('hex');
-    const handle = await fs.open(`${this.directory}/events.jsonl`, 'a', 0o600);
+    const flags=desktopRequire<typeof import('node:fs')>('node:fs').constants;
+    const handle = await fs.open(`${this.directory}/events.jsonl`, flags.O_WRONLY|flags.O_CREAT|flags.O_APPEND|flags.O_NOFOLLOW, 0o600);
     try { await handle.writeFile(JSON.stringify({ ...row, hash }) + '\n'); await handle.sync(); } finally { await handle.close(); }
     await this.flushDirectory();
   }

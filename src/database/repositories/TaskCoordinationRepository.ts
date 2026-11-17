@@ -50,6 +50,7 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
     if (!root.startsWith(vault + path.sep)) throw new Error('authority storage escapes vault');
     const authorityRoot = path.join(root, 'task-authority');
     await fs.mkdir(authorityRoot, { recursive: true });
+    const rootHandle=await fs.open(root,'r');try{await rootHandle.sync();}finally{await rootHandle.close();}
     if (await fs.realpath(authorityRoot) !== authorityRoot) throw new Error('authority storage symlink');
     return new TaskAuthorityDurableJournal(path.join(authorityRoot, await authorityHash([vaultScope, authorityId])));
   }
@@ -88,7 +89,7 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
   }
   validateHistory(events: AuthorityJournalEvent[]): void {
     let epoch = 0; let scope: string | undefined; let authority: string | undefined;
-    const states = new Map<string, AuthorityProjectState>(); const receipts = new Map<string, AuthorityReceipt>();
+    const states = new Map<string, AuthorityProjectState>(); const receipts = new Map<string, AuthorityReceipt>(); const seenEvents=new Map<string,string>();
     for (const event of events) {
       if (!event || typeof event !== 'object' || !event.vaultScope || !event.authorityId) throw new Error('invalid authority event');
       scope ??= event.vaultScope; authority ??= event.authorityId;
@@ -100,18 +101,19 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
       if (event.type !== 'project_coordination_committed' || event.protocol !== 'task-coordination-event/v1' || !epoch || !event.state || !event.receipt || !Array.isArray(event.delta) || !event.projectId || !event.id || !event.issuerId || !event.operationId || !/^[a-f0-9]{64}$/.test(event.signature)) throw new Error('invalid coordination event');
       if (event.operationKey !== key(event.issuerId, event.operationId) || event.receipt.signature !== event.signature || event.receipt.revision !== event.revision || event.state.epoch > epoch) throw new Error('coordination receipt identity mismatch');
       const receiptKey = JSON.stringify([event.projectId, event.operationKey]); const old = receipts.get(receiptKey);
-      if (old) { if (canonicalJson(old) !== canonicalJson(event.receipt)) throw new Error('conflicting coordination receipt'); throw new Error('duplicate coordination journal event'); }
+      if (old) { if (canonicalJson(old) !== canonicalJson(event.receipt) || seenEvents.get(receiptKey)!==canonicalJson(event)) throw new Error('conflicting coordination receipt'); continue; }
       const previous = states.get(event.projectId);
       if (event.previousRevision !== (previous?.revision ?? 0) || !Number.isSafeInteger(event.revision) || event.revision !== event.previousRevision + (event.receipt.error ? 0 : 1) || event.state.revision !== event.revision) throw new Error('coordination revision gap');
       if (previous?.admitted && previous.baselineHash !== event.state.baselineHash) throw new Error('coordination baseline mismatch');
       if (event.receipt.error && (event.delta.length || (previous && canonicalJson(previous) !== canonicalJson(event.state)))) throw new Error('rejected coordination event changed state');
       if (!previous?.admitted && !event.receipt.error && (!event.state.admitted || event.receipt.result?.status !== 'admitted' || event.state.baselineHash !== event.state.operationalHash)) throw new Error('missing coordination admission');
       if (event.delta.some(delta => (delta as {type: string}).type === 'project_coordination_committed')) throw new Error('nested coordination event');
-      receipts.set(receiptKey, event.receipt); states.set(event.projectId, event.state);
+      receipts.set(receiptKey, event.receipt);seenEvents.set(receiptKey,canonicalJson(event)); states.set(event.projectId, event.state);
     }
   }
   async apply(event: CoordinationCommittedEvent): Promise<void> {
     const { sqliteCache: cache, queryCache } = this.options;
+    const known=await this.getReceipt(event.projectId,event.issuerId,event.operationId);if(known){if(canonicalJson(known)!==canonicalJson(event.receipt))throw new Error('conflicting coordination projection');return;}
     await cache.transaction(async () => {
       const old = await this.getReceipt(event.projectId, event.issuerId, event.operationId);
       if (old) { if (canonicalJson(old) !== canonicalJson(event.receipt)) throw new Error('conflicting coordination projection'); return; }

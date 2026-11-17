@@ -9,14 +9,15 @@ import { TaskAuthorityHttpsServer,validateServerConfiguration,type TaskAuthority
 import { v4 as uuid } from '../../../utils/uuid';
 type Obj = Record<string, unknown>;
 export interface AuthorityAuthorization { resources: string[]; max_lease_ms: number }
-export interface TaskAuthorityHostPort { executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null> }
+export interface TaskAuthorityHostPort { executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>; recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown> }
+export interface ConfirmedEffectRecovery {project_id:string;effect_id:string;dispatch_id:string;operation_id:string;proof_ref:ArtifactRef;lease_ms:number}
 export interface TaskAuthorityConfiguration {
   bindHost?: (port:TaskAuthorityHostPort)=>void;
   transport?: TaskAuthorityServerConfiguration;
   protocol: 'task-authority-config/v1'; mode: 'authority'; vault_scope: string; authority_id: string; issuer_id: string; host_id: string;
   max_lease_ms: number; eligible_project_ids: string[];
   capabilityValidator(envelope: Obj, effect?: AuthorityEffect): Promise<AuthorityAuthorization>;
-  artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence', envelope: Obj, effect?: AuthorityEffect): Promise<boolean>;
+  artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence' | 'recovery', envelope: Obj, effect?: AuthorityEffect): Promise<boolean>;
 }
 const errors: AuthorityError[] = ['authority_unavailable','revision_conflict','lease_busy','stale_epoch','fence_rejected','operation_signature_conflict','effect_indeterminate','capability_revoked','protocol_incompatible','invalid_command','unauthorized'];
 function fail(error: AuthorityError): never { throw new Error(error); }
@@ -78,7 +79,7 @@ export class TaskAuthorityRuntime {
         await journal.append({ type: 'task_authority_activated', protocol: 'task-authority-activation/v1', vaultScope: config.vault_scope, authorityId: config.authority_id, epoch, tokenHash: await authorityHash(uuid()) });
         this.epoch = epoch; this.generation++;this.config = config; this.journal = journal;
         await repo.replay(); this.healthy = true; this.suspended = false;
-        const generation=this.generation;config.bindHost?.({executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input)});
+        const generation=this.generation;config.bindHost?.({executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input),recoverConfirmedEffect:input=>{if(generation!==this.generation)fail('unauthorized');return this.recoverConfirmedEffect(input);}});
         if(config.transport){const server=new TaskAuthorityHttpsServer(validateServerConfiguration(config.transport),repo.secretStore(),this);await server.start();this.server=server;}
       } catch (error) { this.suspended=true;this.healthy=false;this.journal = journal; throw error; }
     });
@@ -223,6 +224,29 @@ export class TaskAuthorityRuntime {
       delta=prepared.delta; state.operationalHash=prepared.operationalHash; effect.state='committed';effect.lastRevision=state.revision+1; result={status:'committed',effect_id:effect.id,task_id:cmd.task_id,receipt_ref:cmd.receipt_ref};
     } else fail('protocol_incompatible');
     return {state,delta,result,priorityAssignment};
+  }
+  /** Internal recovery only consumes an already confirmed effect. The host
+   * validator must resolve immutable quiescence evidence, never a caller boolean.
+   * An unreachable host or missing proof leaves the old resources occupied. */
+  private async recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown>{
+    if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,lease_ms,operation_id,project_id,proof_ref'||['project_id','effect_id','dispatch_id','operation_id'].some(k=>{const value=input[k as keyof ConfirmedEffectRecovery];return typeof value!=='string'||!value.trim();})||!Number.isSafeInteger(input.lease_ms)||input.lease_ms<=0||!input.proof_ref||typeof input.proof_ref.artifact_id!=='string'||!input.proof_ref.artifact_id||!/^[a-f0-9]{64}$/.test(input.proof_ref.hash))fail('invalid_command');
+    const c=this.config;if(!c||!this.healthy||!this.journal)fail('authority_unavailable');
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+      const repo=this.repository();await this.journal!.assertActive();await repo.replay();
+      const signature=await authorityHash({protocol:'task-authority-confirmed-recovery/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
+      const previousReceipt=await repo.getReceipt(input.project_id,c.host_id,input.operation_id);if(previousReceipt){if(previousReceipt.signature!==signature)fail('operation_signature_conflict');if(previousReceipt.error)fail(previousReceipt.error);return previousReceipt.result;}
+      const previous=await repo.getState(input.project_id);if(!previous?.admitted)fail('fence_rejected');const state=copy(previous);
+      const effect=Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
+      if(!effect||effect.dispatchId!==input.dispatch_id||effect.state!=='confirmed'||!effect.receiptRef||effect.hostId!==c.host_id)fail('fence_rejected');
+      const oldLease=state.leases[effect.leaseId];if(!oldLease||input.lease_ms>Math.min(c.max_lease_ms,oldLease.maxLeaseMs))fail('fence_rejected');
+      const envelope:Obj={protocol:'task-authority-confirmed-recovery/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,issuer_id:c.host_id,operation_id:input.operation_id,proof_ref:input.proof_ref,command:{type:'recoverConfirmedEffect',effect_id:input.effect_id,dispatch_id:input.dispatch_id}};
+      let verified=false;try{verified=await c.artifactValidator(input.proof_ref,'recovery',envelope,effect)&&await c.artifactValidator(effect.receiptRef,'receipt',envelope,effect);const authorization=await c.capabilityValidator(envelope,effect);verified=verified&&same(authorization.resources,effect.resources)&&input.lease_ms<=authorization.max_lease_ms;}catch{verified=false;}if(!verified)fail('fence_rejected');
+      await repo.validateEligibility(input.project_id,oldLease.taskId,c.vault_scope,c.authority_id);
+      const lease:AuthorityLease={...oldLease,id:uuid(),epoch:this.epoch,expiresAt:Date.now()+input.lease_ms};delete state.leases[oldLease.id];state.leases[lease.id]=lease;effect.leaseId=lease.id;state.epoch=this.epoch;state.revision++;
+      const result:CommandResult={vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,issuer_id:c.host_id,operation_id:input.operation_id,revision:state.revision,status:'acquired',epoch:this.epoch,lease_id:lease.id,expires_at:new Date(lease.expiresAt).toISOString(),resources:lease.resources};
+      const receipt:AuthorityReceipt={signature,revision:state.revision,result,error:null};const event:CoordinationCommittedEvent={id:uuid(),deviceId:'task-authority',timestamp:Date.now(),type:'project_coordination_committed',protocol:'task-coordination-event/v1',vaultScope:c.vault_scope,authorityId:c.authority_id,projectId:input.project_id,previousRevision:previous.revision,revision:state.revision,operationKey:JSON.stringify([c.host_id,input.operation_id]),signature,issuerId:c.host_id,operationId:input.operation_id,state,receipt,delta:[]};
+      try{await this.journal!.append(event);await repo.apply(event);}catch{this.healthy=false;this.suspended=true;fail('authority_unavailable');}return result;
+    });
   }
   async readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,project_id'||Object.values(input).some(v=>typeof v!=='string'||!v.trim()))fail('invalid_command');

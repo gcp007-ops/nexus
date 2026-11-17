@@ -159,6 +159,7 @@ export function normalizeQueryResult(value:unknown):QueryResult {
   const r=object(value);
   if('admitted' in r){keys(r,['admitted','revision','epoch','resources']);if(typeof r.admitted!=='boolean')invalid();integer(r.revision);integer(r.epoch);if(!Array.isArray(r.resources))invalid();for(const row of r.resources as unknown[]){const v=object(row);keys(v,['resource_id','state','lease_id','expires_at','effect_id']);resources([v.resource_id]);oneOf(v.state,['free','leased','effect_pending','indeterminate']);for(const k of ['lease_id','expires_at','effect_id'])if(v[k]!==null)text(v[k]);}}
   else{keys(r,['state','revision','result','error']);oneOf(r.state,['not_found','prepared','dispatched','started','confirmed','committed','failed','indeterminate','rejected']);integer(r.revision);if(r.result!==null)normalizeCommandResult(r.result);if(r.error!==null)oneOf(r.error,['authority_unavailable','revision_conflict','lease_busy','stale_epoch','fence_rejected','operation_signature_conflict','effect_indeterminate','capability_revoked','protocol_incompatible','invalid_command','unauthorized']);}
+  if('state' in r){if(r.error!==null&&(r.state!=='rejected'||r.result!==null))invalid();if(['not_found','prepared'].includes(String(r.state))&&(r.result!==null||r.error!==null))invalid();if(r.result!==null){const result=r.result as CommandResult;const state=['admitted','acquired','renewed','released'].includes(result.status)?'committed':result.status;if(r.state!==state||r.error!==null)invalid();}}
   return JSON.parse(JSON.stringify(r)) as QueryResult;
 }
 
