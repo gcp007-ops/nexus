@@ -32,6 +32,7 @@ interface TaskEditorState {
     description: string;
     status: TaskStatus;
     priority: TaskPriority;
+    priorityExplicit?: boolean;
     dueDate: string;
     assignee: string;
     tags: string;
@@ -305,7 +306,8 @@ export class ProjectsManagerView {
                     title: this.currentTask.title.trim(),
                     description: this.currentTask.description.trim() || undefined,
                     status: this.currentTask.status,
-                    priority: this.currentTask.priority,
+                    priority: this.currentTask.priorityExplicit || this.currentTask.priority !== this.editingTaskOriginal?.priority
+                        ? this.currentTask.priority : undefined,
                     dueDate: this.fromDateInputValue(this.currentTask.dueDate),
                     assignee: this.currentTask.assignee.trim() || undefined,
                     tags: normalizedTags.length > 0 ? normalizedTags : undefined
@@ -323,7 +325,7 @@ export class ProjectsManagerView {
                 await taskService.createTask(this.currentTask.projectId, {
                     title: this.currentTask.title.trim(),
                     description: this.currentTask.description.trim() || undefined,
-                    priority: this.currentTask.priority,
+                    priority: this.currentTask.priorityExplicit ? this.currentTask.priority : undefined,
                     dueDate: this.fromDateInputValue(this.currentTask.dueDate),
                     assignee: this.currentTask.assignee.trim() || undefined,
                     tags: normalizedTags.length > 0 ? normalizedTags : undefined,

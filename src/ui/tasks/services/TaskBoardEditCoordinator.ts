@@ -94,7 +94,7 @@ export class TaskBoardEditCoordinator {
       title: updatedTask.title.trim(),
       description: updatedTask.description.trim() || undefined,
       status: updatedTask.status,
-      priority: updatedTask.priority,
+      priority: updatedTask.priorityExplicit || updatedTask.priority !== originalTask.priority ? updatedTask.priority : undefined,
       dueDate: this.deps.fromDateInputValue(updatedTask.dueDate),
       assignee: updatedTask.assignee.trim() || undefined,
       tags: normalizedTags.length > 0 ? normalizedTags : undefined

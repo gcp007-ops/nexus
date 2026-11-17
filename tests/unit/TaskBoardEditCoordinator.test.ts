@@ -253,7 +253,8 @@ describe('TaskBoardEditCoordinator', () => {
     if (mode === 'coordinated') {
       await coordinator.saveTaskChanges(original, updated);
       expect(service.tryCoordinateTaskUpdate).toHaveBeenCalledWith(expect.objectContaining({
-        taskId: 'task-1', title: 'Draft', addNoteLinks: [{ notePath: 'Manual.md', linkType: 'output' }] }));
+        taskId: 'task-1', title: 'Draft', priority: undefined,
+        addNoteLinks: [{ notePath: 'Manual.md', linkType: 'output' }] }));
       expect(service.updateTask).not.toHaveBeenCalled();
       expect(service.linkNote).not.toHaveBeenCalled();
       expect(reloadBoard).toHaveBeenCalled();

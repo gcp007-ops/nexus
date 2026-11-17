@@ -23,6 +23,7 @@ export interface TaskBoardEditableTask {
   description: string;
   status: 'todo' | 'in_progress' | 'done' | 'cancelled';
   priority: 'critical' | 'high' | 'medium' | 'low';
+  priorityExplicit?: boolean;
   dueDate: string;
   assignee: string;
   tags: string;
@@ -95,7 +96,7 @@ export class TaskBoardEditModal extends Modal {
     this.renderDropdown(metaGrid, 'Priority', this.draft.priority, [
       ['critical', 'Critical'], ['high', 'High'],
       ['medium', 'Medium'], ['low', 'Low']
-    ], (value) => { this.draft.priority = value as TaskBoardEditableTask['priority']; }, false);
+    ], (value) => { this.draft.priority = value as TaskBoardEditableTask['priority']; this.draft.priorityExplicit = true; }, false);
 
     // Project
     this.renderDropdown(
