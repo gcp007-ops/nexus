@@ -16,6 +16,16 @@ import { TaskRepository } from '../../src/database/repositories/TaskRepository';
 import { ProjectRepository } from '../../src/database/repositories/ProjectRepository';
 import { TaskService } from '../../src/agents/taskManager/services/TaskService';
 import { DAGService } from '../../src/agents/taskManager/services/DAGService';
+import type { TaskAcquisitionSelectionRequest,TaskAcquisitionSelectionDecision } from '../../src/agents/taskManager/authority/TaskAuthorityContracts';
+/** Synthetic lease-only policy for this fixture: t and x are the only units.
+ * Productive eligibility remains owned by the host/Python callback. */
+export async function fixtureSelection(request:TaskAcquisitionSelectionRequest):Promise<TaskAcquisitionSelectionDecision> {
+  const order:Record<string,number>={critical:0,high:1,medium:2,low:3};
+  const candidates=request.projects.flatMap(p=>p.source.project.status==='active'?p.source.tasks.filter(t=>['t','x'].includes(String(t.id))&&['todo','in_progress'].includes(String(t.status))&&!p.coordination.resources.some(r=>r.state!=='free'&&(r.resource_id===`project:${p.source.project_id}`||r.resource_id===`task:${String(t.id)}`))&&p.priority_evidence.some(proof=>proof.task_id===t.id&&proof.evidence?.value===t.priority)).map(t=>({project_id:p.source.project_id,task_id:String(t.id),priority:String(t.priority),status:t.status,created:Number(t.created)})):[]);
+  candidates.sort((a,b)=>order[a.priority]-order[b.priority]||Number(a.status!=='in_progress')-Number(b.status!=='in_progress')||a.created-b.created||(a.project_id<b.project_id?-1:a.project_id>b.project_id?1:a.task_id<b.task_id?-1:a.task_id>b.task_id?1:0));
+  const winner=candidates[0];
+  return {protocol:'task-acquire-selection-decision/v1',snapshot_hash:request.snapshot_hash,selection:{protocol:'dream-priority-selection/v1',state:winner?'selected':'no_eligible_unit',selected_unit:winner?{project_id:winner.project_id,task_id:winner.task_id}:null,reason_refs:[],source_revisions:request.projects.map(p=>({project_id:p.source.project_id,revision:p.source.revision}))}};
+}
 // The installed @types/node predates node:sqlite, available in the test runtime.
 interface Statement { all(...p: unknown[]): Record<string,unknown>[]; get(...p: unknown[]): Record<string,unknown>|undefined; run(...p: unknown[]): {changes:number;lastInsertRowid:number|bigint} }
 interface NativeDB { exec(sql:string):void; prepare(sql:string):Statement; close():void }
@@ -57,7 +67,7 @@ export async function fixture() {
   const repository=new TaskCoordinationRepository({app,sqliteCache:cache as unknown as SQLiteCacheManager,queryCache,getDataPath:()=> 'Store/data'});
   const storage={taskCoordination:repository,waitForQueryReady:async()=>true} as unknown as IStorageAdapter;
   let host:TaskAuthorityHostPort;
-  const config:TaskAuthorityConfiguration={protocol:'task-authority-config/v1',mode:'authority',bindHost:port=>{host=port;},vault_scope:'v',authority_id:'a',issuer_id:'human',host_id:'host',max_lease_ms:10000,eligible_project_ids:['p','q'],capabilityValidator:async e=>({resources:(e.command as {resources?:string[]}).resources??['project:p','task:t'],max_lease_ms:10000}),artifactValidator:async()=>true};
+  const config:TaskAuthorityConfiguration={protocol:'task-authority-config/v1',mode:'authority',bindHost:port=>{host=port;},vault_scope:'v',authority_id:'a',issuer_id:'human',host_id:'host',max_lease_ms:10000,eligible_project_ids:['p','q'],selection_timeout_ms:10000,selectionValidator:fixtureSelection,capabilityValidator:async e=>({resources:(e.command as {resources?:string[]}).resources??['project:p','task:t'],max_lease_ms:10000}),artifactValidator:async()=>true};
   const runtime=new TaskAuthorityRuntime(storage);await runtime.configure(config);
   let sequence=0;
   const command=async(project:string,body:Record<string,unknown>,overrides:Record<string,unknown>={})=>({protocol:'task-authority-command/v1',vault_scope:'v',authority_id:'a',project_id:project,issuer_id:['beginEffect','recordEffect'].includes(String(body.type))?'host':'human',operation_id:`operation-${++sequence}`,expected_revision:(await repository.getState(project))?.revision??0,command:body,...overrides});

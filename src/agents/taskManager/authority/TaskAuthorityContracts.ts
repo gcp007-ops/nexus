@@ -176,6 +176,23 @@ export interface TaskProjectSource {
   protocol:'task-project-source/v1';vault_scope:string;authority_id:string;project_id:string;revision:number;operational_hash:string;complete:true;
   project:Record<string,unknown>;tasks:Record<string,unknown>[];dependencies:Record<string,unknown>[];note_links:Record<string,unknown>[];external_children:Record<string,unknown>[];
 }
+/** Internal acquisition input produced under the global authority serializer.
+ * The host classifies every unit using its own current capability and budget;
+ * it must not call a lock-taking authority port from this callback. */
+export interface TaskAcquisitionSelectionProject {
+  source:TaskProjectSource;
+  coordination:{admitted:true;revision:number;epoch:number;resources:Array<{resource_id:string;state:'free'|'leased'|'effect_pending'|'indeterminate';lease_id:string|null;expires_at:string|null;effect_id:string|null}>};
+  priority_evidence:Array<{task_id:string;evidence:TaskPriorityEvidence|null}>;
+}
+export interface TaskAcquisitionSelectionRequest {
+  protocol:'task-acquire-selection/v1';vault_scope:string;authority_id:string;epoch:number;now_ms:number;
+  requested:{project_id:string;task_id:string;capability_ref:{id:string;version:number;revision:number;hash:string};resources:string[]};
+  projects:TaskAcquisitionSelectionProject[];snapshot_hash:string;
+}
+export interface TaskAcquisitionSelectionDecision {
+  protocol:'task-acquire-selection-decision/v1';snapshot_hash:string;
+  selection:{protocol:'dream-priority-selection/v1';state:'selected'|'waiting'|'priority_decision_required'|'no_eligible_unit'|'source_incomplete';selected_unit:{project_id:string;task_id:string}|null;reason_refs:string[];source_revisions:Array<{project_id:string;revision:number}>};
+}
 
 /** Advisory discovery schema; runtime normalization above remains mandatory. */
 export function taskAuthorityEnvelopeSchema(query=false):import('../../../types/schema/JSONSchemaTypes').JSONSchema {

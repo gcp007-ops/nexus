@@ -20,6 +20,10 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
   constructor(private readonly options: CoordinationRepositoryOptions) {}
   secretStore(): SecretStore { return new SecretStore(this.options.app); }
   async allStates(): Promise<AuthorityProjectState[]> { const rows = await this.options.sqliteCache.query<{stateJson: string}>('SELECT stateJson FROM task_coordination_state'); return rows.map(row => JSON.parse(row.stateJson) as AuthorityProjectState); }
+  async scopedStates(vaultScope:string,authorityId:string):Promise<Array<{project_id:string;state:AuthorityProjectState}>> {
+    const rows=await this.options.sqliteCache.query<{projectId:string;stateJson:string}>('SELECT projectId,stateJson FROM task_coordination_state WHERE vaultScope=? AND authorityId=? ORDER BY projectId',[vaultScope,authorityId]);
+    return rows.map(row=>({project_id:row.projectId,state:JSON.parse(row.stateJson) as AuthorityProjectState}));
+  }
   async requireActiveProject(projectId:string):Promise<void>{const row=await this.options.sqliteCache.queryOne<{status:string}>('SELECT status FROM projects WHERE id=?',[projectId]);if(row?.status!=='active')throw new Error('fence_rejected');}
   async requireTask(projectId: string, taskId: string): Promise<{status: string}> { const row = await this.options.sqliteCache.queryOne<{projectId: string; status: string}>('SELECT projectId,status FROM tasks WHERE id=?', [taskId]); if (!row || row.projectId !== projectId) throw new Error('invalid_command'); return row; }
   async currentHash(projectId: string): Promise<string> { return projectHash(this.options.sqliteCache, projectId); }

@@ -1,7 +1,7 @@
 import type { IStorageAdapter } from '../../../database/interfaces/IStorageAdapter';
 import type { TaskCoordinationRepository } from '../../../database/repositories/TaskCoordinationRepository';
 import type { AuthorityProjectState, AuthorityLease, AuthorityEffect, AuthorityJournal, AuthorityReceipt, CoordinationCommittedEvent, OperationalTaskEvent, PriorityAssignment } from '../../../database/repositories/interfaces/ITaskCoordinationRepository';
-import { normalizeCommand, normalizeQuery, normalizeResourceList, type CommandResult, type AuthorityError, type ArtifactRef, type TaskEffectEvidence, type TaskPriorityEvidence, type TaskProjectSource } from './TaskAuthorityContracts';
+import { normalizeCommand, normalizeQuery, normalizeResourceList, type CommandResult, type AuthorityError, type ArtifactRef, type TaskEffectEvidence, type TaskPriorityEvidence, type TaskProjectSource, type TaskAcquisitionSelectionProject, type TaskAcquisitionSelectionRequest, type TaskAcquisitionSelectionDecision } from './TaskAuthorityContracts';
 import { authorityHash, canonicalJson, type InteractiveMutation } from './TaskAuthorityPlanning';
 import { serializeAuthority } from '../services/TaskCoordinationService';
 import { TaskAuthorityHttpClient,validateClientConfiguration,type TaskAuthorityClientConfiguration } from './TaskAuthorityHttpClient';
@@ -16,6 +16,8 @@ export interface TaskAuthorityConfiguration {
   transport?: TaskAuthorityServerConfiguration;
   protocol: 'task-authority-config/v1'; mode: 'authority'; vault_scope: string; authority_id: string; issuer_id: string; host_id: string;
   max_lease_ms: number; eligible_project_ids: string[];
+  selection_timeout_ms:number;
+  selectionValidator(request:TaskAcquisitionSelectionRequest):Promise<TaskAcquisitionSelectionDecision>;
   capabilityValidator(envelope: Obj, effect?: AuthorityEffect): Promise<AuthorityAuthorization>;
   artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence' | 'recovery', envelope: Obj, effect?: AuthorityEffect): Promise<boolean>;
 }
@@ -34,11 +36,12 @@ function overlaps(a: string, b: string): boolean {
 function validateConfig(value: unknown): TaskAuthorityConfiguration {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid_command');
   const c = value as Obj;
-  const required = ['protocol','mode','vault_scope','authority_id','issuer_id','host_id','max_lease_ms','eligible_project_ids','capabilityValidator','artifactValidator'];
+  const required = ['protocol','mode','vault_scope','authority_id','issuer_id','host_id','max_lease_ms','eligible_project_ids','selection_timeout_ms','selectionValidator','capabilityValidator','artifactValidator'];
   if (Object.keys(c).some(key => !required.includes(key) && !['transport','bindHost'].includes(key)) || required.some(key => !(key in c)) || c.protocol !== 'task-authority-config/v1' || c.mode !== 'authority') fail('invalid_command');
   for (const key of ['vault_scope','authority_id','issuer_id','host_id']) if (typeof c[key] !== 'string' || !(c[key]).trim()) fail('invalid_command');
   if (!Number.isSafeInteger(c.max_lease_ms) || (c.max_lease_ms as number) <= 0 || !Array.isArray(c.eligible_project_ids) || c.eligible_project_ids.some(id => typeof id !== 'string' || !id.trim()) || typeof c.capabilityValidator !== 'function' || typeof c.artifactValidator !== 'function') fail('invalid_command');
   if(c.host_id===c.issuer_id)fail('invalid_command');
+  if(typeof c.selectionValidator!=='function'||!Number.isSafeInteger(c.selection_timeout_ms)||(c.selection_timeout_ms as number)<=0||(c.selection_timeout_ms as number)>2147483647)fail('invalid_command');
   if(c.bindHost!==undefined&&typeof c.bindHost!=='function')fail('invalid_command');
   if(c.transport!==undefined)validateServerConfiguration(c.transport);
   return { ...c, eligible_project_ids: [...c.eligible_project_ids as string[]] } as unknown as TaskAuthorityConfiguration;
@@ -129,6 +132,38 @@ export class TaskAuthorityRuntime {
     for (const lease of Object.values(state.leases)) for (const resource of lease.resources) { const effect = Object.values(state.effects).find(e => e.leaseId === lease.id && ['dispatched','started','confirmed','indeterminate'].includes(e.state)); const live = lease.epoch === this.epoch && lease.expiresAt > Date.now(); map.set(resource, {resource_id: resource,state: effect ? effect.state === 'indeterminate' ? 'indeterminate' : 'effect_pending' : live ? 'leased' : 'free',lease_id: effect || live ? lease.id : null,expires_at: effect || live ? new Date(lease.expiresAt).toISOString() : null,effect_id: effect?.id ?? null}); }
     return [...map.values()];
   }
+  /** Called only inside serializeAuthority; no public lock-taking port is used. */
+  private async selectionProjects(c:TaskAuthorityConfiguration):Promise<TaskAcquisitionSelectionProject[]> {
+    const projects:TaskAcquisitionSelectionProject[]=[];
+    for(const {project_id,state} of await this.repository().scopedStates(c.vault_scope,c.authority_id)) {
+      if(!state.admitted)continue;
+      const rows=await this.repository().operationalSource(project_id) as Record<string,unknown>[][];
+      const digest=await authorityHash(rows);if(digest!==state.operationalHash||rows[0]?.length!==1||!Array.isArray(rows[1]))fail('fence_rejected');
+      const source:TaskProjectSource={protocol:'task-project-source/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id,revision:state.revision,operational_hash:digest,complete:true,project:rows[0][0],tasks:rows[1],dependencies:rows[2],note_links:rows[3],external_children:rows[4]??[]};
+      const priority_evidence:Array<{task_id:string;evidence:TaskPriorityEvidence|null}>=[];
+      for(const task of [...source.tasks].sort((a,b)=>String(a.id)<String(b.id)?-1:String(a.id)>String(b.id)?1:0)) {
+        if(typeof task.id!=='string'||!task.id)fail('fence_rejected');
+        priority_evidence.push({task_id:task.id,evidence:await this.repository().readPriorityEvidence(project_id,task.id,c.vault_scope,c.authority_id)});
+      }
+      projects.push({source,coordination:{admitted:true,revision:state.revision,epoch:this.epoch,resources:this.resourceView(state) as TaskAcquisitionSelectionProject['coordination']['resources']},priority_evidence});
+    }
+    return projects.sort((a,b)=>a.source.project_id<b.source.project_id?-1:a.source.project_id>b.source.project_id?1:0);
+  }
+  private async selectForAcquisition(c:TaskAuthorityConfiguration,e:Obj):Promise<TaskAcquisitionSelectionProject[]> {
+    const cmd=e.command as Obj,projects=await this.selectionProjects(c);
+    const context={protocol:'task-acquire-selection/v1' as const,vault_scope:c.vault_scope,authority_id:c.authority_id,epoch:this.epoch,now_ms:Date.now(),requested:{project_id:String(e.project_id),task_id:String(cmd.task_id),capability_ref:copy(cmd.capability_ref) as TaskAcquisitionSelectionRequest['requested']['capability_ref'],resources:copy(cmd.resources) as string[]},projects};
+    const snapshot_hash=await authorityHash(context),request={...context,snapshot_hash};
+    let timer:ReturnType<typeof setTimeout>|undefined;let decision:unknown;
+    try { decision=await Promise.race([Promise.resolve().then(()=>c.selectionValidator(copy(request))),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('fence_rejected')),c.selection_timeout_ms);})]); }
+    catch {fail('fence_rejected');}finally{if(timer)clearTimeout(timer);}
+    const closed=(v:unknown,keys:string[]):v is Obj=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.prototype.hasOwnProperty.call(v,k));
+    if(!closed(decision,['protocol','snapshot_hash','selection'])||decision.protocol!=='task-acquire-selection-decision/v1'||decision.snapshot_hash!==snapshot_hash)fail('fence_rejected');
+    const selection=decision.selection;
+    if(!closed(selection,['protocol','state','selected_unit','reason_refs','source_revisions'])||selection.protocol!=='dream-priority-selection/v1'||selection.state!=='selected'||!Array.isArray(selection.reason_refs)||selection.reason_refs.length||!same(selection.source_revisions,projects.map(p=>({project_id:p.source.project_id,revision:p.source.revision}))))fail('fence_rejected');
+    const unit=selection.selected_unit;
+    if(!closed(unit,['project_id','task_id'])||unit.project_id!==e.project_id||unit.task_id!==cmd.task_id)fail('fence_rejected');
+    return projects;
+  }
   async executeCommand(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
     const e = normalizeCommand(value);if(this.client){if(this.suspended&&['admitProject','acquireUnit','renewLease','dispatchEffect','beginEffect','interactiveMutation'].includes(String((e.command as Obj).type)))fail('authority_unavailable');return this.client.executeCommand(e);} const c = this.scope(e, false, authenticatedIssuer);
     return serializeAuthority(c.vault_scope, c.authority_id, async () => {
@@ -200,10 +235,13 @@ export class TaskAuthorityRuntime {
       result = {status:'committed',kind:mutation.kind,entity_id:prepared.entityId};
     } else if (cmd.type === 'acquireUnit') {
       await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id);
+      if(await busy(cmd.resources as string[]))fail('lease_busy');
+      const selectedProjects=await this.selectForAcquisition(c,e);
       const auth = await authorization(); const required = [`project:${project}`,`task:${String(cmd.task_id)}`];
       if (!same(auth.resources,cmd.resources) || required.some(r => !auth.resources.includes(r)) || (cmd.lease_ms as number) > Math.min(c.max_lease_ms,auth.max_lease_ms)) fail('fence_rejected');
       if (await busy(auth.resources)) fail('lease_busy');
-      const lease: AuthorityLease = {id:uuid(),issuer,epoch:this.epoch,taskId:String(cmd.task_id),expiresAt:now+(cmd.lease_ms as number),maxLeaseMs:Math.min(c.max_lease_ms,auth.max_lease_ms),resources:[...auth.resources]}; state.leases[lease.id] = lease; state.epoch=this.epoch;
+      if(!same(selectedProjects,await this.selectionProjects(c)))fail('fence_rejected');
+      const lease: AuthorityLease = {id:uuid(),issuer,epoch:this.epoch,taskId:String(cmd.task_id),expiresAt:Date.now()+(cmd.lease_ms as number),maxLeaseMs:Math.min(c.max_lease_ms,auth.max_lease_ms),resources:[...auth.resources]}; state.leases[lease.id] = lease; state.epoch=this.epoch;
       result={status:'acquired',epoch:this.epoch,lease_id:lease.id,expires_at:new Date(lease.expiresAt).toISOString(),resources:lease.resources};
     } else if (cmd.type === 'renewLease') {
       const lease = requireLease(); if ((cmd.lease_ms as number) > Math.min(c.max_lease_ms,lease.maxLeaseMs)) fail('fence_rejected'); lease.expiresAt = now+(cmd.lease_ms as number);

@@ -121,3 +121,60 @@ it('refuses reusing an effect identity in another project of the same authority'
 
 
 it('returns canonical priority provenance to the bound host even for a blocked task',async()=>{const f=await fixture();try{await f.admit();expect(await f.host.readPriorityEvidence({project_id:'p',task_id:'t'})).toBeNull();await f.service.updateTask('t',{priority:'critical'});await f.runtime.routeInteractiveMutation({projectId:'p',mutation:{kind:'updateTask',arguments:{taskId:'t',addDependencies:['u']}}});const evidence=await f.host.readPriorityEvidence({project_id:'p',task_id:'t'});expect(evidence).toMatchObject({protocol:'task-priority-verification/v1',value:'critical',source_issuer_id:'human',task_id:'t'});expect(evidence?.operation_signature).toMatch(/^[a-f0-9]{64}$/);await expect(f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap}))).rejects.toThrow('fence_rejected');}finally{await f.cleanup();}});
+
+it('revalidates a competing project priority before granting an unchanged project revision',async()=>{
+  const f=await fixture();try{
+    await f.admit();await f.admit('q');await f.service.updateTask('t',{priority:'high'});await f.service.updateTask('x',{priority:'low'});
+    const selected=await f.command('p',{type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap});
+    await f.service.updateTask('x',{priority:'critical'});
+    expect((await f.repository.getState('p'))?.revision).toBe(selected.expected_revision);
+    await expect(f.runtime.executeCommand(selected)).rejects.toThrow('fence_rejected');
+    expect(Object.keys((await f.repository.getState('p'))!.leases)).toHaveLength(0);
+  }finally{await f.cleanup();}
+});
+
+import {fixtureSelection} from '../helpers/taskAuthorityFixture';
+import type {TaskAcquisitionSelectionRequest} from '../../src/agents/taskManager/authority/TaskAuthorityContracts';
+describe('atomic global selection at acquisition',()=>{
+  it('requires the trusted callback and a finite validated timeout at activation',async()=>{const f=await fixture();try{
+    const {selectionValidator:_drop,...without}=f.config;
+    await expect(f.runtime.configure(without)).rejects.toThrow('invalid_command');
+    for(const selection_timeout_ms of [0,-1,Infinity,2147483648])await expect(f.runtime.configure({...f.config,selection_timeout_ms})).rejects.toThrow('invalid_command');
+  }finally{await f.cleanup();}});
+  it('passes every admitted source and canonical proof, including blocked and unproven tasks',async()=>{const f=await fixture();try{
+    await f.admit();await f.admit('q');await f.service.updateTask('t',{priority:'high'});await f.service.updateTask('x',{priority:'critical'});
+    const state=await f.repository.getState('p');await f.cache.run('INSERT INTO task_coordination_state VALUES (?,?,?,?,?,?,?)',['other-scope','other-authority','foreign',state!.revision,state!.epoch,state!.baselineHash,JSON.stringify(state)]);
+    expect((await f.repository.scopedStates('v','a')).map(p=>p.project_id)).toEqual(['p','q']);
+    await f.cache.run("DELETE FROM task_coordination_state WHERE vaultScope='other-scope'");
+    let observed:TaskAcquisitionSelectionRequest|undefined;
+    await f.runtime.configure({...f.config,selectionValidator:async request=>{observed=request;return fixtureSelection(request);}});
+    const lease=await f.runtime.executeCommand(await f.command('q',{type:'acquireUnit',task_id:'x',resources:['project:q','task:x'],lease_ms:1000,capability_ref:cap}));
+    expect(lease).toMatchObject({status:'acquired'});expect(observed!.projects.map(p=>p.source.project_id)).toEqual(['p','q']);
+    expect(observed!.projects[0].source.tasks.map(t=>t.id)).toEqual(['t','u']);
+    expect(observed!.projects[0].priority_evidence.find(p=>p.task_id==='u')!.evidence).toBeNull();
+    expect(observed!.projects[1].priority_evidence[0].evidence).toMatchObject({task_id:'x',value:'critical',source_issuer_id:'human'});
+    expect(observed!.snapshot_hash).toMatch(/^[a-f0-9]{64}$/);
+  }finally{await f.cleanup();}});
+  it('blocks incomplete, stale and nonselected decisions without granting a lease',async()=>{const f=await fixture();try{
+    await f.admit();await f.admit('q');await f.service.updateTask('t',{priority:'high'});
+    const changes=[(d:any)=>({...d,extra:true}),(d:any)=>({...d,snapshot_hash:'a'.repeat(64)}),(d:any)=>({...d,selection:{...d.selection,source_revisions:d.selection.source_revisions.slice(0,1)}}),(d:any)=>({...d,selection:{...d.selection,state:'priority_decision_required',selected_unit:null,reason_refs:['x']}})];
+    for(const change of changes){await f.runtime.configure({...f.config,selectionValidator:async request=>change(await fixtureSelection(request))});await expect(f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap}))).rejects.toThrow('fence_rejected');expect(Object.keys((await f.repository.getState('p'))!.leases)).toHaveLength(0);}
+  }finally{await f.cleanup();}});
+  it('holds the global serializer while the finite selector awaits and rejects source drift',async()=>{const f=await fixture();try{
+    await f.admit();await f.admit('q');await f.service.updateTask('t',{priority:'high'});await f.service.updateTask('x',{priority:'low'});
+    let enter!:()=>void,release!:()=>void;const entered=new Promise<void>(r=>{enter=r;}),gate=new Promise<void>(r=>{release=r;});
+    await f.runtime.configure({...f.config,selectionValidator:async request=>{enter();await gate;return fixtureSelection(request);}});
+    const acquiring=f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap}));await entered;
+    let updated=false;const updating=f.service.updateTask('x',{priority:'critical'}).then(()=>{updated=true;});await new Promise(r=>setTimeout(r,10));expect(updated).toBe(false);
+    release();expect(await acquiring).toMatchObject({status:'acquired'});await updating;expect(updated).toBe(true);
+  }finally{await f.cleanup();}});
+  it('rechecks source hashes after callback and times out without a lease',async()=>{const f=await fixture();try{
+    await f.admit();await f.admit('q');await f.service.updateTask('t',{priority:'high'});
+    await f.runtime.configure({...f.config,selectionValidator:async request=>{await f.cache.run("UPDATE tasks SET title='outside serializer' WHERE id='x'");return fixtureSelection(request);}});
+    await expect(f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap}))).rejects.toThrow('fence_rejected');
+    // Restore only the synthetic uncoordinated test edit before testing timeout.
+    await f.cache.run("UPDATE tasks SET title='x' WHERE id='x'");
+    await f.runtime.configure({...f.config,selection_timeout_ms:10,selectionValidator:async()=>new Promise(()=>{})});
+    await expect(f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap}))).rejects.toThrow('fence_rejected');expect(Object.keys((await f.repository.getState('p'))!.leases)).toHaveLength(0);
+  }finally{await f.cleanup();}});
+});
