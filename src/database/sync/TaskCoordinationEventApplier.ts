@@ -14,3 +14,19 @@ export function applyCoordinationEvent(current: CoordinationProjection, event: C
   if (current.revision !== event.previousRevision) throw new Error('coordination revision gap');
   return { ...current, revision: event.revision, receipts: { ...current.receipts, [event.operationKey]: { signature: event.signature, result: event.result, revision: event.revision } } };
 }
+
+/** Parse every non-empty line or fail the whole shard. Callers must enumerate
+ * every shard and treat enumeration/read errors as fatal as well. */
+export function parseCoordinationShard(content: string): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  for (const [index, line] of content.split('\n').entries()) {
+    if (!line.trim()) continue;
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { throw new Error(`invalid coordination shard line ${index + 1}`); }
+    if (value === null || typeof value !== 'object' || Array.isArray(value) || typeof (value as Record<string, unknown>).type !== 'string') {
+      throw new Error(`invalid coordination shard line ${index + 1}`);
+    }
+    result.push(value as Record<string, unknown>);
+  }
+  return result;
+}

@@ -124,3 +124,11 @@ describe('coordination event sequence', () => {
     expect(() => applyCoordinationEvent(next, { ...event, signature: 'other' })).toThrow();
   });
 });
+
+describe('coordination shard reading', () => {
+  it('rejects an invalid record instead of treating a truncated shard as empty', async () => {
+    const { parseCoordinationShard } = await import('../../src/database/sync/TaskCoordinationEventApplier');
+    expect(parseCoordinationShard('{"type":"project_created"}\n')).toEqual([{ type: 'project_created' }]);
+    expect(() => parseCoordinationShard('{"type":"project_created"}\n{"type":')).toThrow();
+  });
+});
