@@ -7,9 +7,11 @@ import { serializeAuthority } from '../services/TaskCoordinationService';
 import { TaskAuthorityHttpClient,validateClientConfiguration,type TaskAuthorityClientConfiguration } from './TaskAuthorityHttpClient';
 import { TaskAuthorityHttpsServer,validateServerConfiguration,type TaskAuthorityServerConfiguration } from './TaskAuthorityHttpsServer';
 import { v4 as uuid } from '../../../utils/uuid';
+import {normalizeClosureCommand,type ClosureValidationRequest,type ClosureAuthorization} from './TaskAuthorityClosureContracts';
+import {TaskAuthorityClosureService,closureRecord,finiteClosure} from './TaskAuthorityClosureService';
 type Obj = Record<string, unknown>;
 export interface AuthorityAuthorization { resources: string[]; max_lease_ms: number }
-export interface TaskAuthorityHostPort { readProjectSnapshot(input:{project_id:string}):Promise<TaskProjectSource>;readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>; executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>; recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown> }
+export interface TaskAuthorityHostPort { closureCommand(envelope:unknown):Promise<unknown>;readClosure(input:{project_id:string;closure_id:string;operation_id?:string}):Promise<unknown>;readProjectSnapshot(input:{project_id:string}):Promise<TaskProjectSource>;readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>; executeCommand(envelope:unknown):Promise<unknown>;query(envelope:unknown):Promise<unknown>;readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>; recoverConfirmedEffect(input:ConfirmedEffectRecovery):Promise<unknown> }
 export interface ConfirmedEffectRecovery {project_id:string;effect_id:string;dispatch_id:string;operation_id:string;proof_ref:ArtifactRef;lease_ms:number}
 export interface TaskAuthorityConfiguration {
   bindHost?: (port:TaskAuthorityHostPort)=>void;
@@ -18,6 +20,8 @@ export interface TaskAuthorityConfiguration {
   max_lease_ms: number; eligible_project_ids: string[];
   selection_timeout_ms:number;
   selectionValidator(request:TaskAcquisitionSelectionRequest):Promise<TaskAcquisitionSelectionDecision>;
+  closure_timeout_ms?:number;
+  closureValidator?(request:ClosureValidationRequest):Promise<ClosureAuthorization>;
   capabilityValidator(envelope: Obj, effect?: AuthorityEffect): Promise<AuthorityAuthorization>;
   artifactValidator(ref: ArtifactRef, kind: 'proposal' | 'receipt' | 'evidence' | 'recovery', envelope: Obj, effect?: AuthorityEffect): Promise<boolean>;
 }
@@ -37,11 +41,12 @@ function validateConfig(value: unknown): TaskAuthorityConfiguration {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid_command');
   const c = value as Obj;
   const required = ['protocol','mode','vault_scope','authority_id','issuer_id','host_id','max_lease_ms','eligible_project_ids','selection_timeout_ms','selectionValidator','capabilityValidator','artifactValidator'];
-  if (Object.keys(c).some(key => !required.includes(key) && !['transport','bindHost'].includes(key)) || required.some(key => !(key in c)) || c.protocol !== 'task-authority-config/v1' || c.mode !== 'authority') fail('invalid_command');
+  if (Object.keys(c).some(key => !required.includes(key) && !['transport','bindHost','closure_timeout_ms','closureValidator'].includes(key)) || required.some(key => !(key in c)) || c.protocol !== 'task-authority-config/v1' || c.mode !== 'authority') fail('invalid_command');
   for (const key of ['vault_scope','authority_id','issuer_id','host_id']) if (typeof c[key] !== 'string' || !(c[key]).trim()) fail('invalid_command');
   if (!Number.isSafeInteger(c.max_lease_ms) || (c.max_lease_ms as number) <= 0 || !Array.isArray(c.eligible_project_ids) || c.eligible_project_ids.some(id => typeof id !== 'string' || !id.trim()) || typeof c.capabilityValidator !== 'function' || typeof c.artifactValidator !== 'function') fail('invalid_command');
   if(c.host_id===c.issuer_id)fail('invalid_command');
   if(typeof c.selectionValidator!=='function'||!Number.isSafeInteger(c.selection_timeout_ms)||(c.selection_timeout_ms as number)<=0||(c.selection_timeout_ms as number)>2147483647)fail('invalid_command');
+  if(c.closureValidator!==undefined||c.closure_timeout_ms!==undefined)if(typeof c.closureValidator!=='function'||!Number.isSafeInteger(c.closure_timeout_ms)||(c.closure_timeout_ms as number)<=0||(c.closure_timeout_ms as number)>2147483647)fail('invalid_command');
   if(c.bindHost!==undefined&&typeof c.bindHost!=='function')fail('invalid_command');
   if(c.transport!==undefined)validateServerConfiguration(c.transport);
   return { ...c, eligible_project_ids: [...c.eligible_project_ids as string[]] } as unknown as TaskAuthorityConfiguration;
@@ -83,7 +88,7 @@ export class TaskAuthorityRuntime {
         await journal.append({ type: 'task_authority_activated', protocol: 'task-authority-activation/v1', vaultScope: config.vault_scope, authorityId: config.authority_id, epoch, tokenHash: await authorityHash(uuid()) });
         this.epoch = epoch; this.generation++;this.config = config; this.journal = journal;
         await repo.replay(); this.healthy = true; this.suspended = false;
-        const generation=this.generation;config.bindHost?.({readProjectSnapshot:input=>{if(generation!==this.generation)fail('unauthorized');return this.readProjectSnapshot(input);},readPriorityEvidence:input=>this.readPriorityEvidence(input),executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input),recoverConfirmedEffect:input=>{if(generation!==this.generation)fail('unauthorized');return this.recoverConfirmedEffect(input);}});
+        const generation=this.generation;config.bindHost?.({closureCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeClosureCommand(envelope);},readClosure:input=>{if(generation!==this.generation)fail('unauthorized');return this.readClosure(input);},readProjectSnapshot:input=>{if(generation!==this.generation)fail('unauthorized');return this.readProjectSnapshot(input);},readPriorityEvidence:input=>this.readPriorityEvidence(input),executeCommand:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.executeCommand(envelope,config.host_id);},query:envelope=>{if(generation!==this.generation)fail('unauthorized');return this.query(envelope,config.host_id);},readEffectEvidence:input=>this.readEffectEvidence(input),recoverConfirmedEffect:input=>{if(generation!==this.generation)fail('unauthorized');return this.recoverConfirmedEffect(input);}});
         if(config.transport){const server=new TaskAuthorityHttpsServer(validateServerConfiguration(config.transport),repo.secretStore(),this);await server.start();this.server=server;}
       } catch (error) { this.suspended=true;this.healthy=false;this.journal = journal; throw error; }
     });
@@ -164,6 +169,30 @@ export class TaskAuthorityRuntime {
     if(!closed(unit,['project_id','task_id'])||unit.project_id!==e.project_id||unit.task_id!==cmd.task_id)fail('fence_rejected');
     return projects;
   }
+  private async readClosure(input:{project_id:string;closure_id:string;operation_id?:string}):Promise<unknown>{
+    if(!input||Object.keys(input).some(k=>!['project_id','closure_id','operation_id'].includes(k))||typeof input.project_id!=='string'||!input.project_id||typeof input.closure_id!=='string'||!input.closure_id||(input.operation_id!==undefined&&(typeof input.operation_id!=='string'||!input.operation_id)))fail('invalid_command');
+    const c=this.config;if(!c||this.client)fail('authority_unavailable');
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.repository().getState(input.project_id);if(!state?.admitted)fail('protocol_incompatible');return copy({protocol:'task-closure-state/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,closure_id:input.closure_id,revision:state.revision,epoch:this.epoch,closure:closureRecord(state,input.closure_id),effects:Object.values(state.effects).filter(effect=>effect.subject?.closure_id===input.closure_id),operation:input.operation_id?await this.repository().getReceipt(input.project_id,c.host_id,input.operation_id):null});});
+  }
+  private async executeClosureCommand(value:unknown):Promise<unknown>{
+    const e=normalizeClosureCommand(value),c=this.scope(e as unknown as Obj,false,this.config?.host_id);if(!c.closureValidator||!c.closure_timeout_ms)fail('protocol_incompatible');
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
+      if((this.suspended&&e.command.type!=='commitClosureStep')||!this.healthy)fail('authority_unavailable');const repo=this.repository();await this.journal!.assertActive();await repo.replay();
+      const signature=await authorityHash(e),old=await repo.getReceipt(e.project_id,c.host_id,e.operation_id);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
+      const previous=await repo.getState(e.project_id);if(!previous?.admitted)fail('protocol_incompatible');let state=copy(previous),delta:OperationalTaskEvent[]=[],result:CommandResult|null=null,error:AuthorityError|null=null;
+      try{
+        if(e.expected_revision!==state.revision)fail('revision_conflict');
+        const outcome=await new TaskAuthorityClosureService(repo,c,this.epoch).reduce(e,state,{
+          busy:async(resources,ownLease)=>{for(const other of await repo.allStates())for(const lease of Object.values(other.leases)){if(lease.id===ownLease)continue;const pending=Object.values(other.effects).some(effect=>effect.leaseId===lease.id&&['dispatched','started','confirmed','indeterminate'].includes(effect.state));if((pending||lease.expiresAt>Date.now())&&resources.some(a=>lease.resources.some(b=>overlaps(a,b))))return true;}return false;},
+          authorize:async effect=>{let auth:AuthorityAuthorization;try{auth=await finiteClosure(()=>c.capabilityValidator(e as unknown as Obj,effect),c.closure_timeout_ms);}catch{fail('capability_revoked');}if(!auth||!Number.isSafeInteger(auth.max_lease_ms)||auth.max_lease_ms<=0)fail('capability_revoked');normalizeResourceList(auth.resources);return auth;},
+          artifact:async(ref,kind,effect)=>{let valid=false;try{valid=await finiteClosure(()=>c.artifactValidator(ref,kind,e as unknown as Obj,effect),c.closure_timeout_ms);}catch{/* refuse */}if(!valid)fail('fence_rejected');}
+        });
+        if(await repo.currentHash(e.project_id)!==previous.operationalHash)fail('fence_rejected');state.revision++;delta=outcome.delta;result={vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:e.project_id,issuer_id:c.host_id,operation_id:e.operation_id,revision:state.revision,...outcome.result} as CommandResult;
+      }catch(caught){error=errorCode(caught);state=copy(previous);delta=[];}
+      const receipt:AuthorityReceipt={signature,revision:state.revision,result,error};const event:CoordinationCommittedEvent={id:uuid(),deviceId:'task-authority',timestamp:Date.now(),type:'project_coordination_committed',protocol:'task-coordination-event/v1',vaultScope:c.vault_scope,authorityId:c.authority_id,projectId:e.project_id,previousRevision:previous.revision,revision:state.revision,operationKey:JSON.stringify([c.host_id,e.operation_id]),signature,issuerId:c.host_id,operationId:e.operation_id,state,receipt,delta};
+      try{await this.journal!.append(event);await repo.apply(event);}catch{this.healthy=false;this.suspended=true;fail('authority_unavailable');}if(error)fail(error);return result;
+    });
+  }
   async executeCommand(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
     const e = normalizeCommand(value);if(this.client){if(this.suspended&&['admitProject','acquireUnit','renewLease','dispatchEffect','beginEffect','interactiveMutation'].includes(String((e.command as Obj).type)))fail('authority_unavailable');return this.client.executeCommand(e);} const c = this.scope(e, false, authenticatedIssuer);
     return serializeAuthority(c.vault_scope, c.authority_id, async () => {
@@ -211,12 +240,12 @@ export class TaskAuthorityRuntime {
       return false;
     };
     const authorization = async (effect?: AuthorityEffect): Promise<AuthorityAuthorization> => {
-      let auth: AuthorityAuthorization; try { auth = await c.capabilityValidator(e,effect); } catch { fail('capability_revoked'); }
+      let auth: AuthorityAuthorization; try { auth = await (effect?.subject?finiteClosure(()=>c.capabilityValidator(e,effect),c.closure_timeout_ms):c.capabilityValidator(e,effect)); } catch { fail('capability_revoked'); }
       if (!auth || !Array.isArray(auth.resources) || !Number.isSafeInteger(auth.max_lease_ms) || auth.max_lease_ms <= 0 || auth.resources.some(r => typeof r !== 'string')) fail('capability_revoked');
       try { normalizeResourceList(auth.resources); } catch { fail('capability_revoked'); }
       return auth;
     };
-    const artifact = async (ref: unknown, kind: 'proposal'|'receipt'|'evidence', effect?:AuthorityEffect): Promise<void> => { let valid=false; try {valid=await c.artifactValidator(ref as ArtifactRef,kind,e,effect);} catch { /* refuse */ } if (!valid) fail('fence_rejected'); };
+    const artifact = async (ref: unknown, kind: 'proposal'|'receipt'|'evidence', effect?:AuthorityEffect): Promise<void> => { let valid=false; try {valid=await (effect?.subject?finiteClosure(()=>c.artifactValidator(ref as ArtifactRef,kind,e,effect),c.closure_timeout_ms):c.artifactValidator(ref as ArtifactRef,kind,e,effect));} catch { /* refuse */ } if (!valid) fail('fence_rejected'); };
     if (cmd.type === 'interactiveMutation') {
       const mutation = cmd.mutation as InteractiveMutation;
       const derived = [`project:${project}`]; const task = mutation.arguments.taskId; if (typeof task === 'string') derived.push(`task:${task}`);
@@ -252,13 +281,15 @@ export class TaskAuthorityRuntime {
       const lease = requireLease(); const auth=await authorization();
       if ((await this.repository().allStates()).some(other=>Object.prototype.hasOwnProperty.call(other.effects,String(cmd.effect_id)))) fail('fence_rejected');
       if (!same(lease.resources,cmd.resources) || !same(auth.resources,cmd.resources) || Object.values(state.effects).some(effect => effect.leaseId===lease.id && pending(effect)) || (Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined)) fail('fence_rejected');
-      await artifact(cmd.proposal_ref,'proposal');
       const effect: AuthorityEffect={id:String(cmd.effect_id),operationId:String(e.operation_id),dispatchId:uuid(),leaseId:lease.id,issuer,hostId:c.host_id,proposalHash:String(cmd.proposal_hash),preconditionHash:String(cmd.precondition_hash),capabilityRef:cmd.capability_ref,proposalRef:cmd.proposal_ref,lastRevision:state.revision+1,resources:lease.resources,state:'dispatched'}; state.effects={...state.effects,[effect.id]:effect};
+      if(lease.subject){effect.subject=copy(lease.subject);await new TaskAuthorityClosureService(this.repository(),c,this.epoch).validate('dispatchEffect',e,state,lease.subject,effect);}
+      await artifact(cmd.proposal_ref,'proposal',effect);
       result={status:'dispatched',epoch:this.epoch,effect_id:effect.id,dispatch_id:effect.dispatchId};
     } else if (cmd.type === 'beginEffect') {
       const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined); const lease=state.leases[String(cmd.lease_id)];
       if (!effect || !lease || effect.dispatchId!==cmd.dispatch_id || effect.leaseId!==lease.id || effect.hostId!==issuer || cmd.host_id!==issuer || cmd.epoch!==this.epoch || lease.epoch!==this.epoch || lease.expiresAt<=now || effect.state!=='dispatched' || effect.proposalHash!==cmd.proposal_hash) fail('fence_rejected');
       await authorization(effect); await artifact(effect.proposalRef,'proposal',effect);
+      if(effect.subject)await new TaskAuthorityClosureService(this.repository(),c,this.epoch).validate('beginEffect',e,state,effect.subject,effect);
       effect.state='started';effect.lastRevision=state.revision+1; result={status:'started',dispatch_id:effect.dispatchId,effect_id:effect.id};
     } else if (cmd.type === 'recordEffect') {
       const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined); if (!effect || effect.dispatchId!==cmd.dispatch_id || effect.hostId!==issuer || !['started','indeterminate'].includes(effect.state)) fail('fence_rejected');
@@ -267,7 +298,7 @@ export class TaskAuthorityRuntime {
       result={status:effect.state,effect_id:effect.id};
     } else if (cmd.type === 'commitProgress') {
       const lease=requireLease(); const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined);
-      if (!effect || effect.state!=='confirmed' || effect.leaseId!==lease.id || lease.taskId!==cmd.task_id || !same(effect.receiptRef,cmd.receipt_ref)) fail('fence_rejected');
+      if (!effect || effect.subject || lease.subject || effect.state!=='confirmed' || effect.leaseId!==lease.id || lease.taskId!==cmd.task_id || !same(effect.receiptRef,cmd.receipt_ref)) fail('fence_rejected');
       await authorization(effect); await artifact(cmd.receipt_ref,'receipt',effect); for (const ref of cmd.evidence_refs as ArtifactRef[]) await artifact(ref,'evidence');
       await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id); const task=await this.repository().requireTask(project,String(cmd.task_id)); if (task.status!==cmd.expected_status) fail('revision_conflict');
       const prepared=await this.repository().prepare(project,{kind:'updateTask',arguments:{taskId:cmd.task_id,status:cmd.next_status,metadata:{dream_effect_receipt_v1:{effect_id:effect.id,receipt_ref:cmd.receipt_ref,evidence_refs:cmd.evidence_refs}}}});
@@ -291,7 +322,8 @@ export class TaskAuthorityRuntime {
       const oldLease=state.leases[effect.leaseId];if(!oldLease||input.lease_ms>Math.min(c.max_lease_ms,oldLease.maxLeaseMs))fail('fence_rejected');
       const envelope:Obj={protocol:'task-authority-confirmed-recovery/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,issuer_id:c.host_id,operation_id:input.operation_id,proof_ref:input.proof_ref,command:{type:'recoverConfirmedEffect',effect_id:input.effect_id,dispatch_id:input.dispatch_id}};
       let verified=false;try{verified=await c.artifactValidator(input.proof_ref,'recovery',envelope,effect)&&await c.artifactValidator(effect.receiptRef,'receipt',envelope,effect);const authorization=await c.capabilityValidator(envelope,effect);verified=verified&&same(authorization.resources,effect.resources)&&input.lease_ms<=authorization.max_lease_ms;}catch{verified=false;}if(!verified)fail('fence_rejected');
-      await repo.validateEligibility(input.project_id,oldLease.taskId,c.vault_scope,c.authority_id);
+      if(oldLease.subject){if(!same(oldLease.subject,effect.subject))fail('fence_rejected');await new TaskAuthorityClosureService(repo,c,this.epoch).validate('recoverConfirmedEffect',envelope,state,oldLease.subject,effect,[input.proof_ref]);}
+      else{if(typeof oldLease.taskId!=='string'||!oldLease.taskId)fail('fence_rejected');await repo.validateEligibility(input.project_id,oldLease.taskId,c.vault_scope,c.authority_id);}
       const lease:AuthorityLease={...oldLease,id:uuid(),epoch:this.epoch,expiresAt:Date.now()+input.lease_ms};delete state.leases[oldLease.id];state.leases[lease.id]=lease;effect.leaseId=lease.id;state.epoch=this.epoch;state.revision++;
       const result:CommandResult={vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,issuer_id:c.host_id,operation_id:input.operation_id,revision:state.revision,status:'acquired',epoch:this.epoch,lease_id:lease.id,expires_at:new Date(lease.expiresAt).toISOString(),resources:lease.resources};
       const receipt:AuthorityReceipt={signature,revision:state.revision,result,error:null};const event:CoordinationCommittedEvent={id:uuid(),deviceId:'task-authority',timestamp:Date.now(),type:'project_coordination_committed',protocol:'task-coordination-event/v1',vaultScope:c.vault_scope,authorityId:c.authority_id,projectId:input.project_id,previousRevision:previous.revision,revision:state.revision,operationKey:JSON.stringify([c.host_id,input.operation_id]),signature,issuerId:c.host_id,operationId:input.operation_id,state,receipt,delta:[]};

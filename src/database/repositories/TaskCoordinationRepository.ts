@@ -122,6 +122,10 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
       if (event.receipt.error && (event.delta.length || (previous && canonicalJson(previous) !== canonicalJson(event.state)))) throw new Error('rejected coordination event changed state');
       if (!previous?.admitted && !event.receipt.error && (!event.state.admitted || event.receipt.result?.status !== 'admitted' || event.state.baselineHash !== event.state.operationalHash)) throw new Error('missing coordination admission');
       if (event.delta.some(delta => (delta as {type: string}).type === 'project_coordination_committed')) throw new Error('nested coordination event');
+      for(const lease of Object.values(event.state.leases)){
+        if(lease.subject){if(lease.subject.kind!=='closure'||!lease.subject.closure_id||!lease.subject.step||lease.taskId!==undefined)throw new Error('invalid closure lease subject');}
+        else if(typeof lease.taskId!=='string'||!lease.taskId)throw new Error('unit lease missing task identity');
+      }
       receipts.set(receiptKey, event.receipt);seenEvents.set(receiptKey,canonicalJson(event)); states.set(event.projectId, event.state);
     }
   }

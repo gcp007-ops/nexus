@@ -1,0 +1,56 @@
+import {fixture} from '../helpers/taskAuthorityFixture';
+import {normalizeClosureCommand,CLOSURE_STEPS,type ClosureStep} from '../../src/agents/taskManager/authority/TaskAuthorityClosureContracts';
+import {normalizeCommandResult,normalizeQueryResult} from '../../src/agents/taskManager/authority/TaskAuthorityContracts';
+import {TaskAuthorityRuntime,type TaskAuthorityConfiguration} from '../../src/agents/taskManager/authority/TaskAuthorityRuntime';
+const hash='c'.repeat(64),ref={artifact_id:hash,hash},cap={id:'closure-cap',version:1,revision:1,hash};
+type Obj=Record<string,any>;
+async function setup(){const f=await fixture();await f.cache.run("UPDATE tasks SET status='done' WHERE projectId='p'");await f.admit();
+ const config:TaskAuthorityConfiguration={...f.config,closure_timeout_ms:10000,closureValidator:async r=>({protocol:'task-closure-authorization/v1',authorized:true,step:r.step,criteria_ref:r.closure?.criteria_ref??((r.envelope.command as Obj).criteria_ref),allow_physical_deferred:true}),capabilityValidator:async(e,effect)=>({resources:(e.command as Obj).resources??effect?.resources??['project:p'],max_lease_ms:10000})};await f.runtime.configure(config);
+ let sequence=0;const internal=async(command:Obj,operation_id=`closure-${++sequence}`)=>({protocol:'task-closure-command/v1',vault_scope:'v',authority_id:'a',project_id:'p',issuer_id:'host',operation_id,expected_revision:(await f.repository.getState('p'))!.revision,command});
+ const native=async(command:Obj)=>f.host.executeCommand(await f.command('p',command,{issuer_id:'host'})) as Promise<Obj>;
+ const acquire=async(step:ClosureStep)=>f.host.closureCommand(await internal({type:'acquireClosure',closure_id:'closure',initiative_id:'initiative',criteria_ref:ref,step,capability_ref:cap,resources:['project:p'],lease_ms:10000})) as Promise<Obj>;
+ const start=async(step:ClosureStep,index:number)=>{const lease=await acquire(step);const dispatched=await native({type:'dispatchEffect',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:`effect-${index}`,capability_ref:cap,resources:['project:p'],precondition_hash:hash,proposal_ref:ref,proposal_hash:hash});await native({type:'beginEffect',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:`effect-${index}`,dispatch_id:dispatched.dispatch_id,host_id:'host',proposal_hash:hash});return{lease,dispatched,effect_id:`effect-${index}`};};
+ const finish=async(step:ClosureStep,index:number)=>{const current=await start(step,index);if(step==='project_archived_confirmed')await f.host.closureCommand(await internal({type:'archiveClosureProject',closure_id:'closure',lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,gate_proof_ref:ref}));await native({type:'recordEffect',effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,receipt_ref:ref,receipt_hash:hash,result:'applied'});const command=await internal({type:'commitClosureStep',closure_id:'closure',step,lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,receipt_ref:ref,evidence_refs:[ref]});const result=await f.host.closureCommand(command);await native({type:'releaseLease',lease_id:current.lease.lease_id,epoch:current.lease.epoch});return{...current,command,result};};
+ return{...f,get host(){return f.host;},config,internal,native,acquire,start,finish};
+}
+describe('internal fenced closure gateway',()=>{
+ it('rejects fake task fields, unbounded configuration and public closure ingress',async()=>{const f=await setup();try{
+  await expect(f.runtime.executeCommand(await f.internal({type:'acquireClosure',closure_id:'closure',initiative_id:'initiative',criteria_ref:ref,step:'gate_confirmed',capability_ref:cap,resources:['project:p'],lease_ms:10000}))).rejects.toThrow('invalid_command');
+  const e=await f.internal({type:'acquireClosure',closure_id:'closure',initiative_id:'initiative',criteria_ref:ref,step:'gate_confirmed',capability_ref:cap,resources:['project:p'],lease_ms:10000,task_id:'fake'});expect(()=>normalizeClosureCommand(e)).toThrow();
+  await expect(f.runtime.configure({...f.config,closureValidator:f.config.closureValidator,closure_timeout_ms:Infinity})).rejects.toThrow();
+ }finally{await f.cleanup();}});
+ it('requires all tasks done and never borrows a terminal task identity',async()=>{const f=await setup();try{
+  await f.service.updateTask('u',{status:'in_progress'});await expect(f.acquire('gate_confirmed')).rejects.toThrow('fence_rejected');await f.service.updateTask('u',{status:'done'});
+  const lease=await f.acquire('gate_confirmed');const stored=(await f.repository.getState('p'))!.leases[lease.lease_id];expect(stored.subject).toEqual({kind:'closure',closure_id:'closure',step:'gate_confirmed'});expect(stored.taskId).toBeUndefined();
+ }finally{await f.cleanup();}});
+ it('advances all five boundaries, survives readback after each and archives the real project exactly once',async()=>{const f=await setup();try{
+  for(let n=0;n<CLOSURE_STEPS.length;n++){
+   const done=await f.finish(CLOSURE_STEPS[n],n);expect(normalizeCommandResult(done.result)).toMatchObject({status:'committed',kind:'closure_step',entity_id:'closure'});
+   expect(await f.host.closureCommand(done.command)).toEqual(done.result);
+   const state=await f.host.readClosure({project_id:'p',closure_id:'closure',operation_id:done.command.operation_id}) as Obj;expect(state.closure.steps).toHaveLength(n+1);expect(state.closure.steps[n].effect_id).toBe(`effect-${n}`);expect(state.operation.result).toEqual(done.result);
+   if(n>=2)expect((await f.cache.queryOne<Obj>("SELECT status FROM projects WHERE id='p'"))!.status).toBe('archived');
+  }
+  expect(Object.keys((await f.repository.getState('p'))!.leases)).toHaveLength(0);await expect(f.acquire('closure_verified')).rejects.toThrow('fence_rejected');
+ }finally{await f.cleanup();}});
+ it('keeps every started boundary occupied until a quiescent canonical receipt is consumed',async()=>{const f=await setup();try{
+  for(let n=0;n<CLOSURE_STEPS.length;n++){
+   const current=await f.start(CLOSURE_STEPS[n],n);
+   await expect(f.native({type:'releaseLease',lease_id:current.lease.lease_id,epoch:current.lease.epoch})).rejects.toThrow('effect_indeterminate');
+   await expect(f.acquire(CLOSURE_STEPS[n])).rejects.toThrow('lease_busy');
+   if(n===2){const archive=await f.internal({type:'archiveClosureProject',closure_id:'closure',lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,gate_proof_ref:ref});const first=await f.host.closureCommand(archive);expect(await f.host.closureCommand(archive)).toEqual(first);const status=await f.host.readClosure({project_id:'p',closure_id:'closure',operation_id:archive.operation_id}) as Obj;expect(status.effects.find((e:Obj)=>e.id===current.effect_id).closureArchive).toMatchObject({operation_id:archive.operation_id,after_hash:(await f.repository.getState('p'))!.operationalHash});}
+   await f.native({type:'recordEffect',effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,receipt_ref:ref,receipt_hash:hash,result:'applied'});
+   await expect(f.native({type:'commitProgress',lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,receipt_ref:ref,task_id:'t',expected_status:'in_progress',next_status:'done',evidence_refs:[ref]})).rejects.toThrow('fence_rejected');
+   await f.host.closureCommand(await f.internal({type:'commitClosureStep',closure_id:'closure',step:CLOSURE_STEPS[n],lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,receipt_ref:ref,evidence_refs:[ref]}));await f.native({type:'releaseLease',lease_id:current.lease.lease_id,epoch:current.lease.epoch});
+  }
+ }finally{await f.cleanup();}});
+ it('blocks a refused or timed out canonical gate and rechecks sources after awaiting it',async()=>{const f=await setup();try{
+  await f.runtime.configure({...f.config,closureValidator:async()=>{throw Error('human gate pending');}});await expect(f.acquire('gate_confirmed')).rejects.toThrow('fence_rejected');
+  await f.runtime.configure({...f.config,closure_timeout_ms:1,closureValidator:()=>new Promise(()=>{})});await expect(f.acquire('gate_confirmed')).rejects.toThrow('fence_rejected');
+  await f.runtime.configure({...f.config,closureValidator:async r=>{await f.cache.run("UPDATE tasks SET status='todo' WHERE id='t'");return f.config.closureValidator!(r);}});await expect(f.acquire('gate_confirmed')).rejects.toThrow(/fence_rejected|authority_unavailable/);
+  expect(Object.keys((await f.repository.getState('p'))!.leases)).toHaveLength(0);
+ }finally{await f.cleanup();}});
+ it('replays the canonical ledger through a real runtime restart at all five boundaries',async()=>{const f=await setup();let active=f.runtime;try{
+  for(let n=0;n<CLOSURE_STEPS.length;n++){await f.finish(CLOSURE_STEPS[n],n);await active.close();active=new TaskAuthorityRuntime(f.storage);await active.configure(f.config);const read=await f.host.readClosure({project_id:'p',closure_id:'closure'}) as Obj;expect(read.closure.steps).toHaveLength(n+1);expect(read.closure.steps[n].kind).toBe(CLOSURE_STEPS[n]);}
+ }finally{await active.close();await f.cleanup();}});
+ it('preserves receipt v1 wire compatibility and rejects old generation closure ports',async()=>{const f=await setup();try{const old=f.host;const done=await f.finish('gate_confirmed',0);const wire=await f.host.query({protocol:'task-authority-query/v1',type:'getOperation',vault_scope:'v',authority_id:'a',project_id:'p',issuer_id:'host',operation_id:done.command.operation_id});expect(()=>normalizeQueryResult(wire)).not.toThrow();await f.runtime.configure(f.config);expect(()=>old.readClosure({project_id:'p',closure_id:'closure'})).toThrow('unauthorized');expect((await f.host.readClosure({project_id:'p',closure_id:'closure'}) as Obj).closure.steps).toHaveLength(1);}finally{await f.cleanup();}});
+});
