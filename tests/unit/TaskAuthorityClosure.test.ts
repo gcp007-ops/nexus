@@ -1,3 +1,4 @@
+import {closureConsumptionMatches} from '../../src/agents/taskManager/authority/TaskAuthorityClosureService';
 import {fixture} from '../helpers/taskAuthorityFixture';
 import {normalizeClosureCommand,CLOSURE_STEPS,type ClosureStep} from '../../src/agents/taskManager/authority/TaskAuthorityClosureContracts';
 import {normalizeCommandResult,normalizeQueryResult} from '../../src/agents/taskManager/authority/TaskAuthorityContracts';
@@ -78,5 +79,42 @@ describe('separate consumption capability at native commit',()=>{
   await f.host.executeCommand(await f.command('p',{type:'beginEffect',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:'producer',dispatch_id:dispatch.dispatch_id,host_id:'host',proposal_hash:hash},{issuer_id:'host'}));await f.host.executeCommand(await f.command('p',{type:'recordEffect',effect_id:'producer',dispatch_id:dispatch.dispatch_id,receipt_ref:ref,receipt_hash:hash,result:'applied'},{issuer_id:'host'}));
   const command=await f.command('p',{type:'commitProgress',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:'producer',receipt_ref:ref,task_id:'t',expected_status:'in_progress',next_status:'in_progress',evidence_refs:[ref]});
   if(scenario==='valid'){expect(await f.runtime.executeCommand(command)).toMatchObject({status:'committed'});const state=(await f.repository.getState('p'))!;expect(state.effects.producer.capabilityRef).toEqual(cap);expect(await f.host.readProgressConsumption({project_id:'p',effect_id:'producer',dispatch_id:dispatch.dispatch_id})).toMatchObject({protocol:'task-progress-consumption/v1',producer_receipt_ref:ref,binding:{consumption_capability_ref:{id:'fixture-progress-only'}}});await expect(f.host.readProgressConsumption({project_id:'p',effect_id:'producer',dispatch_id:'wrong'})).rejects.toThrow('fence_rejected');expect(state.effects.producer.progressConsumption).toMatchObject({consumption_capability_ref:{id:'fixture-progress-only'},consumption_profile_ref:{id:'fixture-progress-profile'},source_revision:command.expected_revision});await f.runtime.executeCommand(await f.command('p',{type:'releaseLease',lease_id:lease.lease_id,epoch:lease.epoch}));expect(Object.keys((await f.repository.getState('p'))!.leases)).toHaveLength(0);}else{await expect(f.runtime.executeCommand(command)).rejects.toThrow(/protocol_incompatible|capability_revoked|fence_rejected/);expect((await f.repository.getState('p'))!.effects.producer.state).toBe('confirmed');expect((await f.repository.getState('p'))!.effects.producer.progressConsumption).toBeUndefined();await expect(f.runtime.executeCommand(await f.command('p',{type:'releaseLease',lease_id:lease.lease_id,epoch:lease.epoch}))).rejects.toThrow('effect_indeterminate');}
+ }finally{await f.cleanup();}});
+});
+
+describe('factual release of a committed closure step',()=>{
+ // setup uses a controlled synthetic closureValidator; step/receipt/journal are real.
+ it('releases an old lease only after the native closure ledger records its commit',async()=>{const f=await setup();let restarted:TaskAuthorityRuntime|undefined;try{
+  const current=await f.start('gate_confirmed',0);
+  await f.native({type:'recordEffect',effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,receipt_ref:ref,receipt_hash:hash,result:'applied'});
+  const command=await f.internal({type:'commitClosureStep',closure_id:'closure',step:'gate_confirmed',lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,receipt_ref:ref,evidence_refs:[ref]});
+  await f.host.closureCommand(command);
+  const receipt=await f.repository.getReceipt('p','host',command.operation_id);expect(receipt).not.toBeNull();
+  const canonical=(await f.repository.getState('p'))!,effect=canonical.effects[current.effect_id];expect(closureConsumptionMatches(canonical,effect)).toBe(true);
+  for(const field of ['kind','effect_id','receipt_ref','revision'] as const){const changed=JSON.parse(JSON.stringify(canonical)) as typeof canonical;const step=changed.closures!.closure.steps[0];if(field==='kind')step.kind='closure_verified';else if(field==='effect_id')step.effect_id='wrong';else if(field==='receipt_ref')step.receipt_ref={artifact_id:'wrong',hash};else step.revision++;expect(closureConsumptionMatches(changed,changed.effects[current.effect_id])).toBe(false);}
+  const missing=JSON.parse(JSON.stringify(canonical)) as typeof canonical;missing.closures!.closure.steps=[];expect(closureConsumptionMatches(missing,missing.effects[current.effect_id])).toBe(false);
+  const input={project_id:'p',effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,commit_operation_id:command.operation_id,commit_operation_signature:receipt!.signature,operation_id:'release-closure'};
+  await expect(f.host.releaseCommittedLease({...input,commit_operation_signature:hash})).rejects.toThrow('fence_rejected');
+  await expect(f.host.releaseCommittedLease({...input,commit_operation_id:'wrong'})).rejects.toThrow('fence_rejected');
+  await expect(f.host.releaseCommittedLease({...input,effect_id:'wrong'})).rejects.toThrow('fence_rejected');
+  const old=f.host;await f.runtime.configure(f.config);await expect(async()=>old.releaseCommittedLease(input)).rejects.toThrow('unauthorized');
+  await f.runtime.close();restarted=new TaskAuthorityRuntime(f.storage);await restarted.configure(f.config);await restarted.suspend();
+  const result=await f.host.releaseCommittedLease(input);expect(result).toMatchObject({status:'released'});expect((await f.repository.getState('p'))!.leases[current.lease.lease_id]).toBeUndefined();
+  expect(await f.host.releaseCommittedLease(input)).toEqual(result);
+  expect(await f.host.releaseCommittedLease({...input,operation_id:'absent-closure'})).toMatchObject({status:'released'});
+  await restarted.close();restarted=new TaskAuthorityRuntime(f.storage);await restarted.configure(f.config);expect(await f.host.releaseCommittedLease(input)).toEqual(result);
+ }finally{await restarted?.close();await f.cleanup();}});
+ it('does not treat project archival or a different step receipt as a consumed closure step',async()=>{const f=await setup();try{
+  const first=await f.finish('gate_confirmed',0);await f.finish('note_terminal_confirmed',1);const current=await f.start('project_archived_confirmed',2);
+  const archive=await f.internal({type:'archiveClosureProject',closure_id:'closure',lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,gate_proof_ref:ref});await f.host.closureCommand(archive);
+  const archiveReceipt=(await f.repository.getReceipt('p','host',archive.operation_id))!;
+  const input={project_id:'p',effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,commit_operation_id:archive.operation_id,commit_operation_signature:archiveReceipt.signature,operation_id:'wrong-archive'};
+  await expect(f.host.releaseCommittedLease(input)).rejects.toThrow('fence_rejected');
+  await f.native({type:'recordEffect',effect_id:current.effect_id,dispatch_id:current.dispatched.dispatch_id,receipt_ref:ref,receipt_hash:hash,result:'applied'});
+  const commit=await f.internal({type:'commitClosureStep',closure_id:'closure',step:'project_archived_confirmed',lease_id:current.lease.lease_id,epoch:current.lease.epoch,effect_id:current.effect_id,receipt_ref:ref,evidence_refs:[ref]});await f.host.closureCommand(commit);
+  await expect(f.host.releaseCommittedLease(input)).rejects.toThrow('fence_rejected');
+  const prior=(await f.repository.getReceipt('p','host',first.command.operation_id))!;
+  await expect(f.host.releaseCommittedLease({...input,operation_id:'wrong-step',commit_operation_id:first.command.operation_id,commit_operation_signature:prior.signature})).rejects.toThrow('fence_rejected');
+  expect((await f.repository.getState('p'))!.leases[current.lease.lease_id]).toBeDefined();
  }finally{await f.cleanup();}});
 });

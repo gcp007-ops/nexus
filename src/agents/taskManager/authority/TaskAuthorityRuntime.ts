@@ -9,7 +9,7 @@ import { TaskAuthorityHttpsServer,validateServerConfiguration,type TaskAuthority
 import { v4 as uuid } from '../../../utils/uuid';
 import {normalizeProgressAuthorization,type TaskProgressValidationRequest,type TaskProgressAuthorization,type TaskProgressConsumptionReadback} from './TaskAuthorityProgressContracts';
 import {normalizeClosureCommand,type ClosureValidationRequest,type ClosureAuthorization} from './TaskAuthorityClosureContracts';
-import {TaskAuthorityClosureService,closureRecord,finiteClosure} from './TaskAuthorityClosureService';
+import {TaskAuthorityClosureService,closureRecord,closureConsumptionMatches,finiteClosure} from './TaskAuthorityClosureService';
 import type {DispatchedEffectCancellation,DispatchCancellationRequest,DispatchCancellationProof} from './TaskAuthorityCancellationContracts';
 type Obj = Record<string, unknown>;
 export interface AuthorityAuthorization { resources: string[]; max_lease_ms: number }
@@ -344,12 +344,18 @@ export class TaskAuthorityRuntime {
       const old=await repo.getReceipt(input.project_id,c.host_id,input.operation_id);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
       const previous=await repo.getState(input.project_id);if(!previous?.admitted)fail('fence_rejected');
       const state=copy(previous),effect=Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
-      if(!effect||effect.state!=='committed'||effect.dispatchId!==input.dispatch_id||effect.hostId!==c.host_id||!effect.progressConsumption||effect.progressConsumption.commit_operation_id!==input.commit_operation_id||effect.progressConsumption.commit_operation_signature!==input.commit_operation_signature)fail('fence_rejected');
-      const commit=await repo.getReceipt(input.project_id,effect.issuer,input.commit_operation_id);
-      const result=commit?.result;
-      if(!commit||commit.error||commit.signature!==input.commit_operation_signature||!result||result.status!=='committed'||!('effect_id' in result)||result.effect_id!==effect.id||!('task_id' in result)||!('receipt_ref' in result)||typeof result.task_id!=='string'||!effect.resources.includes(`task:${result.task_id}`)||result.project_id!==input.project_id||result.issuer_id!==effect.issuer||!same(result.receipt_ref,effect.receiptRef))fail('fence_rejected');
+      if(!effect||effect.state!=='committed'||effect.dispatchId!==input.dispatch_id||effect.hostId!==c.host_id)fail('fence_rejected');
+      const commit=await repo.getReceipt(input.project_id,effect.issuer,input.commit_operation_id),result=commit?.result;
+      if(!commit||commit.error||commit.signature!==input.commit_operation_signature||!result||result.status!=='committed'||result.project_id!==input.project_id||result.issuer_id!==effect.issuer)fail('fence_rejected');
       const lease=Object.prototype.hasOwnProperty.call(state.leases,effect.leaseId)?state.leases[effect.leaseId]:undefined;
-      if(lease&&(lease.id!==effect.leaseId||lease.issuer!==effect.issuer||lease.taskId!==result.task_id||!same(lease.resources,effect.resources)))fail('fence_rejected');
+      if(effect.subject){
+        const subject=effect.subject;
+        if(subject.kind!=='closure'||effect.issuer!==c.host_id||!effect.receiptRef||!('kind' in result)||result.kind!=='closure_step'||!('entity_id' in result)||result.entity_id!==subject.closure_id||commit.revision!==effect.lastRevision||result.revision!==effect.lastRevision||!closureConsumptionMatches(state,effect))fail('fence_rejected');
+        if(lease&&(lease.id!==effect.leaseId||lease.issuer!==effect.issuer||lease.taskId!==undefined||!same(lease.subject,subject)||!same(lease.resources,effect.resources)))fail('fence_rejected');
+      }else{
+        if(!effect.progressConsumption||effect.progressConsumption.commit_operation_id!==input.commit_operation_id||effect.progressConsumption.commit_operation_signature!==input.commit_operation_signature||!('effect_id' in result)||result.effect_id!==effect.id||!('task_id' in result)||!('receipt_ref' in result)||typeof result.task_id!=='string'||!effect.resources.includes(`task:${result.task_id}`)||!same(result.receipt_ref,effect.receiptRef))fail('fence_rejected');
+        if(lease&&(lease.id!==effect.leaseId||lease.issuer!==effect.issuer||lease.taskId!==result.task_id||!same(lease.resources,effect.resources)))fail('fence_rejected');
+      }
       if(Object.values(state.effects).some(other=>other.id!==effect.id&&other.leaseId===effect.leaseId&&['dispatched','started','confirmed','indeterminate'].includes(other.state)))fail('effect_indeterminate');
       if(lease)delete state.leases[effect.leaseId];state.revision++;
       const released:CommandResult={vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,issuer_id:c.host_id,operation_id:input.operation_id,revision:state.revision,status:'released'};

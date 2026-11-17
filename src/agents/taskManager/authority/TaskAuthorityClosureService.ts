@@ -13,6 +13,12 @@ export async function finiteClosure<T>(call:()=>Promise<T>,ms:number|undefined):
  try{return await Promise.race([Promise.resolve().then(call),new Promise<never>((_,reject)=>{timer=window.setTimeout(()=>reject(Error('fence_rejected')),ms);})]);}finally{if(timer)window.clearTimeout(timer);}
 }
 export function closureRecord(state:AuthorityProjectState,id:string):ClosureRecord|null{return state.closures&&Object.prototype.hasOwnProperty.call(state.closures,id)?state.closures[id]:null;}
+/** Match the consumed effect against the native closure ledger, never an archive marker. */
+export function closureConsumptionMatches(state:AuthorityProjectState,effect:AuthorityEffect):boolean{
+ const subject=effect.subject;if(!subject||subject.kind!=='closure'||!effect.receiptRef)return false;
+ const record=closureRecord(state,subject.closure_id);
+ return !!record&&record.id===subject.closure_id&&record.steps.filter(step=>step.kind===subject.step&&step.effect_id===effect.id&&same(step.receipt_ref,effect.receiptRef)&&step.revision===effect.lastRevision).length===1;
+}
 /** No executor lives here: native project archival uses the existing planner;
  * external note/archive effects remain owned by the bound host applicators. */
 export class TaskAuthorityClosureService {
