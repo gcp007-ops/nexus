@@ -113,7 +113,13 @@ export class TaskAuthorityRuntime {
   }
   /** Lifecycle cleanup does not resolve any pending external effect. */
   async close(): Promise<void> { await this.suspend(); const config = this.config; if (config && this.journal) await serializeAuthority(config.vault_scope, config.authority_id, () => this.journal!.deactivate()); this.healthy = false; }
-  async isAdmitted(projectId: string): Promise<boolean> { if (this.storage.waitForQueryReady && !await this.storage.waitForQueryReady()) fail('authority_unavailable'); await this.repository().replay();if(this.client&&this.clientConfig){const c=this.clientConfig;const status=await this.client.query({protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:projectId,issuer_id:c.issuer_id}) as {admitted:boolean};if(!status.admitted&&await this.repository().isAdmitted(projectId))fail('fence_rejected');return status.admitted;} return this.repository().isAdmitted(projectId); }
+  async isAdmitted(projectId: string): Promise<boolean> { if (this.storage.waitForQueryReady && !await this.storage.waitForQueryReady()) fail('authority_unavailable'); await this.repository().replay();if(this.client&&this.clientConfig){const c=this.clientConfig;const status=await this.client.query({protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:projectId,issuer_id:c.issuer_id}) as {admitted:boolean};if(!status.admitted&&await this.repository().isAdmitted(projectId))fail('fence_rejected');return status.admitted;} if(this.config)await this.repository().assertProjectScope(projectId,this.config.vault_scope,this.config.authority_id); return this.repository().isAdmitted(projectId); }
+  private async scopedState(projectId:string,c:TaskAuthorityConfiguration):Promise<AuthorityProjectState|null> {
+    const repo=this.repository();await repo.assertProjectScope(projectId,c.vault_scope,c.authority_id);return repo.getState(projectId);
+  }
+  private async scopedReceipt(projectId:string,issuerId:string,operationId:string,c:TaskAuthorityConfiguration):Promise<AuthorityReceipt|null> {
+    const repo=this.repository();await repo.assertProjectScope(projectId,c.vault_scope,c.authority_id);return repo.getReceipt(projectId,issuerId,operationId);
+  }
   private scope(envelope: Obj, query = false, authenticatedIssuer?: string): TaskAuthorityConfiguration {
     const c = this.config; if (!c || !this.healthy || !this.journal) fail('authority_unavailable');
     if (envelope.vault_scope !== c.vault_scope || envelope.authority_id !== c.authority_id) fail('unauthorized');
@@ -126,8 +132,8 @@ export class TaskAuthorityRuntime {
   async query(value: unknown, authenticatedIssuer?: string): Promise<unknown> {
     const e = normalizeQuery(value);if(this.client)return this.client.query(e); const c = this.scope(e, true, authenticatedIssuer);
     return serializeAuthority(c.vault_scope, c.authority_id, async () => {
-      await this.repository().replay(); const state = await this.repository().getState(e.project_id as string);
-      if (e.type === 'getOperation') { const receipt = await this.repository().getReceipt(e.project_id as string,e.issuer_id as string,e.operation_id as string); const result = receipt?.result ?? null; return { state: receipt?.error ? 'rejected' : result ? result.status === 'admitted' || result.status === 'acquired' || result.status === 'renewed' || result.status === 'released' ? 'committed' : result.status === 'confirmed' ? 'confirmed' : result.status === 'started' ? 'started' : result.status === 'dispatched' ? 'dispatched' : result.status : 'not_found', revision: state?.revision ?? 0, result, error: receipt?.error ?? null }; }
+      await this.repository().replay(); const state = await this.scopedState(e.project_id as string,c);
+      if (e.type === 'getOperation') { const receipt = await this.scopedReceipt(e.project_id as string,e.issuer_id as string,e.operation_id as string,c); const result = receipt?.result ?? null; return { state: receipt?.error ? 'rejected' : result ? result.status === 'admitted' || result.status === 'acquired' || result.status === 'renewed' || result.status === 'released' ? 'committed' : result.status === 'confirmed' ? 'confirmed' : result.status === 'started' ? 'started' : result.status === 'dispatched' ? 'dispatched' : result.status : 'not_found', revision: state?.revision ?? 0, result, error: receipt?.error ?? null }; }
       const resources = state ? this.resourceView(state) : [];
       return { admitted: state?.admitted ?? false, revision: state?.revision ?? 0, epoch: this.epoch, resources };
     });
@@ -136,7 +142,7 @@ export class TaskAuthorityRuntime {
     const c=this.config;if(!c||!this.healthy||this.client||typeof input?.project_id!=='string'||!input.project_id)fail('authority_unavailable');
     return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
       await this.journal!.assertActive();await this.repository().replay();
-      const state=await this.repository().getState(input.project_id);if(!state?.admitted)fail('protocol_incompatible');
+      const state=await this.scopedState(input.project_id,c);if(!state?.admitted)fail('protocol_incompatible');
       const rows=await this.repository().operationalSource(input.project_id) as Record<string,unknown>[][];
       const digest=await authorityHash(rows);if(digest!==state.operationalHash||rows[0]?.length!==1)fail('fence_rejected');
       return copy({protocol:'task-project-source/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,revision:state.revision,operational_hash:digest,complete:true,project:rows[0][0],tasks:rows[1],dependencies:rows[2],note_links:rows[3],external_children:rows[4]??[]});
@@ -181,19 +187,19 @@ export class TaskAuthorityRuntime {
   }
   private async readProgressConsumption(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskProgressConsumptionReadback|null>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,project_id'||Object.values(input).some(v=>typeof v!=='string'||!v))fail('invalid_command');const c=this.config;if(!c||this.client)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{const repo=this.repository();await repo.replay();const state=await repo.getState(input.project_id),effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');if(effect.state!=='committed'||!effect.progressConsumption||!effect.receiptRef||!effect.recordOperationId||!effect.recordOperationSignature)return null;return copy({protocol:'task-progress-consumption/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,state:'committed',binding:effect.progressConsumption,producer_receipt_ref:effect.receiptRef,record_operation_id:effect.recordOperationId,record_operation_signature:effect.recordOperationSignature,revision:effect.lastRevision});});
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{const repo=this.repository();await repo.replay();const state=await this.scopedState(input.project_id,c),effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');if(effect.state!=='committed'||!effect.progressConsumption||!effect.receiptRef||!effect.recordOperationId||!effect.recordOperationSignature)return null;return copy({protocol:'task-progress-consumption/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,state:'committed',binding:effect.progressConsumption,producer_receipt_ref:effect.receiptRef,record_operation_id:effect.recordOperationId,record_operation_signature:effect.recordOperationSignature,revision:effect.lastRevision});});
   }
   private async readClosure(input:{project_id:string;closure_id:string;operation_id?:string}):Promise<unknown>{
     if(!input||Object.keys(input).some(k=>!['project_id','closure_id','operation_id'].includes(k))||typeof input.project_id!=='string'||!input.project_id||typeof input.closure_id!=='string'||!input.closure_id||(input.operation_id!==undefined&&(typeof input.operation_id!=='string'||!input.operation_id)))fail('invalid_command');
     const c=this.config;if(!c||this.client)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.repository().getState(input.project_id);if(!state?.admitted)fail('protocol_incompatible');return copy({protocol:'task-closure-state/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,closure_id:input.closure_id,revision:state.revision,epoch:this.epoch,closure:closureRecord(state,input.closure_id),effects:Object.values(state.effects).filter(effect=>effect.subject?.closure_id===input.closure_id),operation:input.operation_id?await this.repository().getReceipt(input.project_id,c.host_id,input.operation_id):null});});
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.scopedState(input.project_id,c);if(!state?.admitted)fail('protocol_incompatible');return copy({protocol:'task-closure-state/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,closure_id:input.closure_id,revision:state.revision,epoch:this.epoch,closure:closureRecord(state,input.closure_id),effects:Object.values(state.effects).filter(effect=>effect.subject?.closure_id===input.closure_id),operation:input.operation_id?await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c):null});});
   }
   private async executeClosureCommand(value:unknown):Promise<unknown>{
     const e=normalizeClosureCommand(value),c=this.scope(e as unknown as Obj,false,this.config?.host_id);if(!c.closureValidator||!c.closure_timeout_ms)fail('protocol_incompatible');
     return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
       if((this.suspended&&e.command.type!=='commitClosureStep')||!this.healthy)fail('authority_unavailable');const repo=this.repository();await this.journal!.assertActive();await repo.replay();
-      const signature=await authorityHash(e),old=await repo.getReceipt(e.project_id,c.host_id,e.operation_id);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
-      const previous=await repo.getState(e.project_id);if(!previous?.admitted)fail('protocol_incompatible');let state=copy(previous),delta:OperationalTaskEvent[]=[],result:CommandResult|null=null,error:AuthorityError|null=null;
+      const signature=await authorityHash(e),old=await this.scopedReceipt(e.project_id,c.host_id,e.operation_id,c);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
+      const previous=await this.scopedState(e.project_id,c);if(!previous?.admitted)fail('protocol_incompatible');let state=copy(previous),delta:OperationalTaskEvent[]=[],result:CommandResult|null=null,error:AuthorityError|null=null;
       try{
         if(e.expected_revision!==state.revision)fail('revision_conflict');
         const outcome=await new TaskAuthorityClosureService(repo,c,this.epoch).reduce(e,state,{
@@ -213,9 +219,9 @@ export class TaskAuthorityRuntime {
       const repo = this.repository();
       try { await this.journal!.assertActive(); await repo.replay(); } catch { this.healthy = false; fail('authority_unavailable'); }
       const signature = await authorityHash(e); const projectId = e.project_id as string; const issuer = e.issuer_id as string; const operation = e.operation_id as string;
-      const old = await repo.getReceipt(projectId, issuer, operation);
+      const old = await this.scopedReceipt(projectId,issuer,operation,c);
       if (old) { if (old.signature !== signature) fail('operation_signature_conflict'); if (old.error) fail(old.error); return old.result; }
-      const previous = await repo.getState(projectId); const base = previous ?? {admitted:false, revision:0,epoch:this.epoch,baselineHash:await repo.currentHash(projectId),operationalHash:await repo.currentHash(projectId),leases:{},effects:{}};
+      const previous = await this.scopedState(projectId,c); const base = previous ?? {admitted:false, revision:0,epoch:this.epoch,baselineHash:await repo.currentHash(projectId),operationalHash:await repo.currentHash(projectId),leases:{},effects:{}};
       let state = copy(base); let delta: OperationalTaskEvent[] = []; let priorityAssignment:PriorityAssignment|undefined; let result: CommandResult | null = null; let error: AuthorityError | null = null;
       try {
         if (e.expected_revision !== base.revision) fail('revision_conflict');
@@ -324,7 +330,7 @@ export class TaskAuthorityRuntime {
       let consumption:TaskProgressAuthorization;try{consumption=normalizeProgressAuthorization(await finiteClosure(()=>c.progressValidator!(copy({protocol:'task-progress-validation/v1',envelope:e,source:validationContext!.authority_source,effect,transition:{task_id:String(cmd.task_id),expected_status:String(cmd.expected_status),next_status:String(cmd.next_status),receipt_ref:cmd.receipt_ref as ArtifactRef,evidence_refs:cmd.evidence_refs as ArtifactRef[]}})),c.progress_timeout_ms));}catch{fail('fence_rejected');}
       if(same(consumption.consumption_capability_ref,effect.capabilityRef))fail('capability_revoked');
       effect.progressConsumption={consumption_capability_ref:consumption.consumption_capability_ref,consumption_profile_ref:consumption.consumption_profile_ref,proof_refs:consumption.proof_refs,source_revision:state.revision,operational_hash:sourceHash,commit_operation_id:String(e.operation_id),commit_operation_signature:await authorityHash(e)};
-      if(await this.repository().currentHash(project)!==sourceHash||(await this.repository().getState(project))?.revision!==state.revision)fail('fence_rejected');
+      if(await this.repository().currentHash(project)!==sourceHash||(await this.scopedState(project,c))?.revision!==state.revision)fail('fence_rejected');
       await this.repository().validateEligibility(project,String(cmd.task_id),c.vault_scope,c.authority_id); const task=await this.repository().requireTask(project,String(cmd.task_id)); if (task.status!==cmd.expected_status) fail('revision_conflict');
       const prepared=await this.repository().prepare(project,{kind:'updateTask',arguments:{taskId:cmd.task_id,status:cmd.next_status,metadata:{dream_effect_receipt_v1:{effect_id:effect.id,receipt_ref:cmd.receipt_ref,evidence_refs:cmd.evidence_refs}}}});
       if(lease.expiresAt<=Date.now()||lease.epoch!==this.epoch)fail('stale_epoch');
@@ -341,11 +347,11 @@ export class TaskAuthorityRuntime {
       if(generation!==this.generation)fail('unauthorized');
       const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash({protocol:'task-committed-lease-release/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
-      const old=await repo.getReceipt(input.project_id,c.host_id,input.operation_id);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
-      const previous=await repo.getState(input.project_id);if(!previous?.admitted)fail('fence_rejected');
+      const old=await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c);if(old){if(old.signature!==signature)fail('operation_signature_conflict');if(old.error)fail(old.error);return old.result;}
+      const previous=await this.scopedState(input.project_id,c);if(!previous?.admitted)fail('fence_rejected');
       const state=copy(previous),effect=Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
       if(!effect||effect.state!=='committed'||effect.dispatchId!==input.dispatch_id||effect.hostId!==c.host_id)fail('fence_rejected');
-      const commit=await repo.getReceipt(input.project_id,effect.issuer,input.commit_operation_id),result=commit?.result;
+      const commit=await this.scopedReceipt(input.project_id,effect.issuer,input.commit_operation_id,c),result=commit?.result;
       if(!commit||commit.error||commit.signature!==input.commit_operation_signature||!result||result.status!=='committed'||result.project_id!==input.project_id||result.issuer_id!==effect.issuer)fail('fence_rejected');
       const lease=Object.prototype.hasOwnProperty.call(state.leases,effect.leaseId)?state.leases[effect.leaseId]:undefined;
       if(effect.subject){
@@ -371,8 +377,8 @@ export class TaskAuthorityRuntime {
     return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
       const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash({protocol:'task-dispatch-cancellation/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
-      const oldReceipt=await repo.getReceipt(input.project_id,c.host_id,input.operation_id);if(oldReceipt){if(oldReceipt.signature!==signature)fail('operation_signature_conflict');if(oldReceipt.error)fail(oldReceipt.error);return oldReceipt.result;}
-      const previous=await repo.getState(input.project_id);if(!previous?.admitted)fail('fence_rejected');const state=copy(previous),effect=state.effects[input.effect_id];
+      const oldReceipt=await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c);if(oldReceipt){if(oldReceipt.signature!==signature)fail('operation_signature_conflict');if(oldReceipt.error)fail(oldReceipt.error);return oldReceipt.result;}
+      const previous=await this.scopedState(input.project_id,c);if(!previous?.admitted)fail('fence_rejected');const state=copy(previous),effect=state.effects[input.effect_id];
       if(!effect||effect.dispatchId!==input.dispatch_id||effect.hostId!==c.host_id||effect.state!=='dispatched')fail('fence_rejected');
       if(!c.cancelDispatchedValidator||!c.cancel_dispatched_timeout_ms)fail('protocol_incompatible');
       let proof:DispatchCancellationProof;try{proof=await finiteClosure(()=>c.cancelDispatchedValidator!(copy({protocol:'task-dispatch-cancellation-validation/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id,project_id:input.project_id,effect,proof_ref:input.proof_ref})),c.cancel_dispatched_timeout_ms);}catch{fail('fence_rejected');}
@@ -394,8 +400,8 @@ export class TaskAuthorityRuntime {
     return serializeAuthority(c.vault_scope,c.authority_id,async()=>{
       const repo=this.repository();await this.journal!.assertActive();await repo.replay();
       const signature=await authorityHash({protocol:'task-authority-confirmed-recovery/v1',...input,vault_scope:c.vault_scope,authority_id:c.authority_id,host_id:c.host_id});
-      const previousReceipt=await repo.getReceipt(input.project_id,c.host_id,input.operation_id);if(previousReceipt){if(previousReceipt.signature!==signature)fail('operation_signature_conflict');if(previousReceipt.error)fail(previousReceipt.error);return previousReceipt.result;}
-      const previous=await repo.getState(input.project_id);if(!previous?.admitted)fail('fence_rejected');const state=copy(previous);
+      const previousReceipt=await this.scopedReceipt(input.project_id,c.host_id,input.operation_id,c);if(previousReceipt){if(previousReceipt.signature!==signature)fail('operation_signature_conflict');if(previousReceipt.error)fail(previousReceipt.error);return previousReceipt.result;}
+      const previous=await this.scopedState(input.project_id,c);if(!previous?.admitted)fail('fence_rejected');const state=copy(previous);
       const effect=Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
       if(!effect||effect.dispatchId!==input.dispatch_id||effect.state!=='confirmed'||!effect.receiptRef||effect.hostId!==c.host_id)fail('fence_rejected');
       const oldLease=state.leases[effect.leaseId];if(!oldLease||input.lease_ms>Math.min(c.max_lease_ms,oldLease.maxLeaseMs))fail('fence_rejected');
@@ -412,12 +418,12 @@ export class TaskAuthorityRuntime {
   private async readPriorityEvidence(input:{project_id:string;task_id:string}):Promise<TaskPriorityEvidence|null>{
     if(!input||Object.keys(input).sort().join(',')!=='project_id,task_id'||Object.values(input).some(v=>typeof v!=='string'||!v.trim()))fail('invalid_command');
     const c=this.config;if(!c||this.client)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();return this.repository().readPriorityEvidence(input.project_id,input.task_id,c.vault_scope,c.authority_id);});
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();await this.repository().assertProjectScope(input.project_id,c.vault_scope,c.authority_id);return this.repository().readPriorityEvidence(input.project_id,input.task_id,c.vault_scope,c.authority_id);});
   }
   async readEffectEvidence(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<TaskEffectEvidence|null>{
     if(!input||Object.keys(input).sort().join(',')!=='dispatch_id,effect_id,project_id'||Object.values(input).some(v=>typeof v!=='string'||!v.trim()))fail('invalid_command');
     if(this.client)fail('protocol_incompatible');const c=this.config;if(!c)fail('authority_unavailable');
-    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.repository().getState(input.project_id);const effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
+    return serializeAuthority(c.vault_scope,c.authority_id,async()=>{await this.repository().replay();const state=await this.scopedState(input.project_id,c);const effect=state&&Object.prototype.hasOwnProperty.call(state.effects,input.effect_id)?state.effects[input.effect_id]:undefined;
       if(!effect)return null;if(effect.dispatchId!==input.dispatch_id)fail('fence_rejected');
       return {protocol:'task-effect-verification/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.project_id,effect_id:effect.id,dispatch_id:effect.dispatchId,host_id:effect.hostId,revision:effect.recordRevision??effect.lastRevision,state:effect.state,proposal_ref:copy(effect.proposalRef) as ArtifactRef,proposal_hash:effect.proposalHash,precondition_hash:effect.preconditionHash,capability_ref:copy(effect.capabilityRef) as TaskEffectEvidence['capability_ref'],receipt_ref:effect.receiptRef?copy(effect.receiptRef):null,receipt_hash:effect.receiptRef?.hash??null,record_operation_id:effect.recordOperationId??null,record_operation_signature:effect.recordOperationSignature??null};
     });
@@ -429,7 +435,7 @@ export class TaskAuthorityRuntime {
       const a=input.mutation.arguments;const resources=[`project:${input.projectId}`];if(typeof a.taskId==='string')resources.push(`task:${a.taskId}`);if(typeof a.parentTaskId==='string')resources.push(`task:${a.parentTaskId}`);for(const id of [...((a.dependsOn??[]) as string[]),...((a.addDependencies??[]) as string[]),...((a.removeDependencies??[]) as string[])])resources.push(`task:${id}`);
       return this.executeCommand({protocol:'task-authority-command/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.projectId,issuer_id:c.issuer_id,operation_id:uuid(),expected_revision:status.revision,command:{type:'interactiveMutation',resources:[...new Set(resources)].sort(),mutation:input.mutation}});
     }
-    const c=this.config;if(!c) fail('authority_unavailable'); const state=await this.repository().getState(input.projectId); if(!state?.admitted) fail('protocol_incompatible');
+    const c=this.config;if(!c) fail('authority_unavailable'); const state=await this.scopedState(input.projectId,c); if(!state?.admitted) fail('protocol_incompatible');
     const a=input.mutation.arguments; const resources=[`project:${input.projectId}`]; if(typeof a.taskId==='string')resources.push(`task:${a.taskId}`);if(typeof a.parentTaskId==='string')resources.push(`task:${a.parentTaskId}`);for(const id of [...((a.dependsOn??[]) as string[]),...((a.addDependencies??[]) as string[]),...((a.removeDependencies??[]) as string[])])resources.push(`task:${id}`);
     const result=await this.executeCommand({protocol:'task-authority-command/v1',vault_scope:c.vault_scope,authority_id:c.authority_id,project_id:input.projectId,issuer_id:c.issuer_id,operation_id:uuid(),expected_revision:state.revision,command:{type:'interactiveMutation',resources:[...new Set(resources)].sort(),mutation:input.mutation}}) as CommandResult;
     return result;

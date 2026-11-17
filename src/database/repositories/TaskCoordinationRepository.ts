@@ -77,6 +77,10 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
       if (events.some(e => e.type === 'project_coordination_committed' && e.projectId === projectId && e.state.admitted)) throw new Error('protocol_incompatible: admitted project requires authority');
     }
   }
+  async assertProjectScope(projectId:string,vaultScope:string,authorityId:string):Promise<void> {
+    const rows=await this.options.sqliteCache.query<{vaultScope:string;authorityId:string}>('SELECT vaultScope,authorityId FROM task_coordination_state WHERE projectId=?',[projectId]);
+    if(rows.some(row=>row.vaultScope!==vaultScope||row.authorityId!==authorityId))throw new Error('fence_rejected');
+  }
   async getState(projectId: string): Promise<AuthorityProjectState | null> {
     const rows = await this.options.sqliteCache.query<{ stateJson: string }>('SELECT stateJson FROM task_coordination_state WHERE projectId = ?', [projectId]);
     if (rows.length > 1) throw new Error('authority_unavailable');
@@ -131,6 +135,7 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
   }
   async apply(event: CoordinationCommittedEvent): Promise<void> {
     const { sqliteCache: cache, queryCache } = this.options;
+    await this.assertProjectScope(event.projectId,event.vaultScope,event.authorityId);
     const known=await this.getReceipt(event.projectId,event.issuerId,event.operationId);if(known){if(canonicalJson(known)!==canonicalJson(event.receipt))throw new Error('conflicting coordination projection');return;}
     await cache.transaction(async () => {
       const old = await this.getReceipt(event.projectId, event.issuerId, event.operationId);
