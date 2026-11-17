@@ -5,7 +5,7 @@ interface Status {protocol:'task-authority-secret-status/v1';secret_id:string;av
 function identity(input:unknown,fields:string[]):Identity&Record<string,unknown>{
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.getPrototypeOf(input)!==Object.prototype)throw Error('invalid_command');
   const v=input as Record<string,unknown>;
-  if(Object.keys(v).sort().join(',')!==fields.sort().join(',')||!['client-credential','server-certificate','server-key'].includes(String(v.kind))||typeof v.identity!=='string'||v.identity.length>100||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v.identity))throw Error('invalid_command');
+  if(Object.keys(v).sort().join(',')!==fields.sort().join(',')||!['client-credential','server-certificate','server-key'].includes(String(v.kind))||typeof v.identity!=='string'||`nexus-task-authority-${String(v.kind)}-${v.identity}`.length>64||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v.identity))throw Error('invalid_command');
   return v as Identity&Record<string,unknown>;
 }
 /** Trusted, local administrative surface. Not registered as a tool or network
