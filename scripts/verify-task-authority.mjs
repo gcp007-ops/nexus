@@ -47,6 +47,7 @@ async function kernel(){
   const acquire=(p,t)=>({type:'acquireUnit',task_id:t,resources:[shared,'project:'+p,'task:'+t].sort(),lease_ms:30000,capability_ref:f.cap});
   await refused(async()=>a.executeCommand(await envelope(f.p,acquire(f.p,f.t),'missing-priority')),'fence_rejected','No priority without authentic provenance');
   for(const[p,t]of[[f.p,f.t],[f.q,f.u]]){await service.updateTask(t,{priority:'high'});const proof=await window.__authorityQAHost.readPriorityEvidence({project_id:p,task_id:t});assert(proof?.value==='high'&&proof.source_issuer_id===f.human,'Canonical priority proof');}
+  const source=await window.__authorityQAHost.readProjectSnapshot({project_id:f.p});assert(source.complete===true&&source.tasks.length===1&&source.tasks[0].id===f.t&&source.dependencies.length===0&&source.revision===(await query(f.p)).revision,'Complete source from real WASM at current revision');
   const commands=[await envelope(f.p,acquire(f.p,f.t),'acquire-p'),await envelope(f.q,acquire(f.q,f.u),'acquire-q')];
   const race=await Promise.allSettled(commands.map(e=>a.executeCommand(e))),wins=race.filter(r=>r.status==='fulfilled'),losses=race.filter(r=>r.status==='rejected');
   assert(wins.length===1&&losses.length===1&&losses[0].reason.message==='lease_busy','Cross-project exclusive shared resource');
