@@ -298,6 +298,7 @@ export class TaskAuthorityRuntime {
       const effect: AuthorityEffect={id:String(cmd.effect_id),operationId:String(e.operation_id),dispatchId:uuid(),leaseId:lease.id,issuer,hostId:c.host_id,proposalHash:String(cmd.proposal_hash),preconditionHash:String(cmd.precondition_hash),capabilityRef:cmd.capability_ref,proposalRef:cmd.proposal_ref,lastRevision:state.revision+1,resources:lease.resources,state:'dispatched'}; state.effects={...state.effects,[effect.id]:effect};
       if(lease.subject){effect.subject=copy(lease.subject);await new TaskAuthorityClosureService(this.repository(),c,this.epoch).validate('dispatchEffect',e,state,lease.subject,effect);}
       await artifact(cmd.proposal_ref,'proposal',effect);
+      if(this.suspended)fail('authority_unavailable');if(lease.epoch!==this.epoch||lease.expiresAt<=Date.now())fail('stale_epoch');
       result={status:'dispatched',epoch:this.epoch,effect_id:effect.id,dispatch_id:effect.dispatchId};
     } else if (cmd.type === 'beginEffect') {
       const effect=(Object.prototype.hasOwnProperty.call(state.effects,String(cmd.effect_id)) ? state.effects[String(cmd.effect_id)] : undefined); const lease=state.leases[String(cmd.lease_id)];
