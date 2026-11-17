@@ -28,6 +28,10 @@ describe('task authority closed contracts', () => {
     ]) expect(() => normalizeCommand({ ...envelope, command })).toThrow();
     expect(() => normalizeCommand({ ...envelope, extra: 1, command: { type: 'admitProject', baseline_hash: hash } })).toThrow();
   });
+  it('rejects attempts to remove reserved derived metadata', () => {
+    const command = { type: 'interactiveMutation', resources: ['project:p'], mutation: { kind: 'updateTask', arguments: { taskId: 't', removeMetadataKeys: ['dream_priority_v1'] } } };
+    expect(() => normalizeCommand({ ...envelope, command })).toThrow();
+  });
   it('rejects noncanonical file resources', () => {
     const capability_ref = { id: 'c', version: 1, revision: 1, hash };
     for (const resource of ['file:v:../escape', 'file:v:/absolute', 'file:v:a/../b', 'file:v:a//b']) {

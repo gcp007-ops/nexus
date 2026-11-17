@@ -51,10 +51,11 @@ const variants: Record<string, { required: string[]; optional: string[] }> = {
   archiveProject: { required: ['projectId'], optional: [] },
   linkNote: { required: ['taskId','notePath'], optional: ['linkType','action'] },
 };
+function reservedMetadata(key: string): boolean { return key === 'dream_priority_v1' || key === 'coordination' || key.startsWith('coordination_'); }
 function metadata(value: unknown): void {
   const data = object(value);
   for (const key of Object.keys(data)) {
-    if (key === 'dream_priority_v1' || key === 'coordination' || key.startsWith('coordination_')) invalid();
+    if (reservedMetadata(key)) invalid();
   }
   // Arbitrary JSON metadata is permitted, but not non-JSON values or null.
   const check = (v: unknown): void => {
@@ -87,6 +88,7 @@ function mutation(value: unknown): void {
     if (k === 'action') oneOf(v, ['link','unlink']);
   }
   if (m.kind === 'moveTask' && !('projectId' in a) && !('parentTaskId' in a)) invalid();
+  if (Array.isArray(a.removeMetadataKeys) && a.removeMetadataKeys.some(key => typeof key === 'string' && reservedMetadata(key))) invalid();
   if (a.metadataMode === 'replace' && (!('metadata' in a) || 'removeMetadataKeys' in a)) invalid();
 }
 export function normalizeCommand(value: unknown): Obj {
