@@ -152,6 +152,23 @@ describe('TaskBoardSyncCoordinator', () => {
     expect(renderBoard).not.toHaveBeenCalled();
   });
 
+  it('reloads a filtered workspace after a coordination journal sync', async () => {
+    await createCoordinator().handleExternalSync(['*'], false);
+    expect(loadBoardData).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers a global coordination event without closing an active editor', async () => {
+    isEditModalOpen = true;
+    const coordinator = createCoordinator();
+    const event = createEvent({ workspaceId: '*' });
+    await coordinator.handleTaskBoardEvent(event);
+    expect(pendingEvent).toEqual(event);
+    expect(loadBoardData).not.toHaveBeenCalled();
+    isEditModalOpen = false;
+    await coordinator.flushPendingEvent();
+    expect(loadBoardData).toHaveBeenCalledTimes(1);
+  });
+
   it('defers external sync updates while the edit modal is open', async () => {
     isEditModalOpen = true;
     const coordinator = createCoordinator();

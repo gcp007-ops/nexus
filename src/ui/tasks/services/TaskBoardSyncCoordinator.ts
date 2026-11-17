@@ -58,6 +58,7 @@ export class TaskBoardSyncCoordinator {
 
     const filterState = this.deps.getFilterState();
     const isRelevantWorkspace = !filterState.workspaceId ||
+      event.workspaceId === '*' ||
       filterState.workspaceId === 'all' ||
       filterState.workspaceId === event.workspaceId;
 
@@ -80,6 +81,7 @@ export class TaskBoardSyncCoordinator {
 
     const filterState = this.deps.getFilterState();
     const isRelevantWorkspace = hasWorkspaceChanges ||
+      taskWorkspaceIds.includes('*') ||
       taskWorkspaceIds.length === 0 ||
       !filterState.workspaceId ||
       filterState.workspaceId === 'all' ||
