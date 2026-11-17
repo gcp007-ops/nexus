@@ -8,16 +8,23 @@
  * .task-authority-qa.json at the disposable vault root before running.
  */
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-const args=process.argv.slice(2),options={};
+import { hostname } from 'node:os';
+import { parseLiveOptions, participantMode } from './task-authority-participant.mjs';
+const originalArgs=process.argv.slice(2),live=originalArgs.includes('--mode')?parseLiveOptions(originalArgs):null;
+if(live && (live['--mode']!=='authority'||live['--phase']==='readback')) {
+  await participantMode(live);process.exit(0);
+}
+const args=live?['--vault',live['--vault'],'--expected-path',live['--expected-path'],'--artifacts-dir',live['--output-root']]:originalArgs,options={};
 for(let i=0;i<args.length;i+=2){if(!['--vault','--expected-path','--artifacts-dir'].includes(args[i])||!args[i+1]||options[args[i]])throw Error('Required: --vault --expected-path --artifacts-dir');options[args[i]]=args[i+1];}
 if(Object.keys(options).length!==3)throw Error('Required: --vault --expected-path --artifacts-dir');
 const vault=options['--vault'],expected=realpathSync(options['--expected-path']),artifacts=resolve(options['--artifacts-dir']);
 if(!/authority-qa-/.test(vault)||JSON.parse(readFileSync(join(expected,'.task-authority-qa.json'),'utf8')).protocol!=='task-authority-disposable-qa/v1')throw Error('Explicit disposable QA marker required');
 mkdirSync(artifacts,{recursive:true});
-const report={protocol:'task-authority-app-proof/v1',started_at:new Date().toISOString(),vault,expected_path:expected,coverage:'local authority, real WASM, CLI, board and restart; no external effect or remote TLS qualification',steps:[]};
+if(existsSync(join(artifacts,'authority-app-proof.json')))throw Error('Existing authority report; inspect receipts instead of replaying fixture creation');
+const report={protocol:'task-authority-app-proof/v1',run_id:live?.['--run-id']||randomUUID(),host:hostname(),started_at:new Date().toISOString(),vault,expected_path:expected,coverage:'local authority, real WASM, CLI, board and restart; no external effect or remote TLS qualification',steps:[]};
 function cli(...command){const r=spawnSync('obsidian',[`vault=${vault}`,...command],{encoding:'utf8',timeout:30000});if(r.status!==0||r.error||/^Error:/m.test(r.stdout))throw Error(r.error?.message||r.stdout+r.stderr);return r.stdout;}
 function evaluate(fn,arg){const output=cli('eval',`code=(${fn.toString()})(${JSON.stringify(arg)})`);const marker=output.lastIndexOf('=> ');if(marker<0)throw Error(output);return JSON.parse(output.slice(marker+3));}
 function save(){writeFileSync(join(artifacts,'authority-app-proof.json'),JSON.stringify(report,null,2)+'\n');}
@@ -88,7 +95,7 @@ try{
   const probe=evaluate(()=>({name:app.vault.getName(),path:app.vault.adapter.getBasePath()}));if(JSON.stringify(probe)!==JSON.stringify(identity))throw Error('Wrong vault identity');
   const main=readFileSync(join(expected,'.obsidian/plugins/nexus/main.js'));report.installed_main_sha256=createHash('sha256').update(main).digest('hex');save();
   cli('plugin:reload','id=nexus');
-  const fixture=evaluate(bind,{identity,run:randomUUID()});step('real kernel',evaluate(kernel));
+  const fixture=evaluate(bind,{identity,run:report.run_id});report.fixture=fixture;save();step('real kernel',evaluate(kernel));
   cli('command','id=nexus:open-task-board');step('real board',evaluate(board));
   cli('plugin:reload','id=nexus');evaluate(bind,{identity,fixture});
   const query={protocol:'task-authority-query/v1',type:'getProjectCoordination',vault_scope:fixture.scope,authority_id:fixture.authority,project_id:fixture.p,issuer_id:fixture.human};
