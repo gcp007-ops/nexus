@@ -81,7 +81,7 @@ export function reconcileProofs(authority, client, readback, run) {
 }
 
 export async function participantMode(options) {
-  const root=resolve(options['--output-root']),run=options['--run-id'];mkdirSync(root,{recursive:true});
+  const root=resolve(options['--output-root']),run=options['--run-id'];
   if(options['--mode']==='reconcile') {
     const names=['authority-app-proof.json','client-app-proof.json','authority-client-readback.json'];
     const proofs=names.map(n=>json(join(root,n))),result=reconcileProofs(...proofs,run);
@@ -89,6 +89,7 @@ export async function participantMode(options) {
     exclusive(join(root,'reconciliation.json'),result);console.log(JSON.stringify(result));return;
   }
   const target=identity(options),c=config(options),phase=options['--phase']||'create';
+  mkdirSync(root,{recursive:true});
   const input={identity:target,config:c};
   if(options['--mode']==='authority') {
     requireValue(phase==='readback','Authority participant phase must be readback');
