@@ -27,7 +27,7 @@ export function parseLiveOptions(args) {
 }
 
 function cli(vault, ...args) {
-  const command=process.platform==='win32'?'obsidian.com':'obsidian';
+  const command=process.platform==='win32'?join(process.env.ProgramFiles||'C:\\Program Files','Obsidian','Obsidian.com'):'obsidian';
   const result=spawnSync(command,[`vault=${vault}`,...args],{encoding:'utf8',timeout:30000});
   requireValue(!result.error && result.status===0 && !/^Error:/m.test(result.stdout), result.error?.message || result.stdout+result.stderr);
   return result.stdout;
