@@ -550,7 +550,11 @@ CREATE INDEX IF NOT EXISTS idx_np_key_text ON note_properties(key, value_text);
 CREATE INDEX IF NOT EXISTS idx_np_key_num ON note_properties(key, value_num);
 CREATE INDEX IF NOT EXISTS idx_np_note ON note_properties(note_id);
 
+-- Rebuildable projections of canonical task coordination events.
+CREATE TABLE IF NOT EXISTS task_coordination_state (vaultScope TEXT NOT NULL, authorityId TEXT NOT NULL, projectId TEXT NOT NULL, revision INTEGER NOT NULL, epoch INTEGER NOT NULL, baselineHash TEXT NOT NULL, stateJson TEXT NOT NULL, PRIMARY KEY (vaultScope, authorityId, projectId));
+CREATE TABLE IF NOT EXISTS task_coordination_receipts (vaultScope TEXT NOT NULL, authorityId TEXT NOT NULL, projectId TEXT NOT NULL, issuerId TEXT NOT NULL, operationId TEXT NOT NULL, signature TEXT NOT NULL, revision INTEGER NOT NULL, resultJson TEXT NOT NULL, PRIMARY KEY (vaultScope, authorityId, projectId, issuerId, operationId));
+
 -- ==================== INITIALIZATION ====================
 
-INSERT OR IGNORE INTO schema_version VALUES (18, strftime('%s', 'now') * 1000);
+INSERT OR IGNORE INTO schema_version VALUES (19, strftime('%s', 'now') * 1000);
 `;

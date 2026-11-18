@@ -327,7 +327,10 @@ describe('HybridStorageAdapter (Phase 0 characterization)', () => {
         getAppliers: jest.Mock;
         setReconcilePipeline: jest.Mock;
       };
-      sqliteCache: { getSyncStateStore: jest.Mock };
+      sqliteCache: {
+        getSyncStateStore: jest.Mock;
+        transaction: jest.Mock;
+      };
       queryCache: { clear: jest.Mock };
       reconcilePipeline: unknown;
     };
@@ -369,7 +372,10 @@ describe('HybridStorageAdapter (Phase 0 characterization)', () => {
         }),
         setReconcilePipeline: jest.fn()
       };
-      adapter.sqliteCache = { getSyncStateStore: jest.fn().mockReturnValue({}) };
+      adapter.sqliteCache = {
+        getSyncStateStore: jest.fn().mockReturnValue({}),
+        transaction: jest.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn())
+      };
       adapter.queryCache = { clear: jest.fn() };
       adapter.reconcilePipeline = null;
       return adapter;

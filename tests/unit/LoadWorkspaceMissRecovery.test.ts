@@ -105,7 +105,7 @@ describe('LoadWorkspaceTool miss recovery', () => {
       full: { 'ws-research': makeFullWorkspace('ws-research', 'Research') }
     });
 
-    const result = await tool.execute({ workspace: 'Research Notes', limit: 5 });
+    const result = await tool.execute({ workspace: 'Research Notes', detail: 'full', limit: 5 });
 
     expect(result.success).toBe(true);
     expect(result.data.context.name).toBe('Research');

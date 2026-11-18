@@ -147,3 +147,5 @@ npm run lint
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+A referência técnica da integração de autoridade de tarefas está em [Autoridade de tarefas](guide/task-authority.md).

@@ -46,6 +46,7 @@ export interface TaskDetailEditorState {
     description: string;
     status: TaskStatus;
     priority: TaskPriority;
+    priorityExplicit?: boolean;
     dueDate: string;
     assignee: string;
     tags: string;
@@ -174,7 +175,7 @@ export class TaskDetailRenderer {
                 this.renderTaskDropdown(metaGrid, 'Priority', task.priority, [
                     ['critical', 'Critical'], ['high', 'High'],
                     ['medium', 'Medium'], ['low', 'Low']
-                ], (value) => { task.priority = value as TaskPriority; });
+                ], (value) => { task.priority = value as TaskPriority; task.priorityExplicit = true; });
 
                 this.renderTaskDropdown(
                     metaGrid, 'Project', task.projectId,

@@ -101,6 +101,7 @@ interface ParsedStreamPath {
  */
 export function parseStreamPath(relativePath: string): ParsedStreamPath | null {
   const normalized = normalizePath(relativePath).replace(/^\/+|\/+$/g, '');
+  if (/^task-authority\//.test(normalized)) return {category:'tasks',streamId:'task-authority',businessId:'*'};
   const match = MATCH_SHARDED.exec(normalized) ?? MATCH_FLAT.exec(normalized);
   if (!match) {
     return null;

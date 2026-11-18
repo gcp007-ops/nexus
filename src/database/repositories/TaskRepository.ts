@@ -117,6 +117,8 @@ export class TaskRepository
   }
 
   async create(data: CreateTaskData): Promise<string> {
+    await this.taskMutationGuard?.(data.projectId);
+    if (data.parentTaskId) await this.guardReferencedTask(data.parentTaskId);
     const id = this.generateId();
     const now = Date.now();
     const tagsJson = data.tags ? JSON.stringify(data.tags) : null;
@@ -124,6 +126,7 @@ export class TaskRepository
 
     try {
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(data.projectId);
         // 1. Write event to JSONL
         await this.writeEvent<TaskCreatedEvent>(
           this.jsonlPath(data.workspaceId),
@@ -183,8 +186,11 @@ export class TaskRepository
   }
 
   async update(id: string, data: UpdateTaskData): Promise<void> {
+    if (data.projectId) await this.taskMutationGuard?.(data.projectId);
+    if (data.parentTaskId) await this.guardReferencedTask(data.parentTaskId);
     try {
       const existing = await this.getById(id);
+      if (existing) await this.taskMutationGuard?.(existing.projectId);
       if (!existing) {
         throw new Error(`Task not found: ${id}`);
       }
@@ -202,6 +208,8 @@ export class TaskRepository
       let wrote = false;
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(existing.projectId);
+        if (data.projectId) await this.taskMutationGuard?.(data.projectId);
         const resolvedMetadata = await this.resolveMetadataInTransaction(id, data);
         if (!hasFieldUpdate && resolvedMetadata === undefined) {
           return;
@@ -279,11 +287,13 @@ export class TaskRepository
   async delete(id: string): Promise<void> {
     try {
       const existing = await this.getById(id);
+      if (existing) await this.taskMutationGuard?.(existing.projectId);
       if (!existing) {
         throw new Error(`Task not found: ${id}`);
       }
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(existing.projectId);
         // 1. Write event to JSONL
         await this.writeEvent<TaskDeletedEvent>(
           this.jsonlPath(existing.workspaceId),
@@ -471,13 +481,16 @@ export class TaskRepository
   }
 
   async addDependency(taskId: string, dependsOnTaskId: string): Promise<void> {
+    await this.guardReferencedTask(dependsOnTaskId);
     try {
       const task = await this.getById(taskId);
       if (!task) throw new Error(`Task not found: ${taskId}`);
+      await this.taskMutationGuard?.(task.projectId);
 
       const now = Date.now();
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(task.projectId);
         // 1. Write event to JSONL
         await this.writeEvent<TaskDependencyAddedEvent>(
           this.jsonlPath(task.workspaceId),
@@ -504,11 +517,14 @@ export class TaskRepository
   }
 
   async removeDependency(taskId: string, dependsOnTaskId: string): Promise<void> {
+    await this.guardReferencedTask(dependsOnTaskId);
     try {
       const task = await this.getById(taskId);
       if (!task) throw new Error(`Task not found: ${taskId}`);
+      await this.taskMutationGuard?.(task.projectId);
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(task.projectId);
         // 1. Write event to JSONL
         await this.writeEvent<TaskDependencyRemovedEvent>(
           this.jsonlPath(task.workspaceId),
@@ -562,10 +578,12 @@ export class TaskRepository
     try {
       const task = await this.getById(taskId);
       if (!task) throw new Error(`Task not found: ${taskId}`);
+      await this.taskMutationGuard?.(task.projectId);
 
       const now = Date.now();
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(task.projectId);
         // 1. Write event to JSONL
         await this.writeEvent<TaskNoteLinkedEvent>(
           this.jsonlPath(task.workspaceId),
@@ -596,8 +614,10 @@ export class TaskRepository
     try {
       const task = await this.getById(taskId);
       if (!task) throw new Error(`Task not found: ${taskId}`);
+      await this.taskMutationGuard?.(task.projectId);
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(task.projectId);
         // 1. Write event to JSONL
         await this.writeEvent<TaskNoteUnlinkedEvent>(
           this.jsonlPath(task.workspaceId),
@@ -641,6 +661,11 @@ export class TaskRepository
   // ============================================================================
   // Protected Methods
   // ============================================================================
+
+  private async guardReferencedTask(taskId:string):Promise<void>{
+    if(!this.taskMutationGuard)return;
+    const task=await this.getById(taskId);if(task)await this.taskMutationGuard(task.projectId);
+  }
 
   private async resolveMetadataInTransaction(
     id: string,

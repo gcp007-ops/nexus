@@ -25,7 +25,8 @@ import {
   TaskStatus,
   TaskWithNoteLinks,
   TaskNoteLink,
-  LinkedNoteInput
+  LinkedNoteInput,
+  UpdateTaskParameters
 } from '../types';
 import type { IProjectRepository, ProjectMetadata } from '../../../database/repositories/interfaces/IProjectRepository';
 import type {
@@ -65,6 +66,22 @@ export interface TaskBoardNotifier {
  */
 export type WorkspaceResolver = (workspaceId: string) => Promise<string | null>;
 export type TaskQueryReadyWaiter = () => Promise<boolean>;
+export type TaskUpdateMutation = UpdateTaskData & Pick<UpdateTaskParameters,
+  'taskId' | 'addDependencies' | 'removeDependencies' | 'addNoteLinks' | 'removeNoteLinks'>;
+
+/** Internal dependency; never constructed from tool metadata or wire fields. */
+export interface TaskAuthorityPort {
+  readEffectEvidence?(input:{project_id:string;effect_id:string;dispatch_id:string}):Promise<unknown>;
+  configure(config: unknown): Promise<void>;
+  suspend(): Promise<{ state: 'suspended'; pending_operation_ids: string[] }>;
+  executeCommand(envelope: unknown): Promise<unknown>;
+  query(envelope: unknown): Promise<unknown>;
+  isAdmitted(projectId: string): Promise<boolean>;
+  routeInteractiveMutation(input: {
+    projectId: string;
+    mutation: { kind: string; arguments: Record<string, unknown> };
+  }): Promise<unknown>;
+}
 
 /**
  * Normalize a createTask linkedNotes item to a uniform { notePath, linkType } shape.
@@ -97,9 +114,105 @@ export class TaskService {
     private dagService: IDAGService,
     resolveWorkspace?: WorkspaceResolver,
     private taskBoardNotifier?: TaskBoardNotifier,
-    private waitForQueryReady?: TaskQueryReadyWaiter
+    private waitForQueryReady?: TaskQueryReadyWaiter,
+    private authority?: TaskAuthorityPort
   ) {
     this.resolveWorkspace = resolveWorkspace ?? null;
+  }
+
+  getTaskAuthority(): {
+    protocol: 'task-authority/v1';
+    readEffectEvidence:(input:{project_id:string;effect_id:string;dispatch_id:string})=>Promise<unknown>;
+    executeCommand: (envelope: unknown) => Promise<unknown>;
+    query: (envelope: unknown) => Promise<unknown>;
+  } {
+    return {
+      protocol: 'task-authority/v1',
+      readEffectEvidence:async input=>{if(!this.authority?.readEffectEvidence)throw new Error('protocol_incompatible');return this.authority.readEffectEvidence(input);},
+      executeCommand: async envelope => {
+        if (!this.authority) throw new Error('authority_unavailable');
+        return this.authority.executeCommand(envelope);
+      },
+      query: async envelope => {
+        if (!this.authority) throw new Error('authority_unavailable');
+        return this.authority.query(envelope);
+      },
+    };
+  }
+
+  async configureTaskAuthority(config: unknown): Promise<void> {
+    if (!this.authority) throw new Error('protocol_incompatible');
+    await this.authority.configure(config);
+  }
+
+  async suspendTaskAuthority(): Promise<{ state: 'suspended'; pending_operation_ids: string[] }> {
+    if (!this.authority) throw new Error('protocol_incompatible');
+    return this.authority.suspend();
+  }
+
+  private async isAdmitted(projectId: string): Promise<boolean> {
+    return this.authority ? this.authority.isAdmitted(projectId) : false;
+  }
+
+  private async coordinate(projectId: string, kind: string, args: Record<string, unknown>, entityId?: string): Promise<string> {
+    if (!this.authority) throw new Error('authority_unavailable');
+    // Resolve human-facing references before the runtime signs the command.
+    const canonicalArgs = { ...args };
+    for (const key of ['taskId', 'parentTaskId']) {
+      if (typeof canonicalArgs[key] === 'string') canonicalArgs[key] = await this.resolveTaskId(canonicalArgs[key]);
+    }
+    for (const key of ['dependsOn', 'addDependencies', 'removeDependencies']) {
+      const values = canonicalArgs[key];
+      if (Array.isArray(values)) {
+        canonicalArgs[key] = await Promise.all(values.map(async value => {
+          if (typeof value !== 'string') throw new Error('invalid_command');
+          return this.resolveTaskId(value);
+        }));
+      }
+    }
+    const result = await this.authority.routeInteractiveMutation({
+      projectId,
+      mutation: { kind, arguments: Object.fromEntries(Object.entries(canonicalArgs).filter(([, value]) => value !== undefined)) },
+    });
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('protocol_incompatible');
+    const commit = result as Record<string, unknown>;
+    if (commit.status !== 'committed' || commit.kind !== kind || typeof commit.entity_id !== 'string'
+      || !commit.entity_id || (entityId !== undefined && commit.entity_id !== entityId)) {
+      throw new Error('protocol_incompatible');
+    }
+    return commit.entity_id;
+  }
+
+  /** The tool must submit fields, dependencies and links as one admitted delta. */
+  async tryCoordinateTaskUpdate(params: TaskUpdateMutation): Promise<boolean> {
+    await this.ensureQueryReady();
+    const task = await this.resolveTask(params.taskId);
+    if (!task) throw new Error(`Task "${params.taskId}" not found`);
+    if (!await this.isAdmitted(task.projectId)) return false;
+    const args = {
+      taskId: task.id, title: params.title, description: params.description,
+      status: params.status, priority: params.priority, dueDate: params.dueDate,
+      assignee: params.assignee, tags: params.tags, metadata: params.metadata,
+      metadataMode: params.metadataMode, removeMetadataKeys: params.removeMetadataKeys,
+      addDependencies: params.addDependencies, removeDependencies: params.removeDependencies,
+      addNoteLinks: params.addNoteLinks, removeNoteLinks: params.removeNoteLinks,
+    };
+    await this.coordinate(task.projectId, 'updateTask', args, task.id);
+    return true;
+  }
+
+  /** UI preflight; the actual move rechecks these predicates at execution. */
+  async assertTaskMoveAllowed(taskId: string, destinationProjectId: string): Promise<void> {
+    await this.ensureQueryReady();
+    const task = await this.resolveTask(taskId);
+    if (!task) throw new Error(`Task "${taskId}" not found`);
+    const destination = await this.projectRepo.getById(destinationProjectId);
+    if (!destination) throw new Error(`Target project "${destinationProjectId}" not found`);
+    if (destination.workspaceId !== task.workspaceId) throw new Error('Cannot move task to a project in a different workspace');
+    if (destinationProjectId !== task.projectId
+      && (await this.isAdmitted(task.projectId) || await this.isAdmitted(destinationProjectId))) {
+      throw new Error('protocol_incompatible');
+    }
   }
 
   /**
@@ -215,6 +328,11 @@ export class TaskService {
       throw new Error(`Project "${projectId}" not found`);
     }
 
+    if (await this.isAdmitted(projectId)) {
+      await this.coordinate(projectId, 'updateProject', { projectId, ...data }, projectId);
+      return;
+    }
+
     const metadataTriviallyEmpty = isMetadataUpdateTriviallyEmpty(data);
     const hasOrdinaryUpdate = data.name !== undefined
       || data.description !== undefined
@@ -249,6 +367,11 @@ export class TaskService {
       throw new Error(`Project "${projectId}" not found`);
     }
 
+    if (await this.isAdmitted(projectId)) {
+      await this.coordinate(projectId, 'archiveProject', { projectId }, projectId);
+      return;
+    }
+
     await this.projectRepo.update(projectId, {
       status: 'archived'
     });
@@ -268,6 +391,8 @@ export class TaskService {
     if (!project) {
       throw new Error(`Project "${projectId}" not found`);
     }
+
+    if (await this.isAdmitted(projectId)) throw new Error('protocol_incompatible');
 
     await this.projectRepo.delete(projectId);
 
@@ -303,6 +428,10 @@ export class TaskService {
         throw new Error('Parent task must be in the same project');
       }
       parentTaskId = parent.id;
+    }
+
+    if (await this.isAdmitted(projectId)) {
+      return this.coordinate(projectId, 'createTask', { projectId, ...data, parentTaskId });
     }
 
     const taskId = await this.taskRepo.create({
@@ -409,6 +538,11 @@ export class TaskService {
     }
     taskId = task.id;
 
+    if (await this.isAdmitted(task.projectId)) {
+      await this.coordinate(task.projectId, 'updateTask', { taskId, ...data }, taskId);
+      return;
+    }
+
     const metadataTriviallyEmpty = isMetadataUpdateTriviallyEmpty(data);
 
     const updateData: RepositoryUpdateTaskData = { ...data };
@@ -455,6 +589,17 @@ export class TaskService {
       throw new Error(`Task "${taskId}" not found`);
     }
     taskId = task.id;
+
+    const destinationId = target.projectId ?? task.projectId;
+    const originAdmitted = await this.isAdmitted(task.projectId);
+    const destinationAdmitted = destinationId === task.projectId ? originAdmitted : await this.isAdmitted(destinationId);
+    if (destinationId !== task.projectId && (originAdmitted || destinationAdmitted)) {
+      throw new Error('protocol_incompatible');
+    }
+    if (originAdmitted) {
+      await this.coordinate(task.projectId, 'moveTask', { taskId, ...target }, taskId);
+      return;
+    }
 
     const updateData: RepositoryUpdateTaskData = {};
 
@@ -508,6 +653,8 @@ export class TaskService {
     }
     taskId = task.id;
 
+    if (await this.isAdmitted(task.projectId)) throw new Error('protocol_incompatible');
+
     await this.taskRepo.delete(taskId);
 
     this.notifyTaskBoard({
@@ -538,6 +685,11 @@ export class TaskService {
       throw new Error('Dependencies must be within the same project');
     }
 
+    if (await this.isAdmitted(task.projectId)) {
+      await this.coordinate(task.projectId, 'updateTask', { taskId, addDependencies: [dependsOnTaskId] }, taskId);
+      return;
+    }
+
     const allEdges = await this.taskRepo.getAllDependencyEdges(task.projectId);
     const isSafe = this.dagService.validateNoCycle(taskId, dependsOnTaskId, allEdges);
     if (!isSafe) {
@@ -552,6 +704,11 @@ export class TaskService {
 
     taskId = await this.resolveTaskId(taskId);
     dependsOnTaskId = await this.resolveTaskId(dependsOnTaskId);
+    const task = await this.taskRepo.getById(taskId);
+    if (task && await this.isAdmitted(task.projectId)) {
+      await this.coordinate(task.projectId, 'updateTask', { taskId, removeDependencies: [dependsOnTaskId] }, taskId);
+      return;
+    }
     await this.taskRepo.removeDependency(taskId, dependsOnTaskId);
   }
 
@@ -701,6 +858,11 @@ export class TaskService {
     if (!task) throw new Error(`Task "${taskId}" not found`);
     taskId = task.id;
 
+    if (await this.isAdmitted(task.projectId)) {
+      await this.coordinate(task.projectId, 'linkNote', { taskId, notePath, linkType, action: 'link' }, taskId);
+      return;
+    }
+
     await this.taskRepo.addNoteLink(taskId, notePath, linkType);
 
     this.notifyTaskBoard({
@@ -717,6 +879,10 @@ export class TaskService {
 
     const task = await this.resolveTask(taskId);
     taskId = task?.id ?? taskId;
+    if (task && await this.isAdmitted(task.projectId)) {
+      await this.coordinate(task.projectId, 'linkNote', { taskId, notePath, action: 'unlink' }, taskId);
+      return;
+    }
     await this.taskRepo.removeNoteLink(taskId, notePath);
 
     if (task) {

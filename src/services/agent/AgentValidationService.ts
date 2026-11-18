@@ -12,6 +12,11 @@ import NexusPlugin from '../../main';
 import { DEFAULT_LLM_PROVIDER_SETTINGS } from '../../types';
 import { logger } from '../../utils/logger';
 
+function hasSettings(plugin: Plugin | NexusPlugin): plugin is NexusPlugin {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- f2106cbb added this assertion for the Windows toolchain; removing it regresses that fix
+  return 'settings' in plugin && (plugin as NexusPlugin).settings !== undefined;
+}
+
 /**
  * Service for validating agent capabilities and API keys
  */
@@ -24,8 +29,7 @@ export class AgentValidationService {
    */
   validateLLMApiKeys(): boolean {
     try {
-      const pluginWithSettings = this.plugin as Plugin & { settings?: { settings?: { llmProviders?: typeof DEFAULT_LLM_PROVIDER_SETTINGS } } };
-      const pluginSettings = pluginWithSettings?.settings?.settings;
+      const pluginSettings = hasSettings(this.plugin) ? this.plugin.settings.settings : undefined;
       const llmProviderSettings = pluginSettings?.llmProviders || DEFAULT_LLM_PROVIDER_SETTINGS;
 
       const defaultProvider = llmProviderSettings.defaultModel?.provider;
