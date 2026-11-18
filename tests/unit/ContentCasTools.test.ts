@@ -4,23 +4,27 @@ import * as path from 'node:path';
 import {createHash} from 'node:crypto';
 import {TestApp} from '../eval/headless/TestApp';
 import {Journal} from '../helpers/ContentCasJournal';
+import { createContentCasTestDirectory } from '../helpers/contentCasTestDirectory';
 import {ContentManagerAgent} from '../../src/agents/contentManager/contentManager';
 import {ToolManagerAgent} from '../../src/agents/toolManager/toolManager';
 import type {ToolOperationPersistenceProvider} from '../../src/agents/toolManager/services/ToolOperationService';
 
-const ROOT='/Volumes/Dados/qa-temp/nexus/ciclo-producao-peca-cas';
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const ctx={workspaceId:'default',sessionId:'cas-cli-test',memory:'Testing CAS CLI',goal:'Preserve exact bytes'};
 
 describe('content CAS CLI boundary',()=>{
  let base:string;let app:TestApp;let manager:ToolManagerAgent;let journal:Journal;
  beforeEach(()=>{
-  fs.mkdirSync(ROOT,{recursive:true});base=fs.mkdtempSync(path.join(ROOT,'cli-'));app=new TestApp({basePath:base});journal=new Journal();
+  base = createContentCasTestDirectory('cli-');
+  app = new TestApp({ basePath: base });
+  journal = new Journal();
   const provider:ToolOperationPersistenceProvider=async()=>({isReady:()=>true,operations:journal});
   const content=Reflect.construct(ContentManagerAgent,[app.asApp(),undefined,undefined,undefined,provider]) as ContentManagerAgent;
   manager=new ToolManagerAgent(app.asApp(),new Map([['contentManager',content]]),{workspaces:[],customAgents:[],vaultRoot:[]});
  });
- afterEach(()=>fs.rmSync(base,{recursive:true,force:true}));
+ afterEach(() => {
+  if (base) fs.rmSync(base, { recursive: true, force: true });
+ });
  it('preserves BOM, CRLF, quotes, backslashes and flag-like text via values',async()=>{
   const old='\uFEFF# AN\r\n"c:\\autos" --ref texto\r\n';const next=old+'Decisão do sócio.\r\n';
   await app.vault.create('AN.md',old);
