@@ -100,16 +100,42 @@ describe('authority state machine with real disk and SQL',()=>{
 describe('authenticated host readback and recovery',()=>{
   it('rejects a forged host issuer on the public/MCP ingress before recording a transition',async()=>{const f=await fixture();try{await f.admit();const before=await f.repository.getState('p');await expect(f.runtime.executeCommand(await f.command('p',{type:'beginEffect',dispatch_id:'d',effect_id:'e',lease_id:'l',epoch:1,host_id:'host',proposal_hash:hash}))).rejects.toThrow('unauthorized');expect(await f.repository.getState('p')).toEqual(before);}finally{await f.cleanup();}});
   it('requires authenticated priority provenance and preserves it through metadata replacement',async()=>{const f=await fixture();try{await f.admit();const acquire={type:'acquireUnit',task_id:'t',resources:['project:p','task:t'],lease_ms:1000,capability_ref:cap};await expect(f.runtime.executeCommand(await f.command('p',acquire))).rejects.toThrow('fence_rejected');await f.service.updateTask('t',{priority:'high'});await f.service.updateTask('t',{metadataMode:'replace',metadata:{ordinary:'value'}});expect(await f.runtime.executeCommand(await f.command('p',acquire))).toMatchObject({status:'acquired'});const row=await f.cache.queryOne<{metadataJson:string}>('SELECT metadataJson FROM tasks WHERE id=?',['t']);expect(JSON.parse(row!.metadataJson)).toMatchObject({ordinary:'value',dream_priority_v1:{value:'high'}});}finally{await f.cleanup();}});
-  it('links the canonical receipt and recovers only consumption after restart/expiry',async()=>{
+  it('binds receipt and evidence to the canonical effect during recovery after restart',async()=>{
     const f=await fixture();let restarted:TaskAuthorityRuntime|undefined;try{
       await f.admit();await f.service.updateTask('t',{priority:'high'});const resources=['project:p','task:t'];const lease=await f.runtime.executeCommand(await f.command('p',{type:'acquireUnit',task_id:'t',resources,lease_ms:1000,capability_ref:cap})) as Record<string,unknown>;
       const dispatch=await f.runtime.executeCommand(await f.command('p',{type:'dispatchEffect',lease_id:lease.lease_id,epoch:lease.epoch,effect_id:'effect',resources,capability_ref:cap,precondition_hash:'b'.repeat(64),proposal_ref:{artifact_id:'proposal',hash},proposal_hash:hash})) as Record<string,unknown>;
       await f.host.executeCommand(await f.command('p',{type:'beginEffect',dispatch_id:dispatch.dispatch_id,effect_id:'effect',lease_id:lease.lease_id,epoch:lease.epoch,host_id:'host',proposal_hash:hash}));
       const record=await f.command('p',{type:'recordEffect',dispatch_id:dispatch.dispatch_id,effect_id:'effect',receipt_ref:{artifact_id:'receipt',hash},receipt_hash:hash,result:'applied'});await f.host.executeCommand(record);
       const evidence=await f.service.getTaskAuthority().readEffectEvidence({project_id:'p',effect_id:'effect',dispatch_id:String(dispatch.dispatch_id)});expect(evidence).toMatchObject({protocol:'task-effect-verification/v1',state:'confirmed',record_operation_id:record.operation_id,receipt_ref:{artifact_id:'receipt',hash},receipt_hash:hash,precondition_hash:'b'.repeat(64)});expect((evidence as {record_operation_signature:string}).record_operation_signature).toMatch(/^[a-f0-9]{64}$/);
-      const oldHost=f.host;await f.runtime.close();restarted=new TaskAuthorityRuntime(f.storage);await restarted.configure(f.config);
+      const oldHost=f.host;await f.runtime.close();restarted=new TaskAuthorityRuntime(f.storage);
+      const receiptRef = { artifact_id: 'receipt', hash };
+      const proofRef = { artifact_id: 'proof', hash: 'c'.repeat(64) };
+      const otherEffectProof = { artifact_id: 'proof-other-effect', hash: 'b'.repeat(64) };
+      await restarted.configure({
+        ...f.config,
+        artifactValidator: async (artifact, kind, commandEnvelope, effect, context) => {
+          if ((commandEnvelope.command as { type: string }).type !== 'commitProgress') return true;
+          if (effect?.id !== 'effect' || effect.state !== 'confirmed' || effect.dispatchId !== dispatch.dispatch_id ||
+            effect.receiptRef?.hash !== receiptRef.hash || effect.recordOperationId !== record.operation_id ||
+            context?.authority_source.project_id !== 'p' ||
+            context.authority_source.revision !== commandEnvelope.expected_revision) return false;
+          const expected = kind === 'receipt' ? receiptRef : proofRef;
+          return artifact.artifact_id === expected.artifact_id && artifact.hash === expected.hash;
+        },
+      });
       const recovery={project_id:'p',effect_id:'effect',dispatch_id:String(dispatch.dispatch_id),operation_id:'recover-only-consumption',proof_ref:{artifact_id:'quiescence-proof',hash},lease_ms:1000};const recovered=await f.host.recoverConfirmedEffect(recovery) as Record<string,unknown>;expect(recovered).toMatchObject({status:'acquired',epoch:2});expect(await f.host.recoverConfirmedEffect(recovery)).toEqual(recovered);
-      const commit=await f.command('p',{type:'commitProgress',lease_id:recovered.lease_id,epoch:recovered.epoch,effect_id:'effect',receipt_ref:{artifact_id:'receipt',hash},task_id:'t',expected_status:'todo',next_status:'in_progress',evidence_refs:[{artifact_id:'proof',hash}]});expect(await restarted.executeCommand(commit)).toMatchObject({status:'committed',effect_id:'effect',task_id:'t'});expect(await f.cache.queryOne('SELECT status FROM tasks WHERE id=?',['t'])).toEqual({status:'in_progress'});
+      const progress = {
+        type: 'commitProgress', lease_id: recovered.lease_id, epoch: recovered.epoch,
+        effect_id: 'effect', receipt_ref: receiptRef, task_id: 't', expected_status: 'todo', next_status: 'in_progress',
+      };
+      const before = await f.repository.getState('p');
+      const wrongProof = await f.command('p', { ...progress, evidence_refs: [otherEffectProof] });
+      await expect(restarted.executeCommand(wrongProof)).rejects.toThrow('fence_rejected');
+      expect(await f.repository.getState('p')).toEqual(before);
+      expect(await f.cache.queryOne('SELECT status FROM tasks WHERE id=?', ['t'])).toEqual({ status: 'todo' });
+      const commit = await f.command('p', { ...progress, evidence_refs: [proofRef] });
+      await expect(restarted.executeCommand(commit)).resolves.toMatchObject({ status: 'committed', effect_id: 'effect', task_id: 't' });
+      expect(await f.cache.queryOne('SELECT status FROM tasks WHERE id=?', ['t'])).toEqual({ status: 'in_progress' });
       // A reconfiguration of the SAME runtime invalidates already handed-out
       // host closures for new acts. A retired runtime remains unavailable too.
       await expect(oldHost.executeCommand(record)).rejects.toThrow('authority_unavailable');
