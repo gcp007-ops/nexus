@@ -1,4 +1,5 @@
 import { Journal } from '../helpers/ContentCasJournal';
+import { createContentCasTestDirectory } from '../helpers/contentCasTestDirectory';
 /**
  * If CAS checks a stale pre-read instead of the Vault.process callback, a
  * concurrent editor is overwritten. These tests exercise real filesystem
@@ -12,7 +13,6 @@ import { TestApp } from '../eval/headless/TestApp';
 import type { ToolContext } from '../../src/types/mcp/AgentTypes';
 import type { ToolOperationPersistenceProvider } from '../../src/agents/toolManager/services/ToolOperationService';
 
-const ROOT = '/Volumes/Dados/qa-temp/nexus/ciclo-producao-peca-cas';
 const context: ToolContext = { workspaceId: 'test-ws', sessionId: 'cas-test', memory: 'Testing CAS', goal: 'Preserve concurrent changes' };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 interface Params {path: string; mutationId: string; expectedHash: string; expectedContent: string; content: string; context: ToolContext}
@@ -32,11 +32,13 @@ describe('content CAS orchestration', () => {
   let base: string;let app: TestApp;let journal: Journal;let cas: CasAPI;
   const request = (content = 'new'): Params => ({path:'AN.md', mutationId:'mutation-1', expectedHash:hash('old'),expectedContent:'old',content,context});
   beforeEach(async () => {
-    fs.mkdirSync(ROOT,{recursive:true});base = fs.mkdtempSync(path.join(ROOT,'case-'));
+    base = createContentCasTestDirectory('case-');
     app = new TestApp({basePath:base});await app.vault.create('AN.md','old');journal = new Journal();
     cas = service(app,async()=>({isReady:()=>true,operations:journal}));
   });
-  afterEach(()=>fs.rmSync(base,{recursive:true,force:true}));
+  afterEach(() => {
+    if (base) fs.rmSync(base, { recursive: true, force: true });
+  });
 
   it('persists a claim before changing bytes and replays without another write',async()=>{
     const original=app.vault.process.bind(app.vault);let calls=0;

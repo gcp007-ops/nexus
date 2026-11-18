@@ -41,7 +41,9 @@ export class WorkspaceLoadService {
       loadedWorkflow = { id: bundle.id, name: bundle.name, when: bundle.when, steps: bundle.steps, prompt: bundle.prompt,
         skills: bundle.skills, revision: bundle.revision, estimatedTokens: bundle.estimatedTokens, responseBytes: bundle.responseBytes };
     }
-    return { ...result, data: { ...result.data, loadedWorkflow, preloadedTools: bundle?.preloadedTools ?? [], workflowActivation: { ...committed.value, workspaceId },
+    // A compact briefing carried the definitions only for preparation; keep the response bounded.
+    const data = result.detail === 'compact' ? { ...result.data, workflowDefinitions: undefined } : result.data;
+    return { ...result, data: { ...data, loadedWorkflow, preloadedTools: bundle?.preloadedTools ?? [], workflowActivation: { ...committed.value, workspaceId },
       // The bound workflow prompt is supplied once, inside the prepared bundle.
       ...(bundle?.prompt ? { prompt: undefined } : {}) } };
   }

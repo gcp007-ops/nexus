@@ -147,6 +147,7 @@ export class ProjectRepository
   }
 
   async update(id: string, data: UpdateProjectData): Promise<void> {
+    await this.taskMutationGuard?.(id);
     try {
       // Look up the project to get workspaceId for JSONL path
       const existing = await this.getById(id);
@@ -160,6 +161,7 @@ export class ProjectRepository
       let wrote = false;
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(id);
         const resolvedMetadata = await this.resolveMetadataInTransaction(id, data);
         if (!hasFieldUpdate && resolvedMetadata === undefined) {
           return;
@@ -248,6 +250,7 @@ export class ProjectRepository
    * converges on the project coming back.
    */
   async delete(id: string): Promise<void> {
+    await this.taskMutationGuard?.(id);
     try {
       // Look up the project to get workspaceId for JSONL path
       const existing = await this.getById(id);
@@ -256,6 +259,7 @@ export class ProjectRepository
       }
 
       await this.transaction(async () => {
+        await this.taskMutationGuard?.(id);
         // 1. Write event to JSONL
         await this.writeEvent<ProjectDeletedEvent>(
           this.jsonlPath(existing.workspaceId),

@@ -1,0 +1,39 @@
+# Autoridade de tarefas
+
+A integração permanece desligada até receber configuração validada do host. O serviço compartilhado expõe `getTaskAuthority()`, `configureTaskAuthority(config)` e `suspendTaskAuthority()`. A configuração contém identidade e validadores confiáveis; esses objetos internos, que incluem funções, nunca são aceitos como mensagens de rede.
+
+O modo `authority` é exclusivo do desktop designado. Seu journal canônico fica em `<raiz configurada>/data/task-authority/<hash de vault e autoridade>/events.jsonl`. Cada entrada tem sequência e encadeamento SHA-256. A confirmação espera `fsync` do arquivo e do diretório. Esse contrato é próprio do novo journal; o escritor JSONL legado não recebeu uma garantia nova. O lock persistente `owner.lock` usa criação exclusiva e nunca é roubado por prazo. Após encerramento limpo, a próxima ativação grava uma época maior. Um lock deixado por queda exige comprovar que o dono anterior não pode escrever antes da recuperação administrativa; não excluir o lock por conveniência.
+
+O leitor estrito funciona também no cliente móvel, pela API do adaptador. Hidratação, sincronização e reconstrução descobrem os journals; o observador de arquivos solicita sincronização quando chegam alterações ou cópias conflitantes. Cauda incompleta, arquivo desconhecido, hash incorreto, lacuna, baseline divergente ou histórico desaparecido impedem a escrita. SQLite contém apenas projeções reconstruíveis de estados e recibos.
+
+Cada mutação aceita persiste delta e recibo num único evento. A preparação usa um clone SQLite descartável com os repositórios e regras reais do `TaskService`, sem acesso ao escritor persistente. Só após toda a validação o delta vai ao journal, e depois à transação do cache, junto à marca de aplicação. Uma falha do cache após a persistência é recuperada por replay, sem repetir o efeito. Repetição com a mesma identidade e assinatura consulta o recibo antes de comparar revisão; assinatura diferente é recusada.
+
+Recursos de projeto, tarefa, arquivo e pasta são excluídos globalmente. Os recursos externos usam `repository_file:<escopo estável>:<caminho relativo>` e `repository_directory:<escopo estável>:<caminho relativo>`. O registro confiável do host resolve o escopo e os alvos; raízes físicas de worktrees não são identidades. Diretórios excluem seus descendentes. Expiração não libera um efeito despachado, iniciado, confirmado ainda não consumido ou incerto.
+
+A atribuição explícita de prioridade gera `dream_priority_v1` a partir do recibo autenticado da atribuição. O padrão `medium` não gera procedência. A aquisição confere novamente tarefa, projeto ativo, dependências e vínculo da procedência ao recibo canônico. Metadados livres não substituem esse recibo.
+
+A configuração de autoridade exige `selectionValidator` confiável e `selection_timeout_ms` positivo e finito. Na aquisição, o serializador global reúne todos os projetos admitidos do mesmo escopo, fontes completas, revisões, ocupação e provas canônicas de prioridade. O callback recebe esse material fechado e seu hash, classifica cada unidade pelas capacidades, perfis e orçamento correntes e executa o seletor do host, sem reentrar nas portas da autoridade. A decisão deve devolver o mesmo hash e o vetor completo de revisões; somente a tarefa escolhida pode obter posse. A autoridade confere novamente o conjunto, hashes, provas e ocupação depois do callback e da autorização da capacidade. Timeout, erro, decisão incompleta, fonte alterada ou outra unidade escolhida recusam a aquisição; a revisão inalterada de um projeto não permite ignorar a prioridade corrente dos demais.
+
+`task coordinate-project` recebe `{envelope}` no protocolo `task-authority-command/v1`; `task coordination-status` recebe o protocolo de consulta. A identidade da operação é fornecida pelo chamador e deve ser preservada. O ingresso público local usa o emissor interativo configurado; declarar o ID do host no corpo não autentica o chamador. O host recebe uma fachada interna por `bindHost`; suas funções capturam identidade e geração, e a recarga invalida fachadas antigas. `readEffectEvidence` é somente leitura e recupera do registro canônico a associação entre despacho, efeito, recibo, operação confirmadora e assinatura. Não constitui uma nova consulta de rede. A fachada vinculada ao host também oferece `readPriorityEvidence`, derivado da tarefa e do recibo autenticado, inclusive quando a tarefa está bloqueada; e `recoverConfirmedEffect`, que exige prova imutável de quiescência e permite retomar somente o consumo de efeito já confirmado.
+
+O modo `client` exige HTTPS com confiança TLS do sistema, credencial individual no `SecretStore`, limite de bytes e tempo configurados. Não há HTTP, certificado inválido, segredo em `data.json` ou escrita local alternativa. Uma única intenção pendente é preservada no armazenamento seguro local antes do envio. Após resultado incerto ou reinício, o cliente apenas consulta aquela identidade; ausência observada não autoriza reenvio. Enquanto a incerteza persiste, outra mutação é recusada. Esse registro local é uma intenção de transporte, não uma fonte de tarefas.
+
+O listener HTTPS é opcional e só abre com certificado, chave e credenciais presentes no `SecretStore`. Possui dois caminhos fixos para comandos e consultas, autenticação individual e escopo por projeto/operação. A suspensão fecha o listener e impede novas admissões, aquisições, despachos e inícios. Consultas, recibos e recuperação de operações já iniciadas continuam pela fachada interna. Suspender não declara quiescência.
+
+A prova local usa testes de disco e SQLite nativo para a sequência, a repetição, as falhas intermediárias, a concorrência e a reconstrução. Ela não substitui o ensaio no Obsidian, a prova TLS com certificado confiável, a validação concreta de capacidades/artefatos pelo host ou a concessão administrativa para projetos produtivos.
+
+A porta interna `readProjectSnapshot({project_id})` devolve projeto, tarefas, dependências, vínculos e filhos externos completos, sem paginação, junto à revisão e ao hash operacional. A leitura ocorre sob a mesma serialização da autoridade, após replay, e recusa projeção divergente do hash canônico. As linhas conservam os nomes nativos, inclusive `metadataJson`; o host normaliza o material para a preparação. Essa leitura não amplia o protocolo público de consultas.
+
+O verificador `scripts/verify-task-authority.mjs` executa autoridade local, WASM, CLI, editor e recarga no Obsidian real. Exige uma vault descartável com nome contendo `authority-qa-`, caminho físico explicitamente conferido e marcador `.task-authority-qa.json` com `protocol: task-authority-disposable-qa/v1`. Recebe `--vault`, `--expected-path` e `--artifacts-dir`. O relatório registra o hash do bundle instalado; nenhuma compilação ou instalação é presumida. A concessão sintética permite apenas reserva: todo efeito externo é recusado. O ensaio não prova aplicação pelo host nem participante remoto com TLS.
+
+Iniciativa: `Producao/ThinkBox/Iniciativas/Dream-INI/_index.md`.
+
+
+Para reproduzir os testes desta integração localmente, criar primeiro o temporário externo e definir `TMPDIR` na chamada. Exemplo do ambiente de qualificação:
+
+```sh
+mkdir -p /Volumes/Dados/qa-temp/thinkbox-dream-continuity/tmp
+TMPDIR=/Volumes/Dados/qa-temp/thinkbox-dream-continuity/tmp npx jest --runInBand --no-coverage tests/unit/TaskAuthorityRuntime.test.ts tests/unit/TaskCoordinationRepository.test.ts tests/integration/TaskCoordinationReplay.test.ts tests/integration/TaskAuthoritySurfaces.test.ts tests/integration/TaskAuthorityRestart.test.ts
+```
+
+As primeiras execuções da implementação usaram `os.tmpdir()` sem fixar `TMPDIR`; os diretórios foram removidos nos blocos de limpeza. As execuções posteriores ao ajuste usam a raiz externa indicada. Essa limitação de proveniência não foi ocultada nem apresentada como execução em disco externo.

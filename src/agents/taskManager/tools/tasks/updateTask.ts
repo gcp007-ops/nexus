@@ -31,6 +31,8 @@ export class UpdateTaskTool extends BaseTool<UpdateTaskParameters, UpdateTaskRes
         return this.prepareResult(false, undefined, 'taskId is required');
       }
 
+      if (await this.taskService.tryCoordinateTaskUpdate(params)) return { success: true };
+
       const hasMetadataRequest = params.metadata !== undefined
         || params.metadataMode !== undefined
         || params.removeMetadataKeys !== undefined;

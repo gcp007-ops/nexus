@@ -12,7 +12,7 @@ import { DAGService } from '../../src/agents/taskManager/services/DAGService';
 import type { IProjectRepository, ProjectMetadata } from '../../src/database/repositories/interfaces/IProjectRepository';
 import type { ITaskRepository, TaskMetadata } from '../../src/database/repositories/interfaces/ITaskRepository';
 import { PaginatedResult } from '../../src/types/pagination/PaginationTypes';
-import type { TaskBoardNotifier } from '../../src/agents/taskManager/services/TaskService';
+import type { TaskBoardNotifier, TaskAuthorityPort } from '../../src/agents/taskManager/services/TaskService';
 
 // ============================================================================
 // Mock Factories
@@ -1493,5 +1493,85 @@ describe('TaskService', () => {
       expect(result.tasks.nextActions).toEqual([]);
       expect(result.tasks.recentlyCompleted).toEqual([]);
     });
+  });
+});
+
+describe('TaskService authority ingress', () => {
+  function setup(admitted = ['proj-1']) {
+    const projects = createMockProjectRepo();
+    const tasks = createMockTaskRepo();
+    projects.getById.mockImplementation(async id => createMockProject({ id }));
+    tasks.getById.mockImplementation(async id => createMockTask({ id }));
+    const authority: jest.Mocked<TaskAuthorityPort> = {
+      configure: jest.fn(), suspend: jest.fn(), executeCommand: jest.fn(), query: jest.fn(),
+      isAdmitted: jest.fn(async id => admitted.includes(id)),
+      routeInteractiveMutation: jest.fn(async input => ({ status: 'committed', kind: input.mutation.kind,
+        entity_id: input.mutation.arguments.taskId ?? input.mutation.arguments.projectId })),
+    };
+    const service = new TaskService(projects, tasks, new DAGService(), undefined, undefined, undefined, authority);
+    return { projects, tasks, authority, service };
+  }
+
+  it('routes an admitted task write through the authority without a local mutation', async () => {
+    const { tasks, authority, service } = setup();
+    await service.updateTask('task-1', { status: 'done' });
+    expect(authority.routeInteractiveMutation).toHaveBeenCalledWith({ projectId: 'proj-1',
+      mutation: { kind: 'updateTask', arguments: { taskId: 'task-1', status: 'done' } } });
+    expect(tasks.update).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy writes for projects outside admission', async () => {
+    const { tasks, authority, service } = setup([]);
+    await service.updateTask('task-1', { title: 'New' });
+    expect(tasks.update).toHaveBeenCalled();
+    expect(authority.routeInteractiveMutation).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back after authority rejection', async () => {
+    const { tasks, authority, service } = setup();
+    authority.routeInteractiveMutation.mockRejectedValue(new Error('authority_unavailable'));
+    await expect(service.updateTask('task-1', { status: 'done' })).rejects.toThrow('authority_unavailable');
+    expect(tasks.update).not.toHaveBeenCalled();
+  });
+
+  it.each([[true, false], [false, true], [true, true]])('refuses cross-project move when admitted endpoints are %s/%s', async (origin, destination) => {
+    const { tasks, authority, service } = setup([]);
+    authority.isAdmitted.mockImplementation(async id => id === 'proj-1' ? origin : destination);
+    await expect(service.moveTask('task-1', { projectId: 'proj-2' })).rejects.toThrow('protocol_incompatible');
+    expect(tasks.update).not.toHaveBeenCalled();
+  });
+
+  it('recovers a canonical create identity from the authority receipt', async () => {
+    const { tasks, authority, service } = setup();
+    authority.routeInteractiveMutation.mockResolvedValue({ status: 'committed', kind: 'createTask', entity_id: 'canonical-new-task' });
+    await expect(service.createTask('proj-1', { title: 'New' })).resolves.toBe('canonical-new-task');
+    expect(tasks.create).not.toHaveBeenCalled();
+  });
+
+  it('does not delete an admitted entity through an unsupported legacy action', async () => {
+    const { tasks, service } = setup();
+    await expect(service.deleteTask('task-1')).rejects.toThrow('protocol_incompatible');
+    expect(tasks.delete).not.toHaveBeenCalled();
+  });
+
+  it('submits fields and relations together without first applying fields locally', async () => {
+    const { tasks, authority, service } = setup();
+    await expect(service.tryCoordinateTaskUpdate({ taskId: 'task-1', status: 'done',
+      addDependencies: ['task-2'], addNoteLinks: [{ notePath: 'Manual.md', linkType: 'output' }] })).resolves.toBe(true);
+    expect(authority.routeInteractiveMutation).toHaveBeenCalledTimes(1);
+    expect(authority.routeInteractiveMutation).toHaveBeenCalledWith({ projectId: 'proj-1', mutation: {
+      kind: 'updateTask', arguments: { taskId: 'task-1', status: 'done', addDependencies: ['task-2'],
+        addNoteLinks: [{ notePath: 'Manual.md', linkType: 'output' }] } } });
+    expect(tasks.update).not.toHaveBeenCalled();
+    expect(tasks.addDependency).not.toHaveBeenCalled();
+    expect(tasks.addNoteLink).not.toHaveBeenCalled();
+  });
+
+  it('preserves suspension pending identities and leaves queries on the same runtime', async () => {
+    const { service, authority } = setup();
+    authority.suspend.mockResolvedValue({ state: 'suspended', pending_operation_ids: ['uncertain-op'] });
+    await expect(service.suspendTaskAuthority()).resolves.toEqual({ state: 'suspended', pending_operation_ids: ['uncertain-op'] });
+    await service.getTaskAuthority().query({ operation_id: 'uncertain-op' });
+    expect(authority.query).toHaveBeenCalledWith({ operation_id: 'uncertain-op' });
   });
 });

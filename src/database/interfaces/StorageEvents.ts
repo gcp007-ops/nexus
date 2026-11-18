@@ -1,3 +1,4 @@
+import type { CoordinationCommittedEvent } from '../repositories/interfaces/ITaskCoordinationRepository';
 /**
  * Location: src/database/interfaces/StorageEvents.ts
  *
@@ -837,6 +838,7 @@ export type ConversationEvent =
  * Union of all task management events
  */
 export type TaskEvent =
+  | CoordinationCommittedEvent
   | ProjectCreatedEvent
   | ProjectUpdatedEvent
   | ProjectDeletedEvent
@@ -899,6 +901,7 @@ export function isConversationEvent(event: StorageEvent): event is ConversationE
  */
 export function isTaskEvent(event: StorageEvent): event is TaskEvent {
   return [
+    'project_coordination_committed',
     'project_created',
     'project_updated',
     'project_deleted',

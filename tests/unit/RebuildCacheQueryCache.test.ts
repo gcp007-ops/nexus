@@ -17,7 +17,7 @@ import { WorkspaceRepository } from '../../src/database/repositories/WorkspaceRe
 import { QueryCache } from '../../src/database/optimizations/QueryCache';
 import { SyncCoordinator } from '../../src/database/sync/SyncCoordinator';
 import type { IJSONLWriter, ISQLiteCacheManager, SyncResult } from '../../src/database/sync/SyncCoordinator';
-import type { ReconcilePipeline } from '../../src/database/sync/ReconcilePipeline';
+import type { ReconcilePipeline, ReconcileResult } from '../../src/database/sync/ReconcilePipeline';
 import { StorageMaintenanceService, type StorageMaintenanceDeps } from '../../src/database/adapters/lifecycle/StorageMaintenanceService';
 import { SCHEMA_SQL } from '../../src/database/schema/schema';
 import type { RepositoryDependencies } from '../../src/database/repositories/base/BaseRepository';
@@ -124,11 +124,21 @@ describe('SyncCoordinator.sync: a call that arrives mid-sync waits for the follo
     const finished: number[] = [];
     let runs = 0;
     const pipeline = {
-      reconcileAll: jest.fn(async () => {
+      reconcileAll: jest.fn(async (): Promise<ReconcileResult> => {
         const run = ++runs;
         await new Promise<void>(resolve => releases.push(resolve));
         finished.push(run);
-        return { success: true, eventsApplied: run, eventsSkipped: 0, errors: [] };
+        return {
+          success: true,
+          eventsApplied: run,
+          eventsSkipped: 0,
+          shardsScanned: 1,
+          shardsFastPathed: 0,
+          silentOverwriteRescans: 0,
+          errors: [],
+          duration: 0,
+          filesProcessed: [STREAM]
+        };
       })
     };
     const coordinator = new SyncCoordinator(eventStore, cache as unknown as ISQLiteCacheManager);
@@ -152,6 +162,11 @@ describe('SyncCoordinator.sync: a call that arrives mid-sync waits for the follo
     releases[1]();
     await refresh;
     expect(finished).toEqual([1, 2]);
-    expect(refreshResult).toMatchObject({ success: true, eventsApplied: 2 });
+    expect(refreshResult).toMatchObject({
+      success: true,
+      eventsApplied: 2,
+      errors: [],
+      filesProcessed: [STREAM]
+    });
   });
 });

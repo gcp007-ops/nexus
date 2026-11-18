@@ -3,14 +3,19 @@ import * as path from 'node:path';
 import {VaultOperations} from '../../src/core/VaultOperations';
 import {resolveVaultPath} from '../../src/core/vaultPath';
 import {TestApp} from '../eval/headless/TestApp';
+import { createContentCasTestDirectory } from '../helpers/contentCasTestDirectory';
 import type {Vault} from 'obsidian';
 
 const facade=VaultOperations as unknown as {processNote(vault:Vault,path:ReturnType<typeof resolveVaultPath>,fn:(s:string)=>string):Promise<string>};
-const ROOT='/Volumes/Dados/qa-temp/nexus/ciclo-producao-peca-cas';
 describe('VaultOperations atomic process facade',()=>{
  let base:string;let app:TestApp;
- beforeEach(()=>{fs.mkdirSync(ROOT,{recursive:true});base=fs.mkdtempSync(path.join(ROOT,'facade-'));app=new TestApp({basePath:base});});
- afterEach(()=>fs.rmSync(base,{recursive:true,force:true}));
+ beforeEach(() => {
+  base = createContentCasTestDirectory('facade-');
+  app = new TestApp({ basePath: base });
+ });
+ afterEach(() => {
+  if (base) fs.rmSync(base, { recursive: true, force: true });
+ });
  it('processes an existing confined note without create/overwrite fallback',async()=>{
   await app.vault.create('AN.md','old');
   expect(await facade.processNote(app.asApp().vault,resolveVaultPath('AN.md'),s=>s==='old'?'new':'wrong')).toBe('new');

@@ -36,8 +36,8 @@ class FakeDatabase implements MigratableDatabase {
 }
 
 describe('SchemaMigrator v11 -> v12 shard_cursors migration', () => {
-  it('declares CURRENT_SCHEMA_VERSION as 18', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(18);
+  it('declares CURRENT_SCHEMA_VERSION as 19', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(19);
   });
 
   it('includes a v12 migration with the shard_cursors DDL', () => {
@@ -64,7 +64,7 @@ describe('SchemaMigrator v11 -> v12 shard_cursors migration', () => {
     }
   });
 
-  it('runs the v12 through v18 migrations when starting at v11', async () => {
+  it('runs the v12 through v19 migrations when starting at v11', async () => {
     const db = new FakeDatabase();
 
     // Pretend schema_version table exists and currently reports v11.
@@ -77,8 +77,8 @@ describe('SchemaMigrator v11 -> v12 shard_cursors migration', () => {
     const result = await migrator.migrate();
 
     expect(result.fromVersion).toBe(11);
-    expect(result.toVersion).toBe(18);
-    expect(result.applied).toBe(7);
+    expect(result.toVersion).toBe(19);
+    expect(result.applied).toBe(8);
 
     const ddlRun = db.runCalls.map(c => c.sql).filter(s => /shard_cursors/.test(s));
     expect(ddlRun.some(s => /CREATE TABLE IF NOT EXISTS shard_cursors/.test(s))).toBe(true);
@@ -86,7 +86,7 @@ describe('SchemaMigrator v11 -> v12 shard_cursors migration', () => {
     expect(ddlRun.some(s => /CREATE INDEX IF NOT EXISTS idx_shard_cursors_kind/.test(s))).toBe(true);
 
     // Each applied version is stamped (setVersion runs per migration).
-    for (const v of [12, 13, 14, 15, 16, 17, 18]) {
+    for (const v of [12, 13, 14, 15, 16, 17, 18, 19]) {
       const versionStamp = db.runCalls.find(
         c => /INSERT OR REPLACE INTO schema_version/.test(c.sql) &&
              Array.isArray(c.params) && c.params[0] === v
@@ -99,15 +99,15 @@ describe('SchemaMigrator v11 -> v12 shard_cursors migration', () => {
     const db = new FakeDatabase();
     db.execResponders.push(
       { match: /sqlite_master.*schema_version/i, rows: [['schema_version']] },
-      { match: /MAX\(version\)/i, rows: [[18]] }
+      { match: /MAX\(version\)/i, rows: [[19]] }
     );
 
     const migrator = new SchemaMigrator(db);
     const result = await migrator.migrate();
 
     expect(result.applied).toBe(0);
-    expect(result.fromVersion).toBe(18);
-    expect(result.toVersion).toBe(18);
+    expect(result.fromVersion).toBe(19);
+    expect(result.toVersion).toBe(19);
     expect(db.runCalls.find(c => /shard_cursors/.test(c.sql))).toBeUndefined();
   });
 });
@@ -147,8 +147,8 @@ describe('SchemaMigrator v12 -> v13 skills migration', () => {
     const result = await migrator.migrate();
 
     expect(result.fromVersion).toBe(12);
-    expect(result.toVersion).toBe(18);
-    expect(result.applied).toBe(6);
+    expect(result.toVersion).toBe(19);
+    expect(result.applied).toBe(7);
 
     const ddlRun = db.runCalls.map(c => c.sql).filter(s => /skills/.test(s));
     expect(ddlRun.some(s => /CREATE TABLE IF NOT EXISTS skills/.test(s))).toBe(true);
@@ -193,7 +193,7 @@ describe('SchemaMigrator v13 -> v14 notes query index migration', () => {
     }
   });
 
-  it('runs the v14 through v18 migrations when starting at v13', async () => {
+  it('runs the v14 through v19 migrations when starting at v13', async () => {
     const db = new FakeDatabase();
     db.execResponders.push(
       { match: /sqlite_master.*schema_version/i, rows: [['schema_version']] },
@@ -204,8 +204,8 @@ describe('SchemaMigrator v13 -> v14 notes query index migration', () => {
     const result = await migrator.migrate();
 
     expect(result.fromVersion).toBe(13);
-    expect(result.toVersion).toBe(18);
-    expect(result.applied).toBe(5);
+    expect(result.toVersion).toBe(19);
+    expect(result.applied).toBe(6);
 
     const ddlRun = db.runCalls.map(c => c.sql);
     expect(ddlRun.some(s => /CREATE TABLE IF NOT EXISTS notes\b/.test(s))).toBe(true);
@@ -240,7 +240,7 @@ describe('SchemaMigrator v14 -> v15 durable operation receipts migration', () =>
     }
   });
 
-  it('runs v15 through v18 when starting at v14', async () => {
+  it('runs v15 through v19 when starting at v14', async () => {
     const db = new FakeDatabase();
     db.execResponders.push(
       { match: /sqlite_master.*schema_version/i, rows: [['schema_version']] },
@@ -249,7 +249,7 @@ describe('SchemaMigrator v14 -> v15 durable operation receipts migration', () =>
 
     const result = await new SchemaMigrator(db).migrate();
 
-    expect(result).toMatchObject({ fromVersion: 14, toVersion: 18, applied: 4 });
+    expect(result).toMatchObject({ fromVersion: 14, toVersion: 19, applied: 5 });
     expect(db.runCalls.some(call => /CREATE TABLE IF NOT EXISTS tool_operation_receipts/.test(call.sql))).toBe(true);
     expect(db.runCalls.some(call => /CREATE TABLE IF NOT EXISTS notes\b/.test(call.sql))).toBe(false);
   });
@@ -286,7 +286,7 @@ describe('SchemaMigrator v15 -> v16 state archive flag migration', () => {
     }
   });
 
-  it('runs the v16 through v18 migrations when starting at v15', async () => {
+  it('runs the v16 through v19 migrations when starting at v15', async () => {
     const db = new FakeDatabase();
     db.execResponders.push(
       { match: /sqlite_master.*schema_version/i, rows: [['schema_version']] },
@@ -297,8 +297,8 @@ describe('SchemaMigrator v15 -> v16 state archive flag migration', () => {
     const result = await migrator.migrate();
 
     expect(result.fromVersion).toBe(15);
-    expect(result.toVersion).toBe(18);
-    expect(result.applied).toBe(3);
+    expect(result.toVersion).toBe(19);
+    expect(result.applied).toBe(4);
 
     const ddlRun = db.runCalls.map(c => c.sql);
     expect(ddlRun.some(s => /ALTER TABLE states ADD COLUMN isArchived/.test(s))).toBe(true);
@@ -372,7 +372,7 @@ describe('SchemaMigrator v16 -> v17 reasoning segments migration', () => {
     expect(alter).not.toMatch(/NOT NULL/i);
   });
 
-  it('runs the v17 and v18 migrations when starting at v16', async () => {
+  it('runs the v17 through v19 migrations when starting at v16', async () => {
     const db = new FakeDatabase();
     db.execResponders.push(
       { match: /sqlite_master.*schema_version/i, rows: [['schema_version']] },
@@ -381,7 +381,7 @@ describe('SchemaMigrator v16 -> v17 reasoning segments migration', () => {
 
     const result = await new SchemaMigrator(db).migrate();
 
-    expect(result).toMatchObject({ fromVersion: 16, toVersion: 18, applied: 2 });
+    expect(result).toMatchObject({ fromVersion: 16, toVersion: 19, applied: 3 });
     expect(db.runCalls.some(c => /ALTER TABLE messages ADD COLUMN reasoningSegmentsJson/.test(c.sql))).toBe(true);
     // Earlier migrations must NOT re-run.
     expect(db.runCalls.find(c => /ALTER TABLE states ADD COLUMN isArchived/.test(c.sql))).toBeUndefined();
@@ -457,7 +457,7 @@ describe('SchemaMigrator v17 -> v18 message metadata migration', () => {
       { match: /PRAGMA table_info\(messages\)/i, rows: [[0, 'id', 'TEXT']] }
     );
     expect(await new SchemaMigrator(db).migrate()).toEqual({
-      fromVersion: 17, toVersion: 18, applied: 1, needsRebuild: false
+      fromVersion: 17, toVersion: 19, applied: 2, needsRebuild: false
     });
     expect(db.runCalls.filter(call => /ALTER TABLE/i.test(call.sql))).toEqual([
       { sql: 'ALTER TABLE messages ADD COLUMN metadataJson TEXT', params: undefined }
@@ -476,7 +476,7 @@ describe('SchemaMigrator v17 -> v18 message metadata migration', () => {
       { match: /PRAGMA table_info\(messages\)/i, rows: [[0, 'metadataJson', 'TEXT']] }
     );
     expect(await new SchemaMigrator(db).migrate()).toEqual({
-      fromVersion: 17, toVersion: 18, applied: 1, needsRebuild: false
+      fromVersion: 17, toVersion: 19, applied: 2, needsRebuild: false
     });
     expect(db.runCalls.some(call => /ADD COLUMN metadataJson/i.test(call.sql))).toBe(false);
   });
@@ -485,6 +485,6 @@ describe('SchemaMigrator v17 -> v18 message metadata migration', () => {
     const messages = /CREATE TABLE IF NOT EXISTS messages\s*\(([\s\S]*?)\n\);/.exec(SCHEMA_SQL)?.[1];
     expect(messages).toBeDefined();
     expect(messages).toMatch(/^\s*metadataJson TEXT\s*,?\s*$/m);
-    expect(SCHEMA_SQL).toContain('INSERT OR IGNORE INTO schema_version VALUES (18,');
+    expect(SCHEMA_SQL).toContain('INSERT OR IGNORE INTO schema_version VALUES (19,');
   });
 });

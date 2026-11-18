@@ -355,3 +355,7 @@ export interface IDAGService {
   getBlockedTasks(tasks: TaskNode[], edges: Edge[]): TaskNode[];
   getDependencyTree(rootTaskId: string, tasks: TaskNode[], edges: Edge[]): { dependencies: string[]; dependents: string[] };
 }
+
+/** Explicit stable envelopes; tools never generate a retry identity. */
+export interface CoordinateProjectParameters extends CommonParameters { envelope:unknown }
+export interface CoordinateProjectResult extends CommonResult { result?:unknown }

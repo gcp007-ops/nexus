@@ -39,6 +39,9 @@ export type CacheableEntityType = 'workspace' | 'session' | 'state' | 'conversat
  * Dependencies required by all repositories
  */
 export interface RepositoryDependencies {
+  /** Live task/project writes are checked at the repository boundary. Planning clones omit this capability. */
+  taskMutationGuard?: (projectId: string) => Promise<void>;
+
   /** SQLite cache manager for fast queries */
   sqliteCache: SQLiteCacheManager;
 
@@ -62,6 +65,7 @@ export type QueryParams = Array<string | number | null | boolean>;
  */
 export abstract class BaseRepository<T> implements IRepository<T> {
   protected readonly sqliteCache: SQLiteCacheManager;
+  protected readonly taskMutationGuard?: (projectId: string) => Promise<void>;
   protected readonly jsonlWriter: JSONLWriter;
   protected readonly queryCache: QueryCache;
 
@@ -84,6 +88,7 @@ export abstract class BaseRepository<T> implements IRepository<T> {
 
   constructor(deps: RepositoryDependencies) {
     this.sqliteCache = deps.sqliteCache;
+    this.taskMutationGuard = deps.taskMutationGuard;
     this.jsonlWriter = deps.jsonlWriter;
     this.queryCache = deps.queryCache;
   }

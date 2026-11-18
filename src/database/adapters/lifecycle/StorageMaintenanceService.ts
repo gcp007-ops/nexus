@@ -272,7 +272,7 @@ export class StorageMaintenanceService {
     }
     try {
       let result: SyncResult;
-      if (this.deps.getReconcilePipeline()) {
+      if (this.deps.getReconcilePipeline() && !modified.some(stream=>stream.streamId==='task-authority')) {
         for (const m of modified) {
           await this.deps.getSyncCoordinator().reconcileStream(m.category, m.streamId);
         }

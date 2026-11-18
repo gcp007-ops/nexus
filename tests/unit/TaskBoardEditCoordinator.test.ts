@@ -160,6 +160,8 @@ describe('TaskBoardEditCoordinator', () => {
   it('saves task changes, moves the task, and syncs linked notes', async () => {
     const taskService = {
       updateTask: jest.fn().mockResolvedValue(undefined),
+      assertTaskMoveAllowed: jest.fn().mockResolvedValue(undefined),
+      tryCoordinateTaskUpdate: jest.fn().mockResolvedValue(false),
       moveTask: jest.fn().mockResolvedValue(undefined),
       unlinkNote: jest.fn().mockResolvedValue(undefined),
       linkNote: jest.fn().mockResolvedValue(undefined)
@@ -228,4 +230,44 @@ describe('TaskBoardEditCoordinator', () => {
     expect(renderBoard).toHaveBeenCalledTimes(1);
     expect(Notice).toHaveBeenCalledWith('Task saved');
   });
+  it.each(['preflight', 'coordinated', 'move_failed'] as const)('preserves authority save semantics: %s', async mode => {
+    const service = {
+      assertTaskMoveAllowed: jest.fn().mockResolvedValue(undefined),
+      tryCoordinateTaskUpdate: jest.fn().mockResolvedValue(true),
+      updateTask: jest.fn(), moveTask: jest.fn().mockResolvedValue(undefined),
+      unlinkNote: jest.fn(), linkNote: jest.fn(),
+    };
+    if (mode === 'preflight') service.assertTaskMoveAllowed.mockRejectedValue(new Error('protocol_incompatible'));
+    if (mode === 'move_failed') service.moveTask.mockRejectedValue(new Error('revision_conflict'));
+    const reloadBoard = jest.fn();
+    const coordinator = new TaskBoardEditCoordinator({ app: {} as never,
+      getTaskService: () => service as never, getProjects: () => [], getTasks: () => [],
+      getEmbeddingService: () => undefined, reloadBoard, renderBoard: jest.fn(),
+      onEditModalStateChange: jest.fn(), onEditModalClose: jest.fn(),
+      toDateInputValue: () => '', fromDateInputValue: () => undefined });
+    const original = createTask({ id: 'task-1', projectId: 'proj-1', noteLinks: [] });
+    const updated = { id: 'task-1', workspaceId: 'ws-1', projectId: mode === 'coordinated' ? 'proj-1' : 'proj-2',
+      title: 'Draft', description: '', status: 'todo' as const, priority: 'medium' as const,
+      dueDate: '', assignee: '', tags: '', parentTaskId: '',
+      noteLinks: [createLink({ notePath: 'Manual.md', linkType: 'output' })] };
+    if (mode === 'coordinated') {
+      await coordinator.saveTaskChanges(original, updated);
+      expect(service.tryCoordinateTaskUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: 'task-1', title: 'Draft', priority: undefined,
+        addNoteLinks: [{ notePath: 'Manual.md', linkType: 'output' }] }));
+      expect(service.updateTask).not.toHaveBeenCalled();
+      expect(service.linkNote).not.toHaveBeenCalled();
+      expect(reloadBoard).toHaveBeenCalled();
+    } else {
+      await expect(coordinator.saveTaskChanges(original, updated)).rejects.toThrow(
+        mode === 'preflight' ? 'protocol_incompatible' : 'Earlier changes were saved');
+      expect(reloadBoard).not.toHaveBeenCalled();
+      if (mode === 'preflight') {
+        expect(service.tryCoordinateTaskUpdate).not.toHaveBeenCalled();
+        expect(service.updateTask).not.toHaveBeenCalled();
+      }
+      expect(updated.title).toBe('Draft');
+    }
+  });
+
 });

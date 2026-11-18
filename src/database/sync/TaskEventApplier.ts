@@ -24,6 +24,7 @@ import {
 } from '../interfaces/StorageEvents';
 import { ISQLiteCacheManager } from './SyncCoordinator';
 import { resolveWorkspaceId } from './resolveWorkspaceId';
+import type { CoordinationCommittedEvent, OperationalTaskEvent } from '../repositories/interfaces/ITaskCoordinationRepository';
 import { purgeProjectRows, purgeTaskRows } from '../taskOwnership';
 
 /**
@@ -46,6 +47,32 @@ async function normalizeWorkspaceId(
   return result.id ?? workspaceId;
 }
 
+/**
+ * Older clients could persist a singular unlink path inside a one-element
+ * array. The JSONL event is still unambiguous, but passing that runtime object
+ * to SQLite aborts the entire synced-data reconciliation.
+ */
+function normalizeUnlinkedNotePath(
+  notePath: unknown,
+  eventId: string,
+  taskId: string
+): string | null {
+  if (typeof notePath === 'string') {
+    return notePath || null;
+  }
+
+  if (Array.isArray(notePath)
+    && notePath.length === 1
+    && typeof notePath[0] === 'string') {
+    return notePath[0];
+  }
+
+  throw new Error(
+    `[TaskEventApplier] task_note_unlinked event ${eventId} for task ${taskId} `
+    + 'has an ambiguous notePath; expected a string or singleton string array'
+  );
+}
+
 export class TaskEventApplier {
   private sqliteCache: ISQLiteCacheManager;
 
@@ -57,6 +84,28 @@ export class TaskEventApplier {
    * Apply a task-related event to SQLite cache.
    */
   async apply(event: TaskEvent): Promise<void> {
+    if (event.type === 'project_coordination_committed') throw new Error('coordination events require strict journal replay');
+    let projectId: string | undefined;
+    if ('projectId' in event) projectId = event.projectId;
+    else if (event.type === 'project_created') projectId = event.data.id;
+    else if (event.type === 'task_created') projectId = event.data.projectId;
+    else if ('taskId' in event) {
+      const task = await this.sqliteCache.queryOne<{ projectId: string }>('SELECT projectId FROM tasks WHERE id=?', [event.taskId]);
+      projectId = task?.projectId;
+    }
+    if (projectId) {
+      const state = await this.sqliteCache.queryOne<{ stateJson: string }>('SELECT stateJson FROM task_coordination_state WHERE projectId=?', [projectId]);
+      if (state?.stateJson && (JSON.parse(state.stateJson) as {admitted?:unknown}).admitted === true) throw new Error('uncoordinated event on admitted project');
+    }
+    await this.applyOperational(event);
+  }
+
+  /** Only strict coordination replay calls this after journal validation. */
+  async applyCoordinatedDelta(event: CoordinationCommittedEvent): Promise<void> {
+    for (const delta of event.delta) await this.applyOperational(delta);
+  }
+
+  private async applyOperational(event: OperationalTaskEvent): Promise<void> {
     switch (event.type) {
       case 'project_created':
         await this.applyProjectCreated(event);
@@ -246,11 +295,13 @@ export class TaskEventApplier {
   }
 
   private async applyNoteUnlinked(event: TaskNoteUnlinkedEvent): Promise<void> {
-    if (!event.taskId || !event.notePath) return;
+    if (!event.taskId) return;
+    const notePath = normalizeUnlinkedNotePath(event.notePath, event.id, event.taskId);
+    if (!notePath) return;
 
     await this.sqliteCache.run(
       'DELETE FROM task_note_links WHERE taskId = ? AND notePath = ?',
-      [event.taskId, event.notePath]
+      [event.taskId, notePath]
     );
   }
 }
