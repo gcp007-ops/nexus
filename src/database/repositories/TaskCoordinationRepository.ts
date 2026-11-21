@@ -10,7 +10,7 @@ import type { QueryCache } from '../optimizations/QueryCache';
 import { TaskEventApplier } from '../sync/TaskEventApplier';
 import { readAuthorityJournals } from '../storage/TaskAuthorityJournalReader';
 import { prepareMutation, type InteractiveMutation, projectHash, canonicalJson, operationalSnapshot } from '../../agents/taskManager/authority/TaskAuthorityPlanning';
-import type { AuthorityJournalEvent, AuthorityProjectState, AuthorityReceipt, CoordinationCommittedEvent, ITaskCoordinationRepository, OperationalTaskEvent } from './interfaces/ITaskCoordinationRepository';
+import type { AuthorityJournalEvent, AuthorityProjectState, AuthorityReceipt, CoordinationCommittedEvent, ITaskCoordinationRepository } from './interfaces/ITaskCoordinationRepository';
 import { healProjection } from './TaskProjectionHealer';
 import { selectProjectEvents } from '../sync/legacyProjectEvents';
 import type { TaskEvent } from '../interfaces/StorageEvents';
