@@ -105,6 +105,14 @@ export class TaskEventApplier {
     for (const delta of event.delta) await this.applyOperational(delta);
   }
 
+  /** Only the projection heal calls this, inside its transaction and before
+   * checking the result against the admitted baseline hash. It rebuilds one
+   * project's rows from its legacy JSONL events without the admitted-project
+   * guard, which would otherwise refuse every one of them. */
+  async applyLegacyReconstruction(events: OperationalTaskEvent[]): Promise<void> {
+    for (const event of events) await this.applyOperational(event);
+  }
+
   private async applyOperational(event: OperationalTaskEvent): Promise<void> {
     switch (event.type) {
       case 'project_created':

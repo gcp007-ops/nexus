@@ -10,9 +10,12 @@ import type { QueryCache } from '../optimizations/QueryCache';
 import { TaskEventApplier } from '../sync/TaskEventApplier';
 import { readAuthorityJournals } from '../storage/TaskAuthorityJournalReader';
 import { prepareMutation, type InteractiveMutation, projectHash, canonicalJson, operationalSnapshot } from '../../agents/taskManager/authority/TaskAuthorityPlanning';
-import type { AuthorityJournalEvent, AuthorityProjectState, AuthorityReceipt, CoordinationCommittedEvent, ITaskCoordinationRepository } from './interfaces/ITaskCoordinationRepository';
+import type { AuthorityJournalEvent, AuthorityProjectState, AuthorityReceipt, CoordinationCommittedEvent, ITaskCoordinationRepository, OperationalTaskEvent } from './interfaces/ITaskCoordinationRepository';
+import { healProjection } from './TaskProjectionHealer';
 const key = (issuer: string, operation: string): string => JSON.stringify([issuer, operation]);
-export interface CoordinationRepositoryOptions { app: App; sqliteCache: SQLiteCacheManager; queryCache: QueryCache; getDataPath(): string | null }
+export interface CoordinationRepositoryOptions { app: App; sqliteCache: SQLiteCacheManager; queryCache: QueryCache; getDataPath(): string | null;
+  /** Legacy JSONL events of one project, for the projection heal. Absent: a divergence is refused, never healed. */
+  readLegacyProjectEvents?: (projectId: string) => Promise<OperationalTaskEvent[]> }
 /** Owns canonical history validation and its rebuildable SQL projection. It
  * never invokes an executor, even for an event left open at a crash. */
 export class TaskCoordinationRepository implements ITaskCoordinationRepository {
@@ -99,11 +102,21 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
     const dataPath = this.options.getDataPath();
     if (!dataPath) throw new Error('authority canonical storage unavailable');
     const journals = await readAuthorityJournals(this.options.app, dataPath);
-    const projects = new Set<string>();
-    for (const events of journals) { this.validateHistory(events); for (const event of events) if (event.type === 'project_coordination_committed') { projects.add(event.projectId); await this.apply(event); } }
+    const projects = new Set<string>(); const history = new Map<string, Map<string, CoordinationCommittedEvent>>();
+    for (const events of journals) { this.validateHistory(events); for (const event of events) if (event.type === 'project_coordination_committed') {
+      projects.add(event.projectId); await this.apply(event);
+      const committed = history.get(event.projectId) ?? new Map<string, CoordinationCommittedEvent>(); if (!committed.has(event.operationKey)) committed.set(event.operationKey, event); history.set(event.projectId, committed);
+    } }
     const projected = await this.options.sqliteCache.query<{ projectId: string }>('SELECT projectId FROM task_coordination_state');
     if (projected.some(row => !projects.has(row.projectId))) throw new Error('authority journal disappeared');
-    for (const project of projects) { const state = await this.getState(project); if (state?.admitted && await projectHash(this.options.sqliteCache, project) !== state.operationalHash) throw new Error('authority operational base diverged'); }
+    for (const project of projects) {
+      const state = await this.getState(project);
+      if (!state?.admitted || await projectHash(this.options.sqliteCache, project) === state.operationalHash) continue;
+      const read = this.options.readLegacyProjectEvents;
+      const healed = read ? await healProjection(this.options.sqliteCache, project, [...(history.get(project)?.values() ?? [])], await read(project), () => this.getState(project)) : false;
+      if (!healed || await projectHash(this.options.sqliteCache, project) !== state.operationalHash) throw new Error('authority operational base diverged');
+      this.options.queryCache.invalidateByType('project'); this.options.queryCache.invalidateByType('task');
+    }
   }
   validateHistory(events: AuthorityJournalEvent[]): void {
     let epoch = 0; let scope: string | undefined; let authority: string | undefined;
