@@ -9,6 +9,7 @@
 import type { TaskEvent } from '../../src/database/interfaces/StorageEvents';
 import type { ISQLiteCacheManager, SyncState } from '../../src/database/sync/SyncCoordinator';
 import { TaskEventApplier } from '../../src/database/sync/TaskEventApplier';
+import { selectProjectEvents } from '../../src/database/sync/legacyProjectEvents';
 
 class StrictSQLiteCache implements ISQLiteCacheManager {
   readonly runs: Array<{ sql: string; params: unknown[] }> = [];
@@ -130,5 +131,25 @@ describe('coordination shard reading', () => {
     const { parseCoordinationShard } = await import('../../src/database/sync/TaskCoordinationEventApplier');
     expect(parseCoordinationShard('{"type":"project_created"}\n')).toEqual([{ type: 'project_created' }]);
     expect(() => parseCoordinationShard('{"type":"project_created"}\n{"type":')).toThrow();
+  });
+});
+
+describe('selectProjectEvents (projection heal source)', () => {
+  const created = (id: string, projectId: string, timestamp: number) => ({ type: 'task_created', id: `c-${id}-${timestamp}`, timestamp, deviceId: 'd', data: { id, projectId, workspaceId: 'w', title: id, status: 'todo', priority: 'medium', created: timestamp, updated: timestamp } }) as unknown as TaskEvent;
+  it('selects only the events that built the project', () => {
+    const events = [
+      { type: 'project_created', id: 'p1', timestamp: 1, deviceId: 'd', data: { id: 'p', workspaceId: 'w', name: 'p' } },
+      { type: 'project_created', id: 'q1', timestamp: 1, deviceId: 'd', data: { id: 'q', workspaceId: 'w', name: 'q' } },
+      created('t', 'p', 2), created('x', 'q', 2),
+      { type: 'task_updated', id: 'u1', timestamp: 3, deviceId: 'd', taskId: 't', data: { title: 'T' } },
+      { type: 'task_updated', id: 'u2', timestamp: 3, deviceId: 'd', taskId: 'x', data: { title: 'X' } }
+    ] as unknown as TaskEvent[];
+    expect(selectProjectEvents(events, 'p').map(event => event.id)).toEqual(['p1', 'c-t-2', 'u1']);
+  });
+  it('refuses with heal_unsupported when a task moved between projects', () => {
+    const moved = [created('t', 'q', 1), { type: 'task_updated', id: 'm1', timestamp: 2, deviceId: 'd', taskId: 't', data: { projectId: 'p' } }] as unknown as TaskEvent[];
+    expect(() => selectProjectEvents(moved, 'p')).toThrow('heal_unsupported');
+    const away = [created('t', 'p', 1), { type: 'task_updated', id: 'm2', timestamp: 2, deviceId: 'd', taskId: 't', data: { projectId: 'q' } }] as unknown as TaskEvent[];
+    expect(() => selectProjectEvents(away, 'p')).toThrow('heal_unsupported');
   });
 });
