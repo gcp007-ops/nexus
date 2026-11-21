@@ -16,20 +16,63 @@ export interface LockProcessProbe {
   /** Start instant of a live process, comparable with the one recorded in the lock; null when unreadable. */
   startTime(pid: number): Promise<string | null>;
 }
-export const nodeProcessProbe: LockProcessProbe = {
+/** OS access the probe needs; injected in tests. */
+export interface ProcessReader {
+  platform: string;
+  hostname(): string;
+  /** process.kill(pid, 0) semantics: throws ESRCH/EPERM. */
+  kill(pid: number): void;
+  /** Synchronous text read; throws on failure. */
+  readFile(path: string): string;
+  /** `ps -o lstart=` output for pid, or null. */
+  ps(pid: number): Promise<string | null>;
+}
+/** Field 22 (starttime, clock ticks since boot) of /proc/<pid>/stat. The comm
+ * field (2) may contain spaces and parentheses, so fields are counted after the
+ * last ')': that remainder starts at field 3. */
+function linuxStartTicks(stat: string): string | null {
+  const close = stat.lastIndexOf(')'); if (close < 0) return null;
+  const value = stat.slice(close + 1).trim().split(/\s+/)[22 - 3];
+  return value && /^\d+$/.test(value) ? value : null;
+}
+/** Start instant per platform:
+ * - linux: boot_id plus /proc starttime ticks, immune to wall-clock steps
+ *   (ps lstart is btime + ticks, and btime moves with the clock);
+ * - darwin: ps lstart (p_starttime is fixed at fork);
+ * - anything else, or any read failure: null, which keeps the refusal. */
+export function createProcessProbe(reader: ProcessReader): LockProcessProbe {
+  return {
+    hostname: () => reader.hostname(),
+    alive: pid => {
+      try { reader.kill(pid); return true; }
+      catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === 'ESRCH' ? false : code === 'EPERM' ? true : null; }
+    },
+    startTime: async pid => {
+      if (reader.platform === 'linux') {
+        try {
+          const boot = reader.readFile('/proc/sys/kernel/random/boot_id').trim();
+          const ticks = linuxStartTicks(reader.readFile(`/proc/${pid}/stat`));
+          return boot && ticks ? `linux:${boot}:${ticks}` : null;
+        } catch { return null; }
+      }
+      if (reader.platform === 'darwin') return reader.ps(pid);
+      return null;
+    }
+  };
+}
+const nodeReader: ProcessReader = {
+  get platform() { return process.platform; },
   hostname: () => desktopRequire<typeof import('node:os')>('node:os').hostname(),
-  alive: pid => {
-    try { process.kill(pid, 0); return true; }
-    catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === 'ESRCH' ? false : code === 'EPERM' ? true : null; }
-  },
-  startTime: pid => new Promise(resolve => {
-    if (process.platform === 'win32') { resolve(null); return; }
+  kill: pid => { process.kill(pid, 0); },
+  readFile: path => desktopRequire<typeof import('node:fs')>('node:fs').readFileSync(path, 'utf8'),
+  ps: pid => new Promise(resolve => {
     try {
       desktopRequire<typeof import('node:child_process')>('node:child_process').execFile('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 2000, env: { LC_ALL: 'C', TZ: 'UTC' } },
         (error, stdout) => resolve(error ? null : (String(stdout).trim() || null)));
     } catch { resolve(null); }
   })
 };
+export const nodeProcessProbe: LockProcessProbe = createProcessProbe(nodeReader);
 function authorityUnavailable(): Error { return new Error('authority_unavailable'); }
 export class TaskAuthorityDurableJournal implements AuthorityJournal {
   private token: string | null = null;
