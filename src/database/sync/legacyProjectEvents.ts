@@ -8,17 +8,22 @@
  *
  * A task that changed project cannot be attributed to one project without
  * guessing; the selection refuses with `heal_unsupported` instead.
+ *
+ * `ownedTaskIds` are tasks the project gained through coordinated deltas: they
+ * have no legacy `task_created`, but a legacy event that touches them still
+ * belongs to the project and must reach the heal so it can refuse.
  */
 import type { TaskEvent } from '../interfaces/StorageEvents';
 import type { OperationalTaskEvent } from '../repositories/interfaces/ITaskCoordinationRepository';
 
-export function selectProjectEvents(events: TaskEvent[], projectId: string): OperationalTaskEvent[] {
+export function selectProjectEvents(events: TaskEvent[], projectId: string, ownedTaskIds: Iterable<string> = []): OperationalTaskEvent[] {
   const ordered = events
     .filter((event): event is OperationalTaskEvent => !!event && event.type !== 'project_coordination_committed')
     .sort((a, b) => a.timestamp - b.timestamp
       || (a.deviceId ?? '').localeCompare(b.deviceId ?? '')
       || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const owner = new Map<string, string>();
+  for (const id of ownedTaskIds) owner.set(id, projectId);
   for (const event of ordered) {
     if (event.type === 'task_created' && event.data?.id && event.data.projectId) {
       const previous = owner.get(event.data.id);

@@ -12,14 +12,18 @@ import { readAuthorityJournals } from '../storage/TaskAuthorityJournalReader';
 import { prepareMutation, type InteractiveMutation, projectHash, canonicalJson, operationalSnapshot } from '../../agents/taskManager/authority/TaskAuthorityPlanning';
 import type { AuthorityJournalEvent, AuthorityProjectState, AuthorityReceipt, CoordinationCommittedEvent, ITaskCoordinationRepository, OperationalTaskEvent } from './interfaces/ITaskCoordinationRepository';
 import { healProjection } from './TaskProjectionHealer';
+import { selectProjectEvents } from '../sync/legacyProjectEvents';
+import type { TaskEvent } from '../interfaces/StorageEvents';
 const key = (issuer: string, operation: string): string => JSON.stringify([issuer, operation]);
 export interface CoordinationRepositoryOptions { app: App; sqliteCache: SQLiteCacheManager; queryCache: QueryCache; getDataPath(): string | null;
   /** Legacy JSONL events of one project, for the projection heal. Absent: a divergence is refused, never healed. */
-  readLegacyProjectEvents?: (projectId: string) => Promise<OperationalTaskEvent[]> }
+  readLegacyProjectEvents?: (projectId: string) => Promise<TaskEvent[]> }
 /** Owns canonical history validation and its rebuildable SQL projection. It
  * never invokes an executor, even for an event left open at a crash. */
 export class TaskCoordinationRepository implements ITaskCoordinationRepository {
   private replayPromise: Promise<void> | null = null;
+  /** Last refused heal per project: [revision, current hash, legacy ids] digest. */
+  private readonly refusedHeals = new Map<string, string>();
   constructor(private readonly options: CoordinationRepositoryOptions) {}
   secretStore(): SecretStore { return new SecretStore(this.options.app); }
   async allStates(): Promise<AuthorityProjectState[]> { const rows = await this.options.sqliteCache.query<{stateJson: string}>('SELECT stateJson FROM task_coordination_state'); return rows.map(row => JSON.parse(row.stateJson) as AuthorityProjectState); }
@@ -112,11 +116,24 @@ export class TaskCoordinationRepository implements ITaskCoordinationRepository {
     for (const project of projects) {
       const state = await this.getState(project);
       if (!state?.admitted || await projectHash(this.options.sqliteCache, project) === state.operationalHash) continue;
-      const read = this.options.readLegacyProjectEvents;
-      const healed = read ? await healProjection(this.options.sqliteCache, project, [...(history.get(project)?.values() ?? [])], await read(project), () => this.getState(project)) : false;
+      const healed = await this.tryHeal(project, state, [...(history.get(project)?.values() ?? [])]);
       if (!healed || await projectHash(this.options.sqliteCache, project) !== state.operationalHash) throw new Error('authority operational base diverged');
       this.options.queryCache.invalidateByType('project'); this.options.queryCache.invalidateByType('task');
     }
+  }
+  /** Heals one diverged admitted project, or returns false. A refusal is
+   * remembered for the same revision, current hash and legacy event ids, so a
+   * persisting refusal does not purge and rebuild inside a transaction on
+   * every replay; any change to one of the three tries again. */
+  private async tryHeal(project: string, state: AuthorityProjectState, committed: CoordinationCommittedEvent[]): Promise<boolean> {
+    const read = this.options.readLegacyProjectEvents; if (!read) return false;
+    const owned = committed.flatMap(event => event.receipt.error ? [] : event.delta).flatMap(delta => delta.type === 'task_created' && delta.data?.projectId === project ? [delta.data.id] : []);
+    const legacy = selectProjectEvents(await read(project), project, owned);
+    const attempt = await authorityHash([state.revision, await projectHash(this.options.sqliteCache, project), legacy.map(event => event.id)]);
+    if (this.refusedHeals.get(project) === attempt) return false;
+    const healed = await healProjection(this.options.sqliteCache, project, committed, legacy, () => this.getState(project));
+    if (healed) this.refusedHeals.delete(project); else this.refusedHeals.set(project, attempt);
+    return healed;
   }
   validateHistory(events: AuthorityJournalEvent[]): void {
     let epoch = 0; let scope: string | undefined; let authority: string | undefined;

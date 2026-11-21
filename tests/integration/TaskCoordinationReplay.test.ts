@@ -103,3 +103,47 @@ it('admissão logo após a escrita local não trava o shard: o evento já sai ma
   }finally{await f.cleanup();}
 });
 });
+
+describe('task-projection-heal/v1: recusa escrita alheia sobre entidade introduzida por delta (revisão C1)',()=>{
+const legacy=[{type:'project_created',id:'l1',timestamp:1,deviceId:'d',data:{id:'p',workspaceId:'w',name:'p',status:'active',created:1,updated:1}},
+  ...['t','u'].map((t,i)=>({type:'task_created',id:`l${i+2}`,timestamp:1,deviceId:'d',data:{id:t,projectId:'p',workspaceId:'w',title:t,status:'todo',priority:'medium',created:1,updated:1}}))];
+// Saída do leitor de produção: todos os streams de tarefa, inclusive os de outro projeto.
+const otherProject=[{type:'project_created',id:'q1',timestamp:1,deviceId:'d',data:{id:'q',workspaceId:'w',name:'q',status:'active',created:1,updated:1}},
+  {type:'task_created',id:'q2',timestamp:1,deviceId:'d',data:{id:'x',projectId:'q',workspaceId:'w',title:'x',status:'todo',priority:'medium',created:1,updated:1}}];
+const healer=(f:Awaited<ReturnType<typeof fixture>>,events:unknown[])=>new TaskCoordinationRepository({app:f.app,sqliteCache:f.cache as never,queryCache:new QueryCache({}),getDataPath:()=>'Store/data',readLegacyProjectEvents:async()=>events as never});
+const withDeltaTask=async()=>{const f=await fixture();await f.admit();
+  await f.runtime.executeCommand(await f.command('p',{type:'interactiveMutation',resources:['project:p'],mutation:{kind:'createTask',arguments:{projectId:'p',title:'n',priority:'medium'}}}));
+  const row=await f.cache.queryOne<{id:string}>("SELECT id FROM tasks WHERE title='n'");return {f,id:row!.id};};
+for(const [label,extra] of [['legado só do projeto',[]],['legado de todos os streams',otherProject]] as const){
+it(`recusa e preserva task_updated alheio sobre tarefa criada por delta (${label})`,async()=>{const {f,id}=await withDeltaTask();try{
+  await f.cache.run("UPDATE tasks SET title='Alien',updated=5 WHERE id=?",[id]);
+  const events=[...legacy,...extra,{type:'task_updated',id:'l9',timestamp:5,deviceId:'upstream',taskId:id,data:{title:'Alien',updated:5}}];
+  await expect(healer(f,events).replay()).rejects.toThrow('authority operational base diverged');
+  expect(await f.cache.queryOne('SELECT title FROM tasks WHERE id=?',[id])).toEqual({title:'Alien'});
+  expect(await f.cache.queryOne("SELECT eventId FROM applied_events WHERE eventId='l9'")).toBeNull();
+}finally{await f.cleanup();}});
+it(`recusa e preserva task_deleted alheio sobre tarefa criada por delta (${label})`,async()=>{const {f,id}=await withDeltaTask();try{
+  await f.cache.run('DELETE FROM tasks WHERE id=?',[id]);
+  const events=[...legacy,...extra,{type:'task_deleted',id:'l8',timestamp:5,deviceId:'upstream',taskId:id,data:{}}];
+  await expect(healer(f,events).replay()).rejects.toThrow('authority operational base diverged');
+  expect(await f.cache.queryOne('SELECT id FROM tasks WHERE id=?',[id])).toBeNull();
+  expect(await f.cache.queryOne("SELECT eventId FROM applied_events WHERE eventId='l8'")).toBeNull();
+}finally{await f.cleanup();}});
+}
+it('recusa e preserva remoção alheia de dependência criada por delta entre tarefas da base',async()=>{const f=await fixture();try{await f.admit();
+  await f.runtime.executeCommand(await f.command('p',{type:'interactiveMutation',resources:['project:p','task:t','task:u'],mutation:{kind:'updateTask',arguments:{taskId:'t',addDependencies:['u']}}}));
+  await f.cache.run("DELETE FROM task_dependencies WHERE taskId='t' AND dependsOnTaskId='u'");
+  const events=[...legacy,...otherProject,{type:'task_dependency_removed',id:'l7',timestamp:5,deviceId:'upstream',taskId:'t',dependsOnTaskId:'u',data:{dependsOnTaskId:'u'}}];
+  await expect(healer(f,events).replay()).rejects.toThrow('authority operational base diverged');
+  expect(await f.cache.query('SELECT * FROM task_dependencies')).toEqual([]);
+  expect(await f.cache.queryOne("SELECT eventId FROM applied_events WHERE eventId='l7'")).toBeNull();
+}finally{await f.cleanup();}});
+it('não refaz a reconstrução enquanto a recusa persiste (mesma revisão, hash e legado)',async()=>{const {f,id}=await withDeltaTask();try{
+  await f.cache.run("UPDATE tasks SET title='Alien',updated=5 WHERE id=?",[id]);
+  const events=[...legacy,{type:'task_updated',id:'l9',timestamp:5,deviceId:'upstream',taskId:id,data:{title:'Alien',updated:5}}];
+  const repo=healer(f,events);const transaction=jest.spyOn(f.cache,'transaction');
+  await expect(repo.replay()).rejects.toThrow('authority operational base diverged');const first=transaction.mock.calls.length;
+  await expect(repo.replay()).rejects.toThrow('authority operational base diverged');
+  expect(first).toBeGreaterThan(0);expect(transaction.mock.calls.length).toBe(first);
+}finally{await f.cleanup();}});
+});

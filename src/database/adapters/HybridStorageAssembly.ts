@@ -29,7 +29,6 @@ import { createCacheBlobStore, computeIdbKey } from '../storage/CacheBlobStoreFa
 import type { CacheBlobStore } from '../storage/CacheBlobStore';
 import { RepositoryDependencies } from '../repositories/base/BaseRepository';
 import type { TaskEvent } from '../interfaces/StorageEvents';
-import { selectProjectEvents } from '../sync/legacyProjectEvents';
 import { StateData } from '../../types/storage/HybridStorageTypes';
 
 // Import all repositories
@@ -138,12 +137,13 @@ export function assembleHybridStorage(options: HybridStorageAssemblyOptions): Hy
     maxSize: options.cacheMaxSize ?? 500
   });
 
-  // Same read as SyncCoordinator.rebuildTasks: every task stream, then the
-  // events of one project. Only the projection heal consumes it.
-  const readLegacyProjectEvents = async (projectId: string) => {
+  // Same read as SyncCoordinator.rebuildTasks: every task stream. The
+  // coordination repository selects the project's events (it knows which
+  // tasks the coordinated deltas introduced). Only the projection heal reads it.
+  const readLegacyProjectEvents = async () => {
     const events: TaskEvent[] = [];
     for (const file of await jsonlWriter.listFiles('tasks')) events.push(...await jsonlWriter.readEvents<TaskEvent>(file));
-    return selectProjectEvents(events, projectId);
+    return events;
   };
   const coordinationRepo = new TaskCoordinationRepository({ app, sqliteCache, queryCache, getDataPath: () => options.getCanonicalDataPath(), readLegacyProjectEvents });
   syncCoordinator.setTaskAuthorityReplay(() => coordinationRepo.replay());

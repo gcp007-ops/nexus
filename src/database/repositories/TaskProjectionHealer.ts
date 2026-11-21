@@ -8,9 +8,14 @@
  * checked against its own operationalHash. Any mismatch rolls the whole
  * transaction back and the caller keeps refusing: the heal never guesses.
  *
- * Why it cannot lose a foreign write: the legacy events enter without any time
- * filter, so an uncoordinated write made after admission changes the rebuilt
- * baseline and the baseline check refuses.
+ * Why it cannot lose a foreign write: every legacy event of the project enters,
+ * without a time filter, and the baseline must be reached for the first time
+ * exactly at the LAST legacy event. A foreign write after admission either
+ * changes the rebuilt baseline (row that existed at admission) or is a no-op
+ * on it (row, edge or link that only a coordinated delta introduced); in the
+ * second case the baseline is reached before that event and the heal refuses.
+ * A legitimate no-op legacy event after the baseline (e.g. a duplicate note
+ * link) is refused too: a false refusal is the safe failure.
  */
 import type { SQLiteCacheManager } from '../storage/SQLiteCacheManager';
 import { TaskEventApplier } from '../sync/TaskEventApplier';
@@ -53,7 +58,10 @@ export async function healProjection(
       if (cross.length) throw new HealRefused('cross-project dependency');
       await purgeProjectRows(cache, projectId);
       const applier = new TaskEventApplier(cache);
-      await applier.applyLegacyReconstruction(ordered);
+      for (let index = 0; index < ordered.length; index++) {
+        await applier.applyLegacyReconstruction([ordered[index]]);
+        if (index < ordered.length - 1 && await projectHash(cache, projectId) === state.baselineHash) throw new HealRefused('legacy event after the admitted baseline');
+      }
       if (await projectHash(cache, projectId) !== state.baselineHash) throw new HealRefused('baseline');
       for (const event of committed) {
         if (event.receipt.error) continue;
