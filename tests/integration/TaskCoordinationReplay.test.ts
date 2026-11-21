@@ -61,4 +61,14 @@ it('recusa quando a cura tocaria outro projeto',async()=>{const f=await fixture(
   await expect(healer(f,legacy).replay()).rejects.toThrow('authority operational base diverged');
   expect(await f.cache.query('SELECT * FROM task_dependencies')).toHaveLength(1);
 }finally{await f.cleanup();}});
+it('recusa e preserva dependência de outro projeto criada depois da admissão',async()=>{const f=await fixture();try{await diverge(f);
+  await f.cache.run("INSERT INTO task_dependencies VALUES ('x','t',1)");
+  await expect(healer(f,legacy).replay()).rejects.toThrow('authority operational base diverged');
+  expect(await f.cache.query('SELECT taskId,dependsOnTaskId FROM task_dependencies')).toEqual([{taskId:'x',dependsOnTaskId:'t'}]);
+}finally{await f.cleanup();}});
+it('recusa e preserva filho em outro projeto criado depois da admissão',async()=>{const f=await fixture();try{await diverge(f);
+  await f.cache.run("INSERT INTO tasks(id,projectId,workspaceId,parentTaskId,title,status,priority,created,updated) VALUES ('y','q','w','t','y','todo','medium',1,1)");
+  await expect(healer(f,legacy).replay()).rejects.toThrow('authority operational base diverged');
+  expect(await f.cache.queryOne('SELECT parentTaskId FROM tasks WHERE id=?',['y'])).toEqual({parentTaskId:'t'});
+}finally{await f.cleanup();}});
 });
