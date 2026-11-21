@@ -1,6 +1,9 @@
 import { fixture } from '../helpers/taskAuthorityFixture';
 import { TaskCoordinationRepository } from '../../src/database/repositories/TaskCoordinationRepository';
 import { QueryCache } from '../../src/database/optimizations/QueryCache';
+import { ProjectRepository } from '../../src/database/repositories/ProjectRepository';
+import { ReconcilePipeline } from '../../src/database/sync/ReconcilePipeline';
+import { TaskEventApplier } from '../../src/database/sync/TaskEventApplier';
 import type { SQLiteCacheManager } from '../../src/database/storage/SQLiteCacheManager';
 // If event append is skipped, clone leaks a partial write, or replay repeats a
 // delta after a cache fault, these checks run against actual disk and SQL.
@@ -71,4 +74,32 @@ it('recusa e preserva filho em outro projeto criado depois da admissão',async()
   await expect(healer(f,legacy).replay()).rejects.toThrow('authority operational base diverged');
   expect(await f.cache.queryOne('SELECT parentTaskId FROM tasks WHERE id=?',['y'])).toEqual({parentTaskId:'t'});
 }finally{await f.cleanup();}});
+});
+
+describe('escrita local de tarefa marca o próprio evento (causa raiz)',()=>{
+it('marca como aplicado o evento de tarefa que o próprio repositório grava',async()=>{
+  const f=await fixture();try{
+    f.legacyWriter.appendEvent.mockImplementation(async(_p:string,d:Record<string,unknown>)=>({...d,id:'own-q',timestamp:2,deviceId:'local'}));
+    const deps={sqliteCache:f.cache as never,jsonlWriter:f.legacyWriter as never,queryCache:new QueryCache({}),markWrittenTaskEvent:(id:string)=>f.cache.markEventApplied(id)};
+    await new ProjectRepository(deps).update('q',{description:'x'});
+    expect(await f.cache.queryOne('SELECT eventId FROM applied_events WHERE eventId=?',['own-q'])).toEqual({eventId:'own-q'});
+  }finally{await f.cleanup();}
+});
+it('admissão logo após a escrita local não trava o shard: o evento já sai marcado',async()=>{
+  const f=await fixture();try{
+    let written:Record<string,unknown>|undefined;
+    f.legacyWriter.appendEvent.mockImplementation(async(_p:string,d:Record<string,unknown>)=>(written={...d,id:'own-q',timestamp:2,deviceId:'local'}));
+    const deps={sqliteCache:f.cache as never,jsonlWriter:f.legacyWriter as never,queryCache:new QueryCache({}),markWrittenTaskEvent:(id:string)=>f.cache.markEventApplied(id)};
+    await new ProjectRepository(deps).update('q',{description:'x'});
+    // Nenhum sync entre a escrita e a admissão: a janela do incidente de 2026-11-20.
+    await f.admit('q');
+    const cache=Object.assign(f.cache,{isEventApplied:async(id:string)=>(await f.cache.queryOne('SELECT 1 FROM applied_events WHERE eventId=?',[id]))!==null});
+    const abs='Nexus/data/tasks/tasks_w';const cursors=new Map<string,unknown>();
+    const store={getRootPath:()=>'Nexus/data',listFiles:async()=>['tasks/tasks_w.jsonl'],getTaskStream:()=>({category:'tasks',logicalId:'tasks_w',relativeStreamPath:'tasks/tasks_w',absoluteStreamPath:abs,shardStore:{listShards:async()=>[{fileName:'shard-000001.jsonl',fullPath:abs+'/shard-000001.jsonl',index:1,relativePath:'tasks/tasks_w/shard-000001.jsonl',size:0,modTime:0}],app:{vault:{adapter:{exists:async()=>true,read:async()=>JSON.stringify(written)}}}}})};
+    const pipeline=new ReconcilePipeline({vaultEventStore:store as never,syncStateStore:{getCursor:async()=>null,upsertCursor:async(c:{shardPath:string})=>{cursors.set(c.shardPath,c);}} as never,sqliteCache:cache as never,workspaceApplier:{apply:async()=>undefined} as never,conversationApplier:{apply:async()=>undefined} as never,taskApplier:new TaskEventApplier(cache as never),deviceId:'local'});
+    const result=await pipeline.reconcileAll();
+    expect(result).toMatchObject({success:true,errors:[],eventsSkipped:1,eventsApplied:0});
+    expect(cursors.get(abs+'/shard-000001.jsonl')).toMatchObject({lastEventId:'own-q'});
+  }finally{await f.cleanup();}
+});
 });

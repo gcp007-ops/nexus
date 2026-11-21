@@ -153,7 +153,8 @@ export function assembleHybridStorage(options: HybridStorageAssemblyOptions): Hy
     jsonlWriter,
     sqliteCache,
     queryCache,
-    taskMutationGuard: projectId => coordinationRepo.assertLegacyMutationAllowed(projectId)
+    taskMutationGuard: projectId => coordinationRepo.assertLegacyMutationAllowed(projectId),
+    markWrittenTaskEvent: eventId => sqliteCache.markEventApplied(eventId)
   };
 
   // Initialize all repositories

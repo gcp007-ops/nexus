@@ -42,6 +42,9 @@ export interface RepositoryDependencies {
   /** Live task/project writes are checked at the repository boundary. Planning clones omit this capability. */
   taskMutationGuard?: (projectId: string) => Promise<void>;
 
+  /** Live task-stream writes record their own event as applied, atomically with the SQL write. Planning clones omit it. */
+  markWrittenTaskEvent?: (eventId: string) => Promise<void>;
+
   /** SQLite cache manager for fast queries */
   sqliteCache: SQLiteCacheManager;
 
@@ -66,6 +69,7 @@ export type QueryParams = Array<string | number | null | boolean>;
 export abstract class BaseRepository<T> implements IRepository<T> {
   protected readonly sqliteCache: SQLiteCacheManager;
   protected readonly taskMutationGuard?: (projectId: string) => Promise<void>;
+  protected readonly markWrittenTaskEvent?: (eventId: string) => Promise<void>;
   protected readonly jsonlWriter: JSONLWriter;
   protected readonly queryCache: QueryCache;
 
@@ -89,6 +93,7 @@ export abstract class BaseRepository<T> implements IRepository<T> {
   constructor(deps: RepositoryDependencies) {
     this.sqliteCache = deps.sqliteCache;
     this.taskMutationGuard = deps.taskMutationGuard;
+    this.markWrittenTaskEvent = deps.markWrittenTaskEvent;
     this.jsonlWriter = deps.jsonlWriter;
     this.queryCache = deps.queryCache;
   }
@@ -158,6 +163,11 @@ export abstract class BaseRepository<T> implements IRepository<T> {
   ): Promise<E> {
     try {
       const event = await this.jsonlWriter.appendEvent<E>(path, eventData);
+      // The vault watcher suppresses (and, under a hidden data root, never
+      // sees) our own task writes, so without this the event waits for a
+      // later sync to be marked; if its project is admitted first, the
+      // guarded applier refuses it forever and the shard stops reconciling.
+      if (this.markWrittenTaskEvent && path.startsWith('tasks/')) await this.markWrittenTaskEvent(event.id);
       return event;
     } catch (error) {
       console.error(`[${this.entityType}Repository] Failed to write event:`, error);
