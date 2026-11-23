@@ -31,7 +31,8 @@ import { QueryParams } from '../repositories/base/BaseRepository';
 import {
   SQLiteWasmBridge,
   SQLiteWasmModule,
-  SQLiteDatabaseHandle
+  SQLiteDatabaseHandle,
+  isDiskFull
 } from './SQLiteWasmBridge';
 import { SQLiteTransactionCoordinator } from './SQLiteTransactionCoordinator';
 import { SQLiteSyncStateStore } from './SQLiteSyncStateStore';
@@ -727,16 +728,36 @@ export class SQLiteCacheManager implements IStorageBackend, ISQLiteCacheManager 
    * autosave/blob-store/event-store and cannot mutate the live connection. */
   createPlanningClone(): { cache: SQLiteCacheManager; dispose(): void } {
     const module = this.getSqlite3OrThrow();
-    const db = this.bridge.deserializeDatabase(module, new Uint8Array(this.bridge.exportDatabase(module, this.getDbOrThrow())));
+    // Heap-to-heap with fixed headroom: the old export + deserialize put two
+    // more full copies in the heap and let the clone double on its first new
+    // page, which on a ~340 MiB cache ran the WASM heap out of memory.
+    const db = this.bridge.cloneDatabase(module, this.getDbOrThrow());
     const bridge = this.bridge;
+    const planningWrite = <T>(write: () => T): T => {
+      try {
+        return write();
+      } catch (error) {
+        if (isDiskFull(error)) {
+          throw new Error(
+            'Planning clone ran out of its fixed headroom; the mutation was not applied. '
+            + `Cause: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        throw error;
+      }
+    };
     const coordinator = new SQLiteTransactionCoordinator();
     const facade = {
       query: <T>(sql: string, params?: QueryParams): Promise<T[]> => Promise.resolve(bridge.query<T>(db, sql, params)),
       queryOne: <T>(sql: string, params?: QueryParams): Promise<T | null> => Promise.resolve(bridge.queryOne<T>(db, sql, params)),
-      run: (sql: string, params?: QueryParams): Promise<RunResult> => Promise.resolve(bridge.run(db, module, sql, params)),
+      run: (sql: string, params?: QueryParams): Promise<RunResult> => Promise.resolve(planningWrite(() => bridge.run(db, module, sql, params))),
       transaction: <T>(fn: () => Promise<T>): Promise<T> => coordinator.run(
-        () => { bridge.exec(db, 'BEGIN'); return Promise.resolve(); }, () => { bridge.exec(db, 'COMMIT'); return Promise.resolve(); },
-        () => { bridge.exec(db, 'ROLLBACK'); return Promise.resolve(); }, fn)
+        () => { bridge.exec(db, 'BEGIN'); return Promise.resolve(); },
+        () => { planningWrite(() => bridge.exec(db, 'COMMIT')); return Promise.resolve(); },
+        // SQLITE_FULL can already have rolled the transaction back; a second
+        // ROLLBACK would then throw "no transaction is active" and hide why.
+        () => { if (!bridge.isAutocommit(module, db)) bridge.exec(db, 'ROLLBACK'); return Promise.resolve(); },
+        fn)
     };
     // RepositoryDependencies historically names the concrete manager. This
     // narrow facade implements exactly its repository capability, not I/O.
