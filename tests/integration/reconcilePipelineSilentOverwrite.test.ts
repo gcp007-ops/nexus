@@ -1062,6 +1062,20 @@ describe('Startup cost: a start with nothing new must not rescan', () => {
     expect(sqliteCache.transactionCalls).toBe(transactionsBefore);
   });
 
+  it('lists a stream once per sweep, not once per shard', async () => {
+    const { pipeline, store } = makeHarness('desktop-A');
+    for (let i = 1; i <= 5; i++) {
+      store.setShardContent('workspaces', 'ws_many', `shard-00000${i}.jsonl`, [
+        { id: `m${i}`, timestamp: i, deviceId: 'A' }
+      ]);
+    }
+
+    const result = await pipeline.reconcileAll();
+    expect(result.success).toBe(true);
+    expect(result.eventsApplied).toBe(5);
+    expect(store.listShardsCalls).toBe(1);
+  });
+
   it('seeds cursors after a rebuild so the next sweep skips fully applied shards without a transaction', async () => {
     const { pipeline, store, applied, cursors, sqliteCache } = makeHarness('desktop-A');
     store.setShardContent('conversations', STREAM, SHARD, [

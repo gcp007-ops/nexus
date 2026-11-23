@@ -284,12 +284,16 @@ export class ReconcilePipeline {
 
     for (const shard of shards) {
       const businessId = this.businessIdFromStreamId(category, streamId);
+      // The descriptor from this one listing is handed down, so the shard is
+      // read by its known path instead of re-listing the whole stream for
+      // every shard (quadratic in the stream's shard count: 583 shards at
+      // ~0.4 s per listing on a Windows vault was ~4 min per start).
       const result = await this.reconcileSingleShard({
         category,
         streamId,
         businessId,
         shardFileName: shard.fileName
-      });
+      }, shard.fullPath);
       this.accumulate(totals, result);
       if (!result.success) {
         break;
@@ -299,7 +303,7 @@ export class ReconcilePipeline {
     return this.finalize(totals, start);
   }
 
-  private async reconcileSingleShard(parsed: ParsedShardPath): Promise<ReconcileResult> {
+  private async reconcileSingleShard(parsed: ParsedShardPath, knownShardFullPath?: string): Promise<ReconcileResult> {
     const totals = this.emptyTotals();
     const start = Date.now();
 
@@ -311,7 +315,7 @@ export class ReconcilePipeline {
     // the full shard if the cursor fast-path fails. Byte-offset incremental
     // reads are a future optimization — applied_events PK already keeps the
     // apply path O(1) per duplicate event.
-    const events = await this.readShardEvents(handle, parsed.shardFileName);
+    const events = await this.readShardEvents(handle, parsed.shardFileName, knownShardFullPath);
     totals.filesProcessed.push(shardFullPath);
 
     // Layer 1 — cursor fast-path: if the cursor names the shard's last line,
@@ -404,8 +408,14 @@ export class ReconcilePipeline {
 
   private async readShardEvents(
     handle: ReturnType<VaultEventStore['getConversationStream']>,
-    shardFileName: string
+    shardFileName: string,
+    knownShardFullPath?: string
   ): Promise<AnyStorageEvent[]> {
+    if (knownShardFullPath !== undefined) {
+      // readEventsFromShardFile still checks existence first, so a shard
+      // that vanished after the caller's listing fails closed as before.
+      return readEventsFromShardFile(handle, knownShardFullPath);
+    }
     // Locate the target shard's full path via listShards, then read its
     // bytes directly. We avoid `shardStore.readEvents()` because that would
     // aggregate every shard in the stream, defeating the per-shard scope.
