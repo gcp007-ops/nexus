@@ -107,6 +107,18 @@ export class NotesIndexService {
     return new Map(rows.map((r) => [r.path, r.content_hash]));
   }
 
+  /**
+   * Save the cache now. Best effort: a failed save leaves the cache dirty for
+   * the auto-save, exactly as before, so it is logged and never thrown.
+   */
+  async persist(): Promise<void> {
+    try {
+      await this.sqlite.save();
+    } catch (error) {
+      console.warn('[NotesIndex] Could not save the cache after a large index build; the auto-save will retry:', error);
+    }
+  }
+
   /** Number of indexed notes. */
   async count(): Promise<number> {
     const row = await this.sqlite.queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM notes', []);

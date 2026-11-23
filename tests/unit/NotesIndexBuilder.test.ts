@@ -5,7 +5,7 @@
  */
 
 import { TFile } from 'obsidian';
-import { NotesIndexBuilder } from '../../src/database/services/notesIndex/NotesIndexBuilder';
+import { NotesIndexBuilder, SAVE_AFTER_BUILD_MIN_UPSERTS } from '../../src/database/services/notesIndex/NotesIndexBuilder';
 import { computeContentHash } from '../../src/database/services/notesIndex/notesIndexMapping';
 import type { NotesIndexService } from '../../src/database/services/notesIndex/NotesIndexService';
 
@@ -104,10 +104,35 @@ function mockService(existing: Map<string, string> = new Map()) {
     upsertNote: jest.fn().mockResolvedValue(undefined),
     deleteNote: jest.fn().mockResolvedValue(undefined),
     pruneMissing: jest.fn().mockResolvedValue(undefined),
+    persist: jest.fn().mockResolvedValue(undefined),
   };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
+
+describe('NotesIndexBuilder saves a large walk itself', () => {
+  it('persists the cache once after a walk that upserted many notes', async () => {
+    const entries = Array.from({ length: SAVE_AFTER_BUILD_MIN_UPSERTS }, (_, i) => file(`Projects/n${i}.md`));
+    const { app } = makeApp(entries);
+    const service = mockService();
+    const builder = new NotesIndexBuilder(app as never, service as unknown as NotesIndexService, { batchSize: 10_000 });
+
+    await builder.buildAll();
+
+    expect(service.upsertNote).toHaveBeenCalledTimes(SAVE_AFTER_BUILD_MIN_UPSERTS);
+    expect(service.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a small walk to the auto-save', async () => {
+    const { app } = makeApp([file('Projects/a.md'), file('Projects/b.md')]);
+    const service = mockService();
+    const builder = new NotesIndexBuilder(app as never, service as unknown as NotesIndexService);
+
+    await builder.buildAll();
+
+    expect(service.persist).not.toHaveBeenCalled();
+  });
+});
 
 describe('NotesIndexBuilder', () => {
   it('builds the index from every markdown file and prunes against the present set', async () => {

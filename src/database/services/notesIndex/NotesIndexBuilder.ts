@@ -34,6 +34,9 @@ export interface NotesIndexBuilderOptions {
   plugin?: { registerEvent(ref: EventRef): void };
 }
 
+/** Notes upserted by one build above which the build saves the cache itself. */
+export const SAVE_AFTER_BUILD_MIN_UPSERTS = 500;
+
 const DEFAULT_MAX_NOTES = 250_000;
 const DEFAULT_DEBOUNCE_MS = 500;
 const DEFAULT_BATCH_SIZE = 200;
@@ -149,6 +152,7 @@ export class NotesIndexBuilder {
     const present = new Set<string>();
 
     let processed = 0;
+    let upserted = 0;
     for (const file of files) {
       // The walk yields between batches, so a plugin unload can land in the
       // middle of it. Continuing would write through a closed connection.
@@ -159,6 +163,7 @@ export class NotesIndexBuilder {
       present.add(input.path);
       if (existing.get(input.path) !== input.contentHash) {
         await this.service.upsertNote(input);
+        upserted++;
       }
       if (++processed % this.batchSize === 0) {
         await yieldToEventLoop();
@@ -170,6 +175,15 @@ export class NotesIndexBuilder {
     }
     await this.service.pruneMissing(present);
     this.ready = true;
+
+    // A full walk can be hundreds of thousands of writes (every note plus its
+    // property rows). Left to the auto-save, whose period stretches with the
+    // cache size, a reload in that window discards them and the next start
+    // walks again. Persist large walks right away; small ones stay with the
+    // auto-save so a routine start does not export the whole cache.
+    if (upserted >= SAVE_AFTER_BUILD_MIN_UPSERTS) {
+      await this.service.persist();
+    }
   }
 
   /**

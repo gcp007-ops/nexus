@@ -357,6 +357,7 @@ export class SyncCoordinator {
       await this.sqliteCache.rebuildFTSIndexes();
       await this.sqliteCache.updateSyncState(this.deviceId, Date.now(), {});
       await this.taskAuthorityReplay?.();
+      await this.seedReconcileCursors();
       await this.sqliteCache.save();
 
       options.onProgress?.('Complete', 1, 1);
@@ -376,6 +377,20 @@ export class SyncCoordinator {
   // ============================================================================
   // Private Helpers
   // ============================================================================
+
+  /**
+   * Give the next start a cursor for every shard this rebuild fully applied
+   * (see ReconcilePipeline.seedCursorsFromAppliedEvents). Best effort: without
+   * it the next start is only slower, so a failure is logged, never fatal.
+   */
+  private async seedReconcileCursors(): Promise<void> {
+    if (!this.reconcilePipeline) return;
+    try {
+      await this.reconcilePipeline.seedCursorsFromAppliedEvents();
+    } catch (error) {
+      console.warn('[SyncCoordinator] Could not seed reconcile cursors after the full rebuild; the next start rescans every shard:', error);
+    }
+  }
 
   private async processWorkspaceFiles(
     previousFileTimestamps: Record<string, number>,

@@ -164,6 +164,65 @@ export class ReconcilePipeline {
   }
 
   /**
+   * Seed the cursor of every shard whose events are all already applied, after
+   * a full rebuild.
+   *
+   * `fullRebuild` replays every event and marks it applied but writes no
+   * cursor, so the first start after it fell through the fast-path on every
+   * shard and ran one transaction per event (~360k) only to skip them all. A
+   * cursor is seeded only where that pass would have been a pure no-op: every
+   * event id of the shard is in `applied_events`. A shard with any unapplied
+   * event (a file the rebuild skipped, an apply that failed), or one this
+   * reader cannot parse, gets an empty cursor instead, so the next reconcile
+   * still reads it. No per-event transaction: one read and a few batched
+   * lookups per shard.
+   */
+  async seedCursorsFromAppliedEvents(): Promise<{ seeded: number; skipped: number }> {
+    let seeded = 0;
+    let skipped = 0;
+    for (const category of EVENT_STREAM_CATEGORIES) {
+      for (const streamPath of await this.vaultEventStore.listFiles(category)) {
+        const streamId = this.streamIdFromLogicalPath(category, streamPath);
+        if (!streamId) continue;
+        const handle = this.getStreamHandle(category, streamId);
+        const businessId = this.businessIdFromStreamId(category, streamId);
+        for (const shard of await handle.shardStore.listShards(handle.relativeStreamPath)) {
+          const cursorBase = {
+            deviceId: this.deviceId,
+            shardPath: `${handle.absoluteStreamPath}/${shard.fileName}`,
+            lastOffset: 0,
+            kind: category,
+            workspaceKey: businessId || null
+          };
+          let tail: AnyStorageEvent | null = null;
+          try {
+            const events = await readEventsFromShardFile(handle, shard.fullPath);
+            const ids = events.map(event => event.id);
+            if (events.length > 0 && await this.syncStateStore.countAppliedEvents(ids) === new Set(ids).size) {
+              tail = events[events.length - 1];
+            }
+          } catch {
+            // This reader is strict where the rebuild's is lenient (a torn last
+            // line, say): one unreadable shard must not stop the others.
+            tail = null;
+          }
+          // Empty, not kept, when the shard is not provably applied:
+          // `clearAllData` does not touch shard_cursors, so a cursor surviving
+          // from before the rebuild would fast-path past events it did not apply.
+          await this.syncStateStore.upsertCursor({
+            ...cursorBase,
+            lastEventId: tail?.id ?? null,
+            lastTimestamp: tail?.timestamp ?? 0,
+            updatedAt: Date.now()
+          });
+          if (tail) seeded += 1; else skipped += 1;
+        }
+      }
+    }
+    return { seeded, skipped };
+  }
+
+  /**
    * Scoped reconcile for a single logical stream (e.g. `conversations/conv_abc`).
    * Reads all shards under that stream and reconciles each.
    */
@@ -255,8 +314,9 @@ export class ReconcilePipeline {
     const events = await this.readShardEvents(handle, parsed.shardFileName);
     totals.filesProcessed.push(shardFullPath);
 
-    // Layer 1 — cursor fast-path: if the last applied event matches the
-    // shard's tail event, this shard has no new events for us.
+    // Layer 1 — cursor fast-path: if the cursor names the shard's last line,
+    // nothing was appended since. Shards are append-only, so any new event
+    // changes the last line, whatever its timestamp or device.
     if (cursor && this.isCursorAtTail(cursor, events)) {
       totals.shardsFastPathed = 1;
       return this.finalize(totals, start);
@@ -271,14 +331,8 @@ export class ReconcilePipeline {
 
     totals.shardsScanned = 1;
 
-    // Deterministic ordering: (timestamp ASC, deviceId ASC, eventId ASC).
-    const sorted = [...events].sort((a, b) => {
-      if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
-      const ad = a.deviceId ?? '';
-      const bd = b.deviceId ?? '';
-      if (ad !== bd) return ad < bd ? -1 : 1;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    });
+    // Deterministic apply order: (timestamp ASC, deviceId ASC, eventId ASC).
+    const sorted = orderEventsForApply(events);
 
     for (const event of sorted) {
       try {
@@ -312,7 +366,11 @@ export class ReconcilePipeline {
       return this.finalize(totals, start);
     }
 
-    const tail = sorted.length > 0 ? sorted[sorted.length - 1] : null;
+    // The cursor records the shard's last LINE, the one the fast-path compares
+    // with. It used to record the last event in apply order, which differs
+    // from the last line whenever events share a timestamp or arrive out of
+    // clock order, and then the shard was rescanned on every start.
+    const tail = events.length > 0 ? events[events.length - 1] : null;
     const nextCursor: ShardCursor = {
       deviceId: this.deviceId,
       shardPath: shardFullPath,
@@ -329,6 +387,7 @@ export class ReconcilePipeline {
     return this.finalize(totals, start);
   }
 
+  /** `events` in file order: the cursor names the shard's last line. */
   private isCursorAtTail(cursor: ShardCursor, events: AnyStorageEvent[]): boolean {
     if (cursor.lastEventId === null || events.length === 0) {
       return false;
@@ -484,6 +543,20 @@ export function parseShardVaultPath(
  * Read JSONL events directly from a single shard file. Bypasses the stream
  * store's multi-shard readEvents to avoid re-reading the whole stream.
  */
+/**
+ * The order events are applied in: (timestamp ASC, deviceId ASC, eventId ASC).
+ * The shard cursor does not use it; it records the shard's last line.
+ */
+export function orderEventsForApply(events: AnyStorageEvent[]): AnyStorageEvent[] {
+  return [...events].sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    const ad = a.deviceId ?? '';
+    const bd = b.deviceId ?? '';
+    if (ad !== bd) return ad < bd ? -1 : 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
 async function readEventsFromShardFile(
   handle: ReturnType<VaultEventStore['getConversationStream']>,
   shardFullPath: string

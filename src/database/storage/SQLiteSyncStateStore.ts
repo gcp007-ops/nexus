@@ -6,6 +6,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/** Ids per lookup: well under SQLite's bound-parameter limit. */
+const APPLIED_LOOKUP_BATCH = 500;
+
 type QueryFn = <T>(sql: string, params?: QueryParams) => Promise<T[]>;
 type QueryOneFn = <T>(sql: string, params?: QueryParams) => Promise<T | null>;
 type RunFn = (sql: string, params?: QueryParams) => Promise<RunResult>;
@@ -76,6 +79,21 @@ export class SQLiteSyncStateStore {
       'INSERT OR IGNORE INTO applied_events (eventId, appliedAt) VALUES (?, ?)',
       [eventId, Date.now()]
     );
+  }
+
+  /** How many of `eventIds` (deduplicated) are in applied_events, in batches. */
+  async countAppliedEvents(eventIds: string[]): Promise<number> {
+    const unique = Array.from(new Set(eventIds));
+    let count = 0;
+    for (let index = 0; index < unique.length; index += APPLIED_LOOKUP_BATCH) {
+      const batch = unique.slice(index, index + APPLIED_LOOKUP_BATCH);
+      const row = await this.queryOne<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM applied_events WHERE eventId IN (${batch.map(() => '?').join(',')})`,
+        batch
+      );
+      count += row?.n ?? 0;
+    }
+    return count;
   }
 
   async getAppliedEventsAfter(timestamp: number): Promise<string[]> {

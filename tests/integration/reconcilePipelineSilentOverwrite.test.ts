@@ -79,6 +79,12 @@ class FakeAppliedEventsStore {
 class FakeSyncStateStore {
   private readonly cursors = new Map<string, ShardCursor>();
   upsertCalls = 0;
+  appliedSource: FakeAppliedEventsStore | null = null;
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async countAppliedEvents(eventIds: string[]): Promise<number> {
+    return new Set(eventIds.filter(id => this.appliedSource?.has(id))).size;
+  }
 
   private key(deviceId: string, shardPath: string): string {
     return `${deviceId}::${shardPath}`;
@@ -147,6 +153,7 @@ class FakeVaultEventStore {
   /** Map<category/streamId, Map<fileName, jsonlContent>>. */
   private readonly shards = new Map<string, Map<string, string>>();
   private readonly disappearAfterList = new Set<string>();
+  listShardsCalls = 0;
 
   getRootPath(): string {
     return ROOT_PATH;
@@ -242,6 +249,7 @@ class FakeVaultEventStore {
     const shardStore = {
       // eslint-disable-next-line @typescript-eslint/require-await
       listShards: async (_relativeStreamPath: string): Promise<FakeShardDescriptor[]> => {
+        this.listShardsCalls += 1;
         const files = this.shards.get(key);
         if (!files) return [];
         const descriptors: FakeShardDescriptor[] = [];
@@ -343,6 +351,7 @@ function makeHarness(deviceId = 'desktop-A'): PipelineHarness {
     task: new FakeApplier()
   };
   const sqliteCache = new FakeSqliteCache(applied, Object.values(appliers));
+  cursors.appliedSource = applied;
 
   const pipeline = new ReconcilePipeline({
     // The pipeline only uses the slice we satisfy here.
@@ -1028,5 +1037,117 @@ describe('parseShardVaultPath', () => {
       'Nexus/data/'
     );
     expect(parsed?.streamId).toBe('conv_a');
+  });
+});
+
+describe('Startup cost: a start with nothing new must not rescan', () => {
+  it('fast-paths a shard whose last events share a timestamp, whatever their order in the file', async () => {
+    const { pipeline, store, sqliteCache } = makeHarness('desktop-A');
+    // Same timestamp; the file holds them in the reverse of the apply order
+    // (deviceId 'A' < 'B'), so the file's last line is not the cursor's tail.
+    store.setShardContent('workspaces', 'ws_one', SHARD, [
+      { id: 'e1', timestamp: 1, deviceId: 'A' },
+      { id: 'e3', timestamp: 5, deviceId: 'B' },
+      { id: 'e2', timestamp: 5, deviceId: 'A' }
+    ]);
+
+    const first = await pipeline.reconcileAll();
+    expect(first.eventsApplied).toBe(3);
+
+    const transactionsBefore = sqliteCache.transactionCalls;
+    const second = await pipeline.reconcileAll();
+    expect(second.success).toBe(true);
+    expect(second.shardsFastPathed).toBe(1);
+    expect(second.shardsScanned).toBe(0);
+    expect(sqliteCache.transactionCalls).toBe(transactionsBefore);
+  });
+
+  it('seeds cursors after a rebuild so the next sweep skips fully applied shards without a transaction', async () => {
+    const { pipeline, store, applied, cursors, sqliteCache } = makeHarness('desktop-A');
+    store.setShardContent('conversations', STREAM, SHARD, [
+      { id: 'c1', timestamp: 1, deviceId: 'A' },
+      { id: 'c2', timestamp: 2, deviceId: 'A' }
+    ]);
+    // A full rebuild applies and marks events without writing cursors.
+    applied.mark({ id: 'c1', category: 'conversations', timestamp: 1 });
+    applied.mark({ id: 'c2', category: 'conversations', timestamp: 2 });
+
+    const seeded = await pipeline.seedCursorsFromAppliedEvents();
+    expect(seeded).toEqual({ seeded: 1, skipped: 0 });
+    expect((await cursors.getCursor('desktop-A', SHARD_VAULT_PATH))?.lastEventId).toBe('c2');
+
+    const result = await pipeline.reconcileAll();
+    expect(result.shardsFastPathed).toBe(1);
+    expect(sqliteCache.transactionCalls).toBe(0);
+  });
+
+  it('clears a stale cursor on a shard the rebuild did not fully apply, so the next sweep still applies it', async () => {
+    const { pipeline, store, applied, cursors } = makeHarness('desktop-A');
+    store.setShardContent('conversations', STREAM, SHARD, [
+      { id: 'd1', timestamp: 1, deviceId: 'A' },
+      { id: 'd2', timestamp: 2, deviceId: 'A' }
+    ]);
+    // A cursor from before the rebuild survives (clearAllData keeps shard_cursors),
+    // but the rebuild applied only d1.
+    await cursors.upsertCursor({
+      deviceId: 'desktop-A', shardPath: SHARD_VAULT_PATH, lastEventId: 'd2', lastOffset: 0,
+      lastTimestamp: 2, kind: 'conversations', workspaceKey: null, updatedAt: 0
+    });
+    applied.mark({ id: 'd1', category: 'conversations', timestamp: 1 });
+
+    const seeded = await pipeline.seedCursorsFromAppliedEvents();
+    expect(seeded).toEqual({ seeded: 0, skipped: 1 });
+
+    const result = await pipeline.reconcileAll();
+    expect(result.eventsApplied).toBe(1);
+    expect(applied.has('d2')).toBe(true);
+  });
+
+  it('reads an event appended by a device whose clock is behind, even though it sorts before the tail', async () => {
+    const { pipeline, store, applied } = makeHarness('desktop-A');
+    store.setShardContent('workspaces', 'ws_late', SHARD, [
+      { id: 'a1', timestamp: 10, deviceId: 'A' },
+      { id: 'a2', timestamp: 20, deviceId: 'A' }
+    ]);
+    await pipeline.reconcileAll();
+
+    store.setShardContent('workspaces', 'ws_late', SHARD, [
+      { id: 'a1', timestamp: 10, deviceId: 'A' },
+      { id: 'a2', timestamp: 20, deviceId: 'A' },
+      { id: 'b1', timestamp: 15, deviceId: 'B' }
+    ]);
+    const second = await pipeline.reconcileAll();
+    expect(second.shardsFastPathed).toBe(0);
+    expect(applied.has('b1')).toBe(true);
+  });
+
+  it('reads an event appended with the same timestamp by a device that sorts first', async () => {
+    const { pipeline, store, applied } = makeHarness('desktop-A');
+    store.setShardContent('workspaces', 'ws_tie', SHARD, [{ id: 'x1', timestamp: 5, deviceId: 'B' }]);
+    await pipeline.reconcileAll();
+
+    store.setShardContent('workspaces', 'ws_tie', SHARD, [
+      { id: 'x1', timestamp: 5, deviceId: 'B' },
+      { id: 'x2', timestamp: 5, deviceId: 'A' }
+    ]);
+    await pipeline.reconcileAll();
+    expect(applied.has('x2')).toBe(true);
+  });
+
+  it('keeps seeding past a shard it cannot parse, and empties that shard\'s cursor', async () => {
+    const { pipeline, store, applied, cursors } = makeHarness('desktop-A');
+    store.setShardRawContent('conversations', 'conv_bad', SHARD, '{"id":"g1","timestamp":1}\n{"id":"g2","timest');
+    store.setShardContent('conversations', 'conv_good', SHARD, [{ id: 'h1', timestamp: 1, deviceId: 'A' }]);
+    await cursors.upsertCursor({
+      deviceId: 'desktop-A', shardPath: `${ROOT_PATH}/conversations/conv_bad/${SHARD}`, lastEventId: 'g2', lastOffset: 0,
+      lastTimestamp: 2, kind: 'conversations', workspaceKey: null, updatedAt: 0
+    });
+    applied.mark({ id: 'g1', category: 'conversations', timestamp: 1 });
+    applied.mark({ id: 'h1', category: 'conversations', timestamp: 1 });
+
+    const seeded = await pipeline.seedCursorsFromAppliedEvents();
+    expect(seeded).toEqual({ seeded: 1, skipped: 1 });
+    expect((await cursors.getCursor('desktop-A', `${ROOT_PATH}/conversations/conv_bad/${SHARD}`))?.lastEventId).toBeNull();
+    expect((await cursors.getCursor('desktop-A', `${ROOT_PATH}/conversations/conv_good/${SHARD}`))?.lastEventId).toBe('h1');
   });
 });
